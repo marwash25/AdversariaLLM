@@ -8,6 +8,37 @@ _default:
   max_new_tokens: 256
   seed: 0
 
+actor:
+  name: actor
+  type: discrete
+  placement: multi-turn
+  seed: 0
+  attack_model:
+    temperature: 0.0
+    use_api: false
+    api_model_name: null # gpt-4o
+    id: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated
+    tokenizer_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+    short_name: Llama
+    developer_name: mlabonne
+    compile: False
+    dtype: bfloat16
+    chat_template: llama-3-instruct
+    trust_remote_code: True
+  judge_model:
+    use_api: false
+    target_model_holder: Meta
+    id: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated
+    tokenizer_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+    short_name: Llama
+    developer_name: mlabonne
+    compile: False
+    dtype: bfloat16
+    chat_template: llama-3-instruct
+    trust_remote_code: True
+  actor_num: 3
+  early_stop: true
+  dynamic_modify: true
 ample_gcg:
   name: ample_gcg
   type: discrete
