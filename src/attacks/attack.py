@@ -81,6 +81,10 @@ class Attack(Generic[AttRes]):
     @classmethod
     def from_name(cls, name):
         match name:
+            case "actor":
+                from .actor import ActorAttack
+
+                return ActorAttack
             case "autodan":
                 from .autodan import AutoDANAttack
 
@@ -125,10 +129,6 @@ class Attack(Generic[AttRes]):
                 from .pgd_one_hot import PGDOneHotAttack
 
                 return PGDOneHotAttack
-            case "actor":
-                from .actor import ActorAttack
-                
-                return ActorAttack
             case "prefilling":
                 from .prefilling import PrefillingAttack
 
