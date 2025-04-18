@@ -8,6 +8,37 @@ _default:
   max_new_tokens: 256
   seed: 0
 
+actor:
+  name: actor
+  type: discrete
+  placement: multi-turn
+  seed: 0
+  attack_model:
+    temperature: 0.0
+    use_api: false
+    api_model_name: null # gpt-4o
+    id: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated
+    tokenizer_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+    short_name: Llama
+    developer_name: mlabonne
+    compile: False
+    dtype: bfloat16
+    chat_template: llama-3-instruct
+    trust_remote_code: True
+  judge_model:
+    use_api: false
+    target_model_holder: Meta
+    id: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated
+    tokenizer_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+    short_name: Llama
+    developer_name: mlabonne
+    compile: False
+    dtype: bfloat16
+    chat_template: llama-3-instruct
+    trust_remote_code: True
+  actor_num: 3
+  early_stop: true
+  dynamic_modify: true
 ample_gcg:
   name: ample_gcg
   type: discrete
@@ -227,46 +258,6 @@ pgd_one_hot:
     # cosine
     eta_min: 0.325
     T_0: 60
-actor:
-  name: actor
-  type: discrete
-  placement: multi-turn
-  seed: 0
-  attack_model: 
-    temperature: 0.0
-    # use_api: false
-    # id: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated
-    # tokenizer_id: meta-llama/Meta-Llama-3.1-8B-Instruct
-    # short_name: Llama
-    # developer_name: mlabonne
-    # compile: False
-    # dtype: bfloat16
-    # chat_template: llama-3-instruct
-    # trust_remote_code: True
-    use_api: true
-    api_model_name: gpt-4o
-  judge_model:
-    use_api: false
-    target_model_holder: Meta
-    id: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated
-    tokenizer_id: meta-llama/Meta-Llama-3.1-8B-Instruct
-    short_name: Llama
-    developer_name: mlabonne
-    compile: False
-    dtype: bfloat16
-    chat_template: llama-3-instruct
-    trust_remote_code: True
-  actor_num: 3
-  extract_prompt: "${root_dir}/data/actor/prompts/1_extract.txt"
-  network_prompt: "${root_dir}/data/actor/prompts/2_network.txt"
-  actor_prompt: "${root_dir}/data/actor/prompts/3_actor.txt"
-  query_prompt: "${root_dir}/data/actor/prompts/4_queries.txt"
-  json_format_prompt: "${root_dir}/data/actor/prompts/5_json_format.txt"
-  more_actor_prompt: "${root_dir}/data/actor/prompts/3_more_actor.txt"
-  step_judge_prompt: "${root_dir}/data/actor/prompts/attack_step_judge.txt"
-  modify_prompt: "${root_dir}/data/actor/prompts/attack_modify.txt"
-  early_stop: true
-  dynamic_modify: true
 prefilling:
   name: prefilling
   type: discrete
