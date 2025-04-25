@@ -6,7 +6,7 @@ import logging
 
 import hydra
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from src.attacks import Attack
 from src.dataset import PromptDataset
@@ -17,8 +17,10 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 torch.backends.cuda.matmul.allow_tf32 = True
 
 
-def should_run(cfg: DictConfig, name: str | None) -> list[tuple[str, DictConfig]]:
+def should_run(cfg: DictConfig, name: str | ListConfig | None) -> list[tuple[str, DictConfig]]:
     if name is not None:
+        if isinstance(name, ListConfig):
+            return [(n, cfg[n]) for n in name]
         return [(name, cfg[name])]
     return list(cfg.items())
 

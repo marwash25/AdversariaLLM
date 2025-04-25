@@ -41,12 +41,15 @@ def run_judge(cfg: DictConfig) -> None:
     logging.info("-------------------")
     logging.info("Commencing judge run")
     logging.info("-------------------")
-    print(cfg)
+    logging.info(cfg)
     # Run model loading and path collection in parallel
     paths = collect_run_paths(cfg.save_dir, cfg.suffixes)
+    logging.info(f"Found {len(paths)} paths")
+    logging.info("Loading judge...")
     judge = Judge.from_name(cfg.classifier)
     n = 0
-    for path in tqdm(paths, file=sys.stdout):
+    pbar = tqdm(paths, file=sys.stdout)
+    for path in pbar:
         with filelock.FileLock(path + ".lock") as lock:
             try:
                 run_list = json.load(open(path))
@@ -64,7 +67,7 @@ def run_judge(cfg: DictConfig) -> None:
                                 modfied_prompt = copy.deepcopy(prompt)
                                 modfied_prompt[-1]["content"] += completion
                                 modified_prompts.append(modfied_prompt)
-                        logging.info(f"Judging {len(modified_prompts)} prompts")
+                        pbar.set_description(f"{len(modified_prompts)} | {n} total")
                         results = judge(modified_prompts)
                         if results is None:
                             continue
@@ -77,6 +80,7 @@ def run_judge(cfg: DictConfig) -> None:
                 json.dump(run_list, open(path, "w"), indent=4)
             except Exception as e:
                 print(path, str(e))
+                os.remove(path + ".lock")
                 raise Exception(f"Error in {path}. Original exception: {e}") from e
         if os.path.exists(path + ".lock"):
             os.remove(path + ".lock")
