@@ -2,11 +2,11 @@ import gc
 import json
 import logging
 import os
-import time
 from dataclasses import asdict, dataclass
 
 import torch
 from omegaconf import OmegaConf
+from tinydb import TinyDB, Query
 from transformers.utils.logging import disable_progress_bar
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -219,15 +219,15 @@ class CompactJSONEncoder(json.JSONEncoder):
 
 @dataclass
 class RunConfig:
-    model: str
-    dataset: str
-    attack: str
+    model_name: str
+    dataset_name: str
+    attack_name: str
     model_params: dict
     dataset_params: dict
     attack_params: dict
 
 
-def log_attack(run_config: RunConfig, result: AttackResult, log_file: str):
+def log_attack(run_config: RunConfig, result: AttackResult, save_dir: str, date_time_string: str):
     # Create a structured log message as a JSON object
     OmegaConf.resolve(run_config.attack_params)
     OmegaConf.resolve(run_config.dataset_params)
@@ -236,22 +236,54 @@ def log_attack(run_config: RunConfig, result: AttackResult, log_file: str):
         "config": OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)
     }
     log_message.update(asdict(result))
-    # merge into log file if it exists already
-    # try a few times to make sure we dont get contention issues
-    for _ in range(3):
-        try:
-            with open(log_file, "r") as f:
-                log_data = json.load(f)
-            break
-        except FileNotFoundError:
-            log_data = []
-            break
-        except json.decoder.JSONDecodeError:
-            time.sleep(1)
-
-    log_data.append(log_message)
+    # Find the first available run_i.json file
+    i = 0
+    log_dir = os.path.join(save_dir, date_time_string)
+    while os.path.exists(os.path.join(log_dir, str(i), f"run.json")):
+        i += 1
+    log_file = os.path.join(log_dir, str(i), f"run.json")
 
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     with open(log_file, "w") as f:
-        json.dump(log_data, f, indent=2, cls=CompactJSONEncoder)
+        json.dump(log_message, f, indent=2, cls=CompactJSONEncoder)
     logging.info(f"Attack logged to {log_file}")
+    log_config_to_db(save_dir, run_config, result, log_file)
+
+
+def log_config_to_db(save_dir, run_config, result, log_file):
+    db = TinyDB(os.path.join(save_dir, "db.json"))
+    idx = run_config.dataset_params.idx
+    if idx is None:
+        idx = [i for i in range(len(result.runs))]
+    elif isinstance(idx, int):
+        idx = [idx]
+    for i in idx:
+        run_config.dataset_params.idx = i
+        db.insert({"config": OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True), "log_file": log_file, "scored_by": {}})
+
+
+def filter_config(run_config: RunConfig, save_dir: str, dset_len: int) -> bool:
+    db = TinyDB(os.path.join(save_dir, "db.json"))
+    query = Query()
+    OmegaConf.resolve(run_config.attack_params)
+    OmegaConf.resolve(run_config.dataset_params)
+    OmegaConf.resolve(run_config.model_params)
+    original_idx = run_config.dataset_params.idx
+    if original_idx is None:
+        idx = list(range(dset_len))
+    elif isinstance(original_idx, int):
+        idx = [original_idx]
+    else:
+        idx = original_idx
+    filtered_idx = []
+    for i in idx:
+        run_config.dataset_params.idx = i
+        if db.search(query.config == OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)):
+            print(f"Skipping {run_config.model_name} {run_config.dataset_name} {run_config.attack_name} idx={i} because it already exists")
+            continue
+        filtered_idx.append(i)
+    db.close()
+    if not filtered_idx:
+        return None
+    run_config.dataset_params.idx = filtered_idx
+    return run_config
