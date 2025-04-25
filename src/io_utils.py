@@ -219,9 +219,9 @@ class CompactJSONEncoder(json.JSONEncoder):
 
 @dataclass
 class RunConfig:
-    model_name: str
-    dataset_name: str
-    attack_name: str
+    model: str
+    dataset: str
+    attack: str
     model_params: dict
     dataset_params: dict
     attack_params: dict
@@ -279,7 +279,7 @@ def filter_config(run_config: RunConfig, save_dir: str, dset_len: int) -> bool:
     for i in idx:
         run_config.dataset_params.idx = i
         if db.search(query.config == OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)):
-            print(f"Skipping {run_config.model_name} {run_config.dataset_name} {run_config.attack_name} idx={i} because it already exists")
+            print(f"Skipping {run_config.model} {run_config.dataset} {run_config.attack} idx={i} because it already exists")
             continue
         filtered_idx.append(i)
     db.close()
