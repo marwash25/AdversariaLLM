@@ -28,9 +28,10 @@ def select_configs(cfg: DictConfig, name: str | ListConfig | None) -> list[tuple
 @hydra.main(config_path="./conf", config_name="config", version_base="1.3")
 @print_exceptions
 def run_attacks(cfg: DictConfig) -> None:
+    os.makedirs(cfg.save_dir, exist_ok=True)
     date_time_string = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
     logging.info("-------------------")
-    logging.info(f"Commencing run `{date_time_string}`")
+    logging.info(f"Commencing run at `{date_time_string}`")
     logging.info("-------------------")
 
     models_to_run = select_configs(cfg.models, cfg.model_name)
@@ -50,7 +51,7 @@ def run_attacks(cfg: DictConfig) -> None:
                     dataset_params,
                     attack_params,
                 )
-                run_config = filter_config(run_config, cfg.save_dir, dset_len)
+                run_config = filter_config(run_config, dset_len)
                 if run_config is not None:
                     all_run_configs.append(run_config)
 

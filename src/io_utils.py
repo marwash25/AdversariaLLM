@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 
 import torch
 from omegaconf import OmegaConf
-from tinydb import TinyDB, Query
+from pymongo import MongoClient
 from transformers.utils.logging import disable_progress_bar
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -247,42 +247,69 @@ def log_attack(run_config: RunConfig, result: AttackResult, save_dir: str, date_
     with open(log_file, "w") as f:
         json.dump(log_message, f, indent=2, cls=CompactJSONEncoder)
     logging.info(f"Attack logged to {log_file}")
-    log_config_to_db(save_dir, run_config, result, log_file)
+    log_config_to_db(run_config, result, log_file)
 
 
-def log_config_to_db(save_dir, run_config, result, log_file):
-    db = TinyDB(os.path.join(save_dir, "db.json"))
+def get_mongodb_connection():
+    """Get a MongoDB connection.
+
+    Connects to MongoDB using connection details from a config file or environment
+    variables. Falls back to a default localhost connection if not specified.
+    """
+    user = os.environ.get("MONGODB_USER")
+    password = os.environ.get("MONGODB_PASSWORD")
+    host = os.environ.get("MONGODB_HOST")
+    mongo_uri = os.environ.get("MONGODB_URI", f"mongodb://{user}:{password}@{host}?authSource={user}")
+    client = MongoClient(mongo_uri)
+    db_name = os.environ.get("MONGODB_DB", user)
+    return client[db_name]
+
+
+def log_config_to_db(run_config, result, log_file):
+    db = get_mongodb_connection()
+    collection = db.runs
+
     idx = run_config.dataset_params.idx
     if idx is None:
         idx = [i for i in range(len(result.runs))]
     elif isinstance(idx, int):
         idx = [idx]
+
     for i in idx:
         run_config.dataset_params.idx = i
-        db.insert({"config": OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True), "log_file": log_file, "scored_by": {}})
+        config_data = {
+            "config": OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True),
+            "log_file": log_file,
+            "scored_by": {}
+        }
+        collection.insert_one(config_data)
 
 
-def filter_config(run_config: RunConfig, save_dir: str, dset_len: int) -> bool:
-    db = TinyDB(os.path.join(save_dir, "db.json"))
-    query = Query()
+def filter_config(run_config: RunConfig, dset_len: int) -> bool:
+    db = get_mongodb_connection()
+    collection = db.runs
+
     OmegaConf.resolve(run_config.attack_params)
     OmegaConf.resolve(run_config.dataset_params)
     OmegaConf.resolve(run_config.model_params)
     original_idx = run_config.dataset_params.idx
+
     if original_idx is None:
         idx = list(range(dset_len))
     elif isinstance(original_idx, int):
         idx = [original_idx]
     else:
         idx = original_idx
+
     filtered_idx = []
     for i in idx:
         run_config.dataset_params.idx = i
-        if db.search(query.config == OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)):
+        config_data = OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)
+        if collection.find_one({"config": config_data}):
             print(f"Skipping {run_config.model} {run_config.dataset} {run_config.attack} idx={i} because it already exists")
             continue
         filtered_idx.append(i)
-    db.close()
+
     if not filtered_idx:
         return None
     run_config.dataset_params.idx = filtered_idx
