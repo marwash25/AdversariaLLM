@@ -10,10 +10,11 @@ import filelock
 import hydra
 from tinydb import TinyDB, Query
 import torch
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.errors import print_exceptions
+from src.io_utils import get_mongodb_connection
 from src.judges import Judge
 
 torch.use_deterministic_algorithms(True, warn_only=True)  # determinism
@@ -33,8 +34,13 @@ def collect_run_paths(db, suffixes, classifier):
         List of paths to run files
     """
 
+    db = get_mongodb_connection()
+    collection = db.runs
+
+    # Use MongoDB's find() method to get all documents
+    all_results = list(collection.find())
     paths = []
-    for item in db.all():
+    for item in all_results:
         log_file = item.get("log_file")
         date_time_string = log_file.split("/")[-3]
         if log_file and any(date_time_string.endswith(suffix) for suffix in suffixes):
@@ -51,9 +57,7 @@ def run_judge(cfg: DictConfig) -> None:
     logging.info("-------------------")
     logging.info(cfg)
 
-    with TinyDB(os.path.join(cfg.save_dir, "db.json")) as db:
-        paths = collect_run_paths(db, cfg.suffixes, cfg.classifier)
-
+    paths = collect_run_paths(cfg.save_dir, cfg.suffixes, cfg.classifier)
     logging.info(f"Found {len(paths)} paths")
     logging.info("Loading judge...")
     judge = Judge.from_name(cfg.classifier)
