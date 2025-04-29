@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 import torch
 from omegaconf import OmegaConf
 from pymongo import MongoClient
+from pymongo.synchronous.database import Database
 from transformers.utils.logging import disable_progress_bar
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -250,7 +251,7 @@ def log_attack(run_config: RunConfig, result: AttackResult, save_dir: str, date_
     log_config_to_db(run_config, result, log_file)
 
 
-def get_mongodb_connection():
+def get_mongodb_connection() -> Database:
     """Get a MongoDB connection.
 
     Connects to MongoDB using connection details from a config file or environment

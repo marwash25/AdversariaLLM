@@ -6,12 +6,11 @@ jailbreakbench
 matplotlib
 omegaconf >=2.1.0
 orjson
+peft
 pytest
 scikit-learn
 seaborn
 submitit
-tinydb
 torch >=2.3.0
 tqdm >=4.66.5
 transformers >=4.40.0
-peft

@@ -8,7 +8,6 @@ import sys
 
 import filelock
 import hydra
-from tinydb import TinyDB, Query
 import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
@@ -91,8 +90,9 @@ def run_judge(cfg: DictConfig) -> None:
                         i += n_completions
                         n += n_completions
                 json.dump(run, open(path, "w"), indent=4)
-                with TinyDB(os.path.join(cfg.save_dir, "db.json")) as db:
-                    db.update({"scored_by": cfg.classifier}, cond=Query().log_file == path)
+                db = get_mongodb_connection()
+                collection = db.runs
+                collection.update_one({"log_file": path}, {"$addToSet": {"scored_by": cfg.classifier}})
             except Exception as e:
                 print(path, str(e))
                 os.remove(path + ".lock")
