@@ -20,7 +20,7 @@ torch.use_deterministic_algorithms(True, warn_only=True)  # determinism
 torch.backends.cuda.matmul.allow_tf32 = True
 
 
-def collect_run_paths(db, suffixes, classifier):
+def collect_run_paths(db, suffixes: list[str]|str, classifier: str) -> list[str]:
     """
     Collect paths to run files that have not been scored by the specified classifier.
 
@@ -32,7 +32,8 @@ def collect_run_paths(db, suffixes, classifier):
     Returns:
         List of paths to run files
     """
-
+    if not isinstance(suffixes, list):
+        suffixes = [str(suffixes)]
     db = get_mongodb_connection()
     collection = db.runs
 
@@ -40,11 +41,12 @@ def collect_run_paths(db, suffixes, classifier):
     all_results = list(collection.find())
     paths = []
     for item in all_results:
-        log_file = item.get("log_file")
+        log_file = item["log_file"]
         date_time_string = log_file.split("/")[-3]
-        if log_file and any(date_time_string.endswith(suffix) for suffix in suffixes):
-            if classifier not in item["scored_by"]:
-                paths.append(log_file)
+        if classifier in item["scored_by"]:
+            continue
+        if any(date_time_string.endswith(suffix) for suffix in suffixes):
+            paths.append(log_file)
     return sorted(paths, reverse=True)
 
 

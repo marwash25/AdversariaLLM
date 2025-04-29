@@ -281,7 +281,7 @@ def log_config_to_db(run_config, result, log_file):
         config_data = {
             "config": OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True),
             "log_file": log_file,
-            "scored_by": {}
+            "scored_by": []
         }
         collection.insert_one(config_data)
 
