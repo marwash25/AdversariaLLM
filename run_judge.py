@@ -84,7 +84,7 @@ def run_judge(cfg: DictConfig) -> None:
                             modified_prompts.append(modfied_prompt)
                     pbar.set_description(f"{len(modified_prompts)} | {n} total")
                     results = judge(modified_prompts)
-                    if results is None:
+                    if all(r is None for r in results):
                         continue
                     i = 0
                     for step in subrun["steps"]:

@@ -233,14 +233,15 @@ pgd:
   tie_logits: 0.0
   tie_features: 0.0
   projection: l2
+  loss: ce
   attack_space: embedding
   optimizer: "FGSM"
   optimizer_config:
     weight_decay: 0.0
     betas: [0.9, 0.999]
-pgd_one_hot:
-  name: pgd_one_hot
-  type: continuous
+pgd_discrete:
+  name: pgd_discrete
+  type: hybrid
   version: 0.0.1
   placement: suffix
   num_steps: 100

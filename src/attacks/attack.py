@@ -126,9 +126,9 @@ class Attack(Generic[AttRes]):
 
                 return PGDAttack
             case "pgd_one_hot":
-                from .pgd_one_hot import PGDOneHotAttack
+                from .pgd_discrete import PGDDiscreteAttack
 
-                return PGDOneHotAttack
+                return PGDDiscreteAttack
             case "prefilling":
                 from .prefilling import PrefillingAttack
 
