@@ -213,8 +213,14 @@ pair:
     temperature: 0
     top_p: 1
   judge_model:
-    id: cais/HarmBench-Llama-2-13b-cls
-    max_new_tokens: 1
+    id: null
+    tokenizer_id: null
+    dtype: null
+    compile: null
+    trust_remote_code: null
+    short_name: null
+    developer_name: null
+    chat_template: null
 pgd:
   name: pgd
   type: continuous
@@ -233,14 +239,15 @@ pgd:
   tie_logits: 0.0
   tie_features: 0.0
   projection: l2
+  loss: ce
   attack_space: embedding
   optimizer: "FGSM"
   optimizer_config:
     weight_decay: 0.0
     betas: [0.9, 0.999]
-pgd_one_hot:
-  name: pgd_one_hot
-  type: continuous
+pgd_discrete:
+  name: pgd_discrete
+  type: hybrid
   version: 0.0.1
   placement: suffix
   num_steps: 100

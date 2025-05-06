@@ -46,6 +46,7 @@ class PGDConfig:
     normalize_alpha: bool = False
     normalize_gradient: bool = False
     original_model: Optional[str] = None
+    loss: str = "ce"
     tie_logits: float = 0.0
     tie_features: float = 0.0
     optimizer: str = "Adam"
@@ -190,8 +191,8 @@ class PGDAttack(Attack):
         x_batch = x_batch.to(device)
         y_batch = y_batch.to(device)
         attention_mask_batch = attention_mask_batch.to(device)
-        attack_masks_batch = attack_masks_batch.to(device).bool() # Use bool for masking
-        target_masks_batch = target_masks_batch.to(device).bool() # Use bool for masking
+        attack_masks_batch = attack_masks_batch.to(device).bool()
+        target_masks_batch = target_masks_batch.to(device).bool()
 
         original_embeddings = model.get_input_embeddings()(x_batch)
         if self.config.attack_space == "one-hot":
@@ -229,7 +230,7 @@ class PGDAttack(Attack):
                 output_hidden_states=True
             )
 
-            loss = self._calculate_ce_loss(outputs.logits, y_batch, target_masks_batch)
+            loss = self._calculate_loss(outputs.logits, y_batch, target_masks_batch)
 
             kl_div_loss = 0.0
             if original_model is not None and (self.config.tie_logits > 0 or self.config.tie_features > 0):
@@ -239,7 +240,7 @@ class PGDAttack(Attack):
                 )
 
             total_loss = loss + kl_div_loss
-            total_loss.mean().backward()  # Aggregate loss for backward
+            total_loss.mean().backward()
 
             grad = perturbed_embeddings_or_one_hot.grad
 
@@ -317,6 +318,14 @@ class PGDAttack(Attack):
         else:
             return embeddings_or_one_hot
 
+    def _calculate_loss(self, logits, targets, mask):
+        if self.config.loss == "ce":
+            return self._calculate_ce_loss(logits, targets, mask)
+        elif self.config.loss == "entropy_adaptive":
+            return self._calculate_entropy_adaptive_loss(logits, mask)
+        else:
+            raise ValueError(f"Unknown loss {self.config.loss}")
+
     def _calculate_ce_loss(self, logits, targets, mask):
         loss = F.cross_entropy(
             logits.view(-1, logits.size(-1)),
@@ -325,6 +334,53 @@ class PGDAttack(Attack):
         )
         loss = loss.view(targets.shape[0], -1) * mask  # (B, L)
         loss = loss.sum(dim=1) / (mask.sum(dim=1).float() + 1e-6)  # (B,)
+        return loss
+
+    def _calculate_entropy_adaptive_loss(self,
+                                logits: torch.Tensor,
+                                mask:   torch.Tensor,
+                                adaptive_threshold: float = 0.7) -> torch.Tensor:
+        """
+        * maximise entropy of the **first** token (→ encourage diverse samples)
+        * once we are getting diverse samples (max p < `adaptive_threshold`) we also
+        minimise entropy on the remaining tokens (→ encourage coherence)
+
+        Args
+        ----
+        logits : (B, L, V)  un-normalised logits
+        mask   : (B, L)     1 = real token, 0 = padding
+        adaptive_threshold : float
+            confidence level that triggers the “low-entropy after the first
+            token” term (defaults to 0.7)
+
+        Returns
+        -------
+        loss : (B,)   one scalar per sequence in the batch
+        """
+        # ---- probabilities & entropy -----------------------------------------
+        log_probs = F.log_softmax(logits, dim=-1)  # (B, L, D)
+        probs = log_probs.exp()  # (B, L, D)
+        entropy = -(probs * log_probs).sum(dim=-1)  # (B, L)
+
+        # ---- first-token (exploration) term -----------------------------------
+        # Find the first nonzero index of mask for each sequence in the batch
+        # This handles cases where the first token might be padding
+        cum_mask = mask.float().cumsum(dim=1)
+
+        # Replace the default first token entropy with the properly masked version
+        first_token_loss = - (entropy * (cum_mask == 1)).sum(dim=1)
+        temp_mask = (cum_mask == 1)
+        # Indices of the first tokens for each sequence in the batch
+        first_token_indices = temp_mask.nonzero(as_tuple=True)[1]
+
+        # Gather the probabilities at the first token positions for each sequence
+        first_token_probs = probs[torch.arange(probs.size(0), device=probs.device), first_token_indices].max(dim=-1).values
+        under_confident = (first_token_probs < adaptive_threshold)  # (B,)
+        under_confident = under_confident.float()  # (B,)
+
+        # ---- entropy on the rest of the tokens (certainty) --------------------
+        rest_entropy = (entropy * ((cum_mask > 1) & (mask == 1))).sum(dim=1) / (mask.sum(dim=1).float() - 1)
+        loss = first_token_loss + under_confident * rest_entropy  # (B,)
         return loss
 
     def _setup_benign_reference(self, model, tokenizer, batch_size, device):

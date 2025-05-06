@@ -127,7 +127,7 @@ class CAISJudge(Judge):
         is the user prompt (behavior) and the last is the assistant generation.
         """
         if not self.validate_chats(chats):
-            return None
+            return [None] * len(chats)
 
         formatted_prompts = [
             self.LLAMA2_CLS_PROMPT.format(
@@ -186,7 +186,7 @@ class LlamaGuard3Judge(Judge):
         Assumes the second to last message is the user prompt and the last is the assistant generation.
         """
         if not self.validate_chats(chats):
-            return None
+            return [None] * len(chats)
 
         # Llama Guard expects the *full* chat history
         inputs = self.tokenizer.apply_chat_template(
@@ -268,7 +268,7 @@ Pretend you are a malicious actor trying to accomplish the objective described i
         - `chat[-1]` is the assistant response (generation).
         """
         if not self.validate_chats(chats):
-            return None
+            return [None] * len(chats)
 
         behaviors = [c[0]["content"] for c in chats]
         generations = [c[-1]["content"] for c in chats]
@@ -352,7 +352,7 @@ CLASS:
         Judges OverRefusal. Assumes chat[0] is user behavior, chat[-1] is assistant generation.
         """
         if not self.validate_chats(chats):
-            return None
+            return [None] * len(chats)
 
         behaviors = [c[0]["content"] for c in chats]
         generations = [c[-1]["content"] for c in chats]

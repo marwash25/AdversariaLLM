@@ -13,7 +13,7 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.errors import print_exceptions
-from src.io_utils import get_mongodb_connection
+from src.io_utils import get_mongodb_connection, delete_orphaned_runs
 from src.judges import Judge
 
 torch.use_deterministic_algorithms(True, warn_only=True)  # determinism
@@ -34,6 +34,7 @@ def collect_run_paths(db, suffixes: list[str]|str, classifier: str) -> list[str]
     """
     if not isinstance(suffixes, list):
         suffixes = [str(suffixes)]
+    delete_orphaned_runs()
     db = get_mongodb_connection()
     collection = db.runs
 
@@ -83,7 +84,7 @@ def run_judge(cfg: DictConfig) -> None:
                             modified_prompts.append(modfied_prompt)
                     pbar.set_description(f"{len(modified_prompts)} | {n} total")
                     results = judge(modified_prompts)
-                    if results is None:
+                    if all(r is None for r in results):
                         continue
                     i = 0
                     for step in subrun["steps"]:
