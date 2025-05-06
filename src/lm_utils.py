@@ -950,6 +950,12 @@ def get_disallowed_ids(tokenizer: PreTrainedTokenizerBase, allow_non_ascii: bool
             if not tokenizer.decode([i], skip_special_tokens=True):
                 disallowed_ids.add(i)
 
+        is_gemma_2 = "gemma-2" in tokenizer.name_or_path.lower()
+        if is_gemma_2:
+            disallowed_ids.add(tokenizer.convert_tokens_to_ids("[@BOS@]"))
+            for i in range(100):
+                disallowed_ids.add(tokenizer.convert_tokens_to_ids(f"<unused{i}>"))
+
     if tokenizer.bos_token_id is not None:
         disallowed_ids.add(tokenizer.bos_token_id)
     if tokenizer.eos_token_id is not None:
@@ -958,6 +964,7 @@ def get_disallowed_ids(tokenizer: PreTrainedTokenizerBase, allow_non_ascii: bool
         disallowed_ids.add(tokenizer.pad_token_id)
     if tokenizer.unk_token_id is not None:
         disallowed_ids.add(tokenizer.unk_token_id)
+
     disallowed_ids = sorted(list(disallowed_ids))
     return torch.tensor(disallowed_ids)
 
