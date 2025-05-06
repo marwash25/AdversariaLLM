@@ -213,8 +213,14 @@ pair:
     temperature: 0
     top_p: 1
   judge_model:
-    id: cais/HarmBench-Llama-2-13b-cls
-    max_new_tokens: 1
+    id: null
+    tokenizer_id: null
+    dtype: null
+    compile: null
+    trust_remote_code: null
+    short_name: null
+    developer_name: null
+    chat_template: null
 pgd:
   name: pgd
   type: continuous
