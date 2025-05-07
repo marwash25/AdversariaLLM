@@ -75,6 +75,8 @@ def run_judge(cfg: DictConfig) -> None:
                     continue
                 for subrun in run["runs"]:
                     prompt = subrun["original_prompt"]
+                    if len(prompt) == 1:
+                        prompt += [{"role": "assistant", "content": ""}]
                     modified_prompts = []
                     if cfg.classifier in subrun["steps"][0]["scores"]:
                         continue
