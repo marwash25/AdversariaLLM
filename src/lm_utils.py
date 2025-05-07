@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
-from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizerBase
+from transformers import DynamicCache, HybridCache, PreTrainedModel, PreTrainedTokenizerBase
 
 from src.attacks.attack import Conversation
 from src.io_utils import free_vram
@@ -222,9 +222,7 @@ def generate_ragged(
         ]
     assert embedding_list is not None
     # TODO: Implement KV-caching for Gemma
-    if use_cache and "gemma-2" in model.name_or_path or "gemma-3" in model.config.name_or_path:
-        logging.warning("KV-cache not implemented for Gemma. Disabling cache.")
-        use_cache = False
+    is_gemma = "gemma-2" in model.name_or_path or "gemma-3" in model.config.name_or_path
 
     B = len(embedding_list)
 
@@ -312,7 +310,16 @@ def generate_ragged(
                 # but faster if prompts have different lengths and **saves VRAM**.
 
                 # Fill prefix cache
-                past_key_values = DynamicCache()
+                if not is_gemma:
+                    past_key_values = DynamicCache()
+                else:
+                    past_key_values = HybridCache(
+                        config=model.config,
+                        max_batch_size=B,
+                        max_cache_len=next_token_idx.max().item() + max_new_tokens,
+                        device=model.device,
+                        dtype=model.dtype,
+                    )
                 if next_token_idx.min() > 1:
                     model(
                         inputs_embeds=padded_embeddings[:, : next_token_idx.min() - 1],
@@ -347,8 +354,14 @@ def generate_ragged(
                     # have to manually crop the past_key_values to the correct length
                     # since we only add a single step at a time
                     for j in range(len(past_key_values.key_cache)):
-                        past_key_values.key_cache[j] = past_key_values.key_cache[j][continue_mask, :, :next_token_idx.min()]
-                        past_key_values.value_cache[j] = past_key_values.value_cache[j][continue_mask, :, :next_token_idx.min()]
+                        if not is_gemma:
+                            past_key_values.key_cache[j] = past_key_values.key_cache[j][continue_mask, :, :next_token_idx.min()]
+                            past_key_values.value_cache[j] = past_key_values.value_cache[j][continue_mask, :, :next_token_idx.min()]
+                        else:
+                            past_key_values.key_cache[j][:, :, next_token_idx.min()+1:].fill_(0)
+                            past_key_values.value_cache[j][:, :, next_token_idx.min()+1:].fill_(0)
+                            past_key_values.key_cache[j] = past_key_values.key_cache[j][continue_mask]
+                            past_key_values.value_cache[j] = past_key_values.value_cache[j][continue_mask]
 
                     generation_completed |= next_tokens.cpu() == tokenizer.eos_token_id
                     if generation_completed.all():
