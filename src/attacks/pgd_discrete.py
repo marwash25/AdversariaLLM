@@ -31,7 +31,7 @@ class LRSchedulerConfig:
 
 
 @dataclass
-class PGDOneHotConfig:
+class PGDDiscreteConfig:
     name: str = "pgd_one_hot"
     type: str = "continuous"
     placement: str = "suffix" # Note: Not explicitly used in provided code structure
@@ -52,8 +52,8 @@ class PGDAttackStepResult(AttackStepResult):
     continuous_loss: float
 
 
-class PGDOneHotAttack(Attack):
-    def __init__(self, config: PGDOneHotConfig):
+class PGDDiscreteAttack(Attack):
+    def __init__(self, config: PGDDiscreteConfig):
         super().__init__(config)
 
     def run(self, model: torch.nn.Module, tokenizer, dataset) -> AttackResult:

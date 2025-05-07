@@ -15,6 +15,48 @@ class PromptDataset(torch.utils.data.Dataset):
     def __init__(self, config):
         self.config = config
 
+    def _select_idx(self, config, dataset_len: int):
+        """
+        Selects the indices of the dataset based on the config.
+        config.idx can be:
+            - int: a single index e.g. comand line argument:
+                        datasets.jbb_behaviors.idx=5
+            - list[int]: a list of indices e.g. comand line argument:
+                        datasets.jbb_behaviors.idx=[1,2,3]
+            - str: a string of the from "list(range(1, 10))" e.g. comand line argument:
+                        datasets.jbb_behaviors.idx="'list(range(1, 10))'"
+                        Note: double quotes are required for hydra to parse the string correctly
+            - None: all indices are selected
+        """
+
+        if config.shuffle:
+            torch.manual_seed(config.seed)
+            idx = torch.randperm(dataset_len)
+        else:
+            idx = torch.arange(dataset_len)
+
+        config_idx = config.idx
+
+        # if idx is a string, try to parse it to a sequence
+        if isinstance(config_idx, str):
+            if config_idx.startswith("list(range("):
+                try:
+                    config_idx = eval(config_idx, {"__builtins__": None}, {"range": range, "list": list})
+                except Exception as e:
+                    raise ValueError(f"Could not parse idx string: {config_idx}\n{e}")
+            else:
+                raise ValueError(f"Could not parse idx string: {config_idx}\nDoes not start with 'list(range('.")
+
+        if isinstance(config_idx, int):
+            idx = idx[config_idx : config_idx + 1]
+        elif isinstance(config_idx, Sequence):
+            logging.info(f"Selecting indices: {config_idx}")
+            idx = idx[config_idx]
+        elif config_idx is not None:
+            raise ValueError(f"Invalid idx: {config.idx}")
+
+        return idx, config_idx
+
     @classmethod
     def from_name(cls, name):
         match name:
@@ -43,7 +85,8 @@ class AdvBehaviorsConfig:
     targets_path: str
     categories: list[str]
     seed: int = 0
-    idx: list[int] | int | None = None
+    idx: list[int] | int | str | None = None
+    shuffle: bool = True
 
 
 class AdvBehaviorsDataset(PromptDataset):
@@ -63,19 +106,11 @@ class AdvBehaviorsDataset(PromptDataset):
         self.targets = self.messages[self.messages.columns[-1]].map(targets)
         assert len(self.messages) == len(self.targets), "Mismatched lengths"
 
-        # shuffle
-        torch.manual_seed(config.seed)
-        idx = torch.randperm(len(self.messages))
-        # We keep this shuffle for backwards compatibility
-        if isinstance(config.idx, int):
-            idx = idx[config.idx:config.idx + 1]
-        elif isinstance(config.idx, Sequence):
-            idx = idx[config.idx]
-        elif config.idx is not None:
-            raise ValueError(f"Invalid idx: {config.idx}")
+        self.idx, self.config_idx = self._select_idx(config, len(self.messages))
+
         # cut
-        self.messages = self.messages.iloc[idx].reset_index(drop=True)
-        self.targets = self.targets.iloc[idx].reset_index(drop=True)
+        self.messages = self.messages.iloc[self.idx].reset_index(drop=True)
+        self.targets = self.targets.iloc[self.idx].reset_index(drop=True)
 
     def __len__(self):
         return len(self.messages)
@@ -101,27 +136,21 @@ class RefusalDirectionDataConfig:
     split: str
     type: Literal["harmful", "harmless"]
     seed: int = 0
-    idx: list[int] | int | None = None
+    idx: list[int] | int | str | None = None
     n_samples: int = 100
+    shuffle: bool = True
 
 
 class RefusalDirectionDataDataset(PromptDataset):
     def __init__(self, config: RefusalDirectionDataConfig):
         self.config = config
         with open(os.path.join(config.path, f"{config.type}_{config.split}.json"), "r") as f:
-            self.messages = json.load(f)[:config.n_samples]
-        # shuffle
-        torch.manual_seed(config.seed)
-        idx = torch.randperm(len(self.messages))
-        # We keep this shuffle for backwards compatibility
-        if isinstance(config.idx, int):
-            idx = idx[config.idx:config.idx + 1]
-        elif isinstance(config.idx, Sequence):
-            idx = idx[config.idx]
-        elif config.idx is not None:
-            raise ValueError(f"Invalid idx: {config.idx}")
+            self.messages = json.load(f)[: config.n_samples]
+
+        self.idx, self.config_idx = self._select_idx(config, len(self.messages))
+
         # Convert tensor indices to integers before using them
-        self.messages = [self.messages[int(i)]["instruction"] for i in idx]
+        self.messages = [self.messages[int(i)]["instruction"] for i in self.idx]
 
     def __len__(self):
         return len(self.messages)
@@ -137,7 +166,8 @@ class RefusalDirectionDataDataset(PromptDataset):
 class JBBBehaviorsConfig:
     name: str
     seed: int = 0
-    idx: list[int] | int | None = None
+    idx: list[int] | int | str | None = None
+    shuffle: bool = True
 
 
 class JBBBehaviorsDataset(PromptDataset):
@@ -145,17 +175,10 @@ class JBBBehaviorsDataset(PromptDataset):
         self.config = config
         dataset = jbb.read_dataset().as_dataframe()
 
-        # shuffle
-        torch.manual_seed(config.seed)
-        idx = torch.randperm(len(dataset))
-        if isinstance(config.idx, int):
-            idx = idx[config.idx:config.idx + 1]
-        elif isinstance(config.idx, Sequence):
-            idx = idx[config.idx]
-        elif config.idx is not None:
-            raise ValueError(f"Invalid idx: {config.idx}")
-        self.messages = dataset.Goal.iloc[idx].reset_index(drop=True)
-        self.targets = dataset.Target.iloc[idx].reset_index(drop=True)
+        self.idx, self.config_idx = self._select_idx(config, len(dataset))
+
+        self.messages = dataset.Goal.iloc[self.idx].reset_index(drop=True)
+        self.targets = dataset.Target.iloc[self.idx].reset_index(drop=True)
 
     def __len__(self):
         return len(self.messages)
@@ -177,7 +200,8 @@ class StrongRejectConfig:
     split: str = "train"
     seed: int = 0
     version: Literal["small", "full"] = "small"
-    idx: list[int] | int | None = None
+    idx: list[int] | int | str | None = None
+    shuffle: bool = True
 
 
 class StrongRejectDataset(PromptDataset):
@@ -199,15 +223,9 @@ class StrongRejectDataset(PromptDataset):
         self.messages = self.dataset[
             self.dataset["category"].isin(config.categories)
         ]
-        torch.manual_seed(config.seed)
-        idx = torch.randperm(len(self.messages))
-        # We keep this shuffle for backwards compatibility
-        if isinstance(config.idx, int):
-            idx = idx[config.idx:config.idx + 1]
-        elif isinstance(config.idx, Sequence):
-            idx = idx[config.idx]
-        elif config.idx is not None:
-            raise ValueError(f"Invalid idx: {config.idx}")
+
+        idx = self._select_idx(config, len(self.messages))
+
         # cut
         self.messages = self.messages.iloc[idx].reset_index(drop=True)
 
@@ -227,7 +245,8 @@ class StrongRejectDataset(PromptDataset):
 class ORBenchConfig:
     name: str
     seed: int = 0
-    idx: list[int] | int | None = None
+    idx: list[int] | int | str | None = None
+    shuffle: bool = True
 
 
 class ORBenchDataset(PromptDataset):
@@ -235,16 +254,10 @@ class ORBenchDataset(PromptDataset):
         self.config = config
         dataset = load_dataset("bench-llm/or-bench", "or-bench-hard-1k")["train"]
         dataset = [d["prompt"] for d in dataset]
-        # shuffle
-        torch.manual_seed(config.seed)
-        idx = torch.randperm(len(dataset))
-        if isinstance(config.idx, int):
-            idx = idx[config.idx: config.idx + 1]
-        elif isinstance(config.idx, Sequence):
-            idx = idx[config.idx]
-        elif config.idx is not None:
-            raise ValueError(f"Invalid idx: {config.idx}")
-        self.messages = [dataset[i] for i in idx]
+
+        self.idx, self.config_idx = self._select_idx(config, len(dataset))
+
+        self.messages = [dataset[i] for i in self.idx]
         self.targets = [""] * len(self.messages)
 
     def __len__(self):
@@ -262,7 +275,8 @@ class ORBenchDataset(PromptDataset):
 class XSTestConfig:
     name: str
     seed: int = 0
-    idx: list[int] | int | None = None
+    idx: list[int] | int | str | None = None
+    shuffle: bool = True
 
 
 class XSTestDataset(PromptDataset):
@@ -270,16 +284,10 @@ class XSTestDataset(PromptDataset):
         self.config = config
         dataset = load_dataset("walledai/XSTest")["test"]
         dataset = [d["prompt"] for d in dataset if d["label"] == "safe"]
-        # shuffle
-        torch.manual_seed(config.seed)
-        idx = torch.randperm(len(dataset))
-        if isinstance(config.idx, int):
-            idx = idx[config.idx: config.idx + 1]
-        elif isinstance(config.idx, Sequence):
-            idx = idx[config.idx]
-        elif config.idx is not None:
-            raise ValueError(f"Invalid idx: {config.idx}")
-        self.messages = [dataset[i] for i in idx]
+
+        self.idx, self.config_idx = self._select_idx(config, len(dataset))
+
+        self.messages = [dataset[i] for i in self.idx]
         self.targets = [""] * len(self.messages)
 
     def __len__(self):
@@ -298,16 +306,10 @@ class AlpacaDataset(PromptDataset):
         self.config = config
         dataset = json.load(open(config.messages_path, "r"))
         dataset = [d["instruction"] for d in dataset]
-        # shuffle
-        torch.manual_seed(config.seed)
-        idx = torch.randperm(len(dataset))
-        if isinstance(config.idx, int):
-            idx = idx[config.idx: config.idx + 1]
-        elif isinstance(config.idx, Sequence):
-            idx = idx[config.idx]
-        elif config.idx is not None:
-            raise ValueError(f"Invalid idx: {config.idx}")
-        self.messages = [dataset[i] for i in idx]
+
+        self.idx, self.config_idx = self._select_idx(config, len(dataset))
+
+        self.messages = [dataset[i] for i in self.idx]
         self.targets = [""] * len(self.messages)
 
     def __len__(self):
