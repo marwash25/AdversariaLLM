@@ -10,3 +10,5 @@ evaluate/**/*.pdf
 evaluate/**/*.py
 cache
 viz
+wandb
+paths.yaml
