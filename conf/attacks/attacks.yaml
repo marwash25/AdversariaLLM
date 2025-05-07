@@ -13,6 +13,8 @@ actor:
   type: discrete
   placement: multi-turn
   seed: 0
+  generation_config: ${attacks._default.generation_config}
+  version: 0.0.4
   attack_model:
     temperature: 0.0
     use_api: false
@@ -27,6 +29,7 @@ actor:
     trust_remote_code: True
   judge_model:
     use_api: false
+    api_model_name: null # gpt-4o
     target_model_holder: Meta
     id: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated
     tokenizer_id: meta-llama/Meta-Llama-3.1-8B-Instruct
