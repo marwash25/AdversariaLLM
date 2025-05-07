@@ -99,7 +99,7 @@ def run_judge(cfg: DictConfig) -> None:
                 json.dump(run, open(path, "w"), indent=4)
                 db = get_mongodb_connection()
                 collection = db.runs
-                collection.update_one({"log_file": path}, {"$addToSet": {"scored_by": cfg.classifier}})
+                collection.update_many({"log_file": path}, {"$addToSet": {"scored_by": cfg.classifier}})
             except Exception as e:
                 print(path, str(e))
                 os.remove(path + ".lock")
