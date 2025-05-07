@@ -50,6 +50,7 @@ class PromptDataset(torch.utils.data.Dataset):
         if isinstance(config_idx, int):
             idx = idx[config_idx : config_idx + 1]
         elif isinstance(config_idx, Sequence):
+            logging.info(f"Selecting indices: {config_idx}")
             idx = idx[config_idx]
         elif config_idx is not None:
             raise ValueError(f"Invalid idx: {config.idx}")
