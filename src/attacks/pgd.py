@@ -53,6 +53,8 @@ class PGDConfig:
     optimizer_config: OptimizerConfig = field(default_factory=OptimizerConfig)
     projection: str = "l2"
     attack_space: str = "embedding"
+    random_restart_interval: int = 0
+    random_restart_epsilon: float = 0.1
 
 
 class PGDAttack(Attack):
@@ -247,8 +249,9 @@ class PGDAttack(Attack):
             with torch.no_grad():
                 grad = self._modify_gradient(grad, attack_masks_batch, disallowed_ids)
                 perturbed_embeddings_or_one_hot = self._perform_optimizer_step(
-                    optimizer,perturbed_embeddings_or_one_hot, original_embeddings, grad, attack_masks_batch
+                    optimizer,perturbed_embeddings_or_one_hot, original_embeddings, grad, attack_masks_batch, step
                 )
+            
             model.zero_grad()
             pbar.set_postfix({"loss": loss.mean().item(), "kl_div": kl_div_loss.item() if isinstance(kl_div_loss, torch.Tensor) else kl_div_loss})
             if original_model is not None:
@@ -483,9 +486,13 @@ class PGDAttack(Attack):
         return grad
 
     @torch.no_grad()
-    def _perform_optimizer_step(self, optimizer, perturbed_embeds, original_embeds, grad, attack_mask):
+    def _perform_optimizer_step(self, optimizer, perturbed_embeds, original_embeds, grad, attack_mask, current_step):
         optimizer.step()
         # Project delta back into epsilon ball
+        if self.config.random_restart_interval > 0 and (current_step + 1) % self.config.random_restart_interval == 0:
+            perturbed_embeds.data = original_embeds.clone() + torch.randn_like(original_embeds) * self.config.random_restart_epsilon
+            return perturbed_embeds
+
         if self.config.attack_space == "embedding":
             delta = perturbed_embeds - original_embeds
             if self.config.projection == "l2":
