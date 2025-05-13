@@ -244,10 +244,12 @@ def generate_ragged(
         else:
             return [[] for _ in range(B)]
 
+    stop_token_ids = get_stop_token_ids(model, tokenizer).to(model.device)
+    idx_range = torch.arange(B, device=model.device)
     all_tokens = []
     for i in range(num_return_sequences):
-        tokens = torch.full((B, max_new_tokens), tokenizer.pad_token_id)
-        generation_completed = torch.zeros(B, dtype=torch.bool)
+        tokens = torch.full((B, max_new_tokens), tokenizer.pad_token_id, device=model.device)
+        generation_completed = torch.zeros(B, dtype=torch.bool, device=model.device)
         if padding_side == "left":
             if use_cache:
                 raise NotImplementedError("KV-cache not implemented for left padding.")
@@ -283,13 +285,13 @@ def generate_ragged(
                     attention_mask=attention_mask[:, :next_token_idx],
                     position_ids=position_ids[:, :next_token_idx],
                 )
-                logits = outputs.logits[torch.arange(B), -1]
+                logits = outputs.logits[:, -1]
                 next_tokens = sample_next_token(logits)
-                padded_embeddings[torch.arange(B), next_token_idx] = (
+                padded_embeddings[idx_range, next_token_idx] = (
                     model.get_input_embeddings()(next_tokens).detach()
                 )
-                tokens[:, i] = next_tokens.cpu()
-                generation_completed |= next_tokens.cpu() == tokenizer.eos_token_id
+                tokens[:, i] = next_tokens
+                generation_completed |= torch.isin(next_tokens, stop_token_ids)
                 if generation_completed.all():
                     logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
                     break
@@ -300,7 +302,7 @@ def generate_ragged(
                 [e for e in embedding_list], batch_first=True, padding_value=0
             )
             padded_embeddings = F.pad(embeddings, (0, 0, 0, max_new_tokens))
-            next_token_idx = torch.tensor([e.size(0) for e in embedding_list])
+            next_token_idx = torch.tensor([e.size(0) for e in embedding_list], device=model.device)
 
             if use_cache:
                 # This is the hot path so we have additional optimizations here.
@@ -334,7 +336,7 @@ def generate_ragged(
                     # to the last token of the longest prompt.
                     # This means that caching works best when sequences have similar length.
                     active_mask = ~generation_completed
-                    active_mask_idx = torch.arange(B)[active_mask]
+                    active_mask_idx = idx_range[active_mask]
                     active_embeddings = padded_embeddings[active_mask, next_token_idx.min() - 1 : next_token_idx.max()]
                     logits = model(
                         inputs_embeds=active_embeddings,
@@ -350,8 +352,8 @@ def generate_ragged(
                     ]
                     next_tokens[active_mask] = sample_next_token(logits)
                     padded_embeddings[active_mask_idx, next_token_idx_active] = model.get_input_embeddings()(next_tokens[active_mask])
-                    tokens[:, i] = next_tokens.cpu()
-                    continue_mask = (next_tokens.cpu() != tokenizer.eos_token_id)[active_mask]
+                    tokens[:, i] = next_tokens
+                    continue_mask = ~torch.isin(next_tokens, stop_token_ids)[active_mask]
                     # have to manually crop the past_key_values to the correct length
                     # since we only add a single step at a time
                     for j in range(len(past_key_values.key_cache)):
@@ -364,7 +366,7 @@ def generate_ragged(
                             past_key_values.key_cache[j] = past_key_values.key_cache[j][continue_mask]
                             past_key_values.value_cache[j] = past_key_values.value_cache[j][continue_mask]
 
-                    generation_completed |= next_tokens.cpu() == tokenizer.eos_token_id
+                    generation_completed |= torch.isin(next_tokens, stop_token_ids)
                     if generation_completed.all():
                         logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
                         break
@@ -372,13 +374,13 @@ def generate_ragged(
             else:
                 for i in range(max_new_tokens):
                     outputs = model(inputs_embeds=padded_embeddings[:, : next_token_idx.max()])
-                    logits = outputs.logits[torch.arange(B), next_token_idx - 1]
+                    logits = outputs.logits[:, next_token_idx - 1]
                     next_tokens = sample_next_token(logits)
-                    padded_embeddings[torch.arange(B), next_token_idx] = (
-                        model.get_input_embeddings()(next_tokens).detach()
+                    padded_embeddings[idx_range, next_token_idx] = (
+                        model.get_input_embeddings()(next_tokens)
                     )
-                    tokens[:, i] = next_tokens.cpu()
-                    generation_completed |= next_tokens.cpu() == tokenizer.eos_token_id
+                    tokens[:, i] = next_tokens
+                    generation_completed |= torch.isin(next_tokens, stop_token_ids)
                     if generation_completed.all():
                         logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
                         break
@@ -387,21 +389,22 @@ def generate_ragged(
             raise ValueError(f"Unknown padding_side: {padding_side}")
         all_tokens.append(tokens)
 
-    all_tokens = torch.stack(all_tokens, dim=1)  # (B, N, T)
+    all_tokens = torch.stack(all_tokens, dim=1).cpu()  # (B, N, T)
     if return_tokens:
         B, N, T = all_tokens.size()
-        eos_id = tokenizer.eos_token_id
         tokens = []
         for i in range(B):
             current_tokens = []
             for j in range(N):
-                stop_idx = (all_tokens[i, j] == eos_id).nonzero()
+                stop_idx = torch.where(torch.isin(all_tokens[i, j], stop_token_ids.cpu()))[0]
                 stop_idx = stop_idx[0].item() if stop_idx.numel() > 0 else T
                 current_tokens.append(all_tokens[i, j, :stop_idx])
             tokens.append(current_tokens)
         return tokens
+
+    stop_tokens = tokenizer.convert_ids_to_tokens(stop_token_ids)
     completion = [tokenizer.batch_decode(all_tokens[i], skip_special_tokens=False) for i in range(B)]
-    completion = [[c.split(tokenizer.eos_token)[0] for c in completion[i]] for i in range(B)]
+    completion = [[min([c.split(t)[0] for t in stop_tokens], key=len) for c in completion[i]] for i in range(B)]
     return completion
 
 
@@ -974,11 +977,14 @@ def get_disallowed_ids(tokenizer: PreTrainedTokenizerBase, allow_non_ascii: bool
             if not tokenizer.decode([i], skip_special_tokens=True):
                 disallowed_ids.add(i)
 
-        is_gemma_2 = "gemma-2" in tokenizer.name_or_path.lower()
-        if is_gemma_2:
+        is_gemma = "gemma" in tokenizer.name_or_path.lower()
+        if is_gemma:
             disallowed_ids.add(tokenizer.convert_tokens_to_ids("[@BOS@]"))
-            for i in range(100):
-                disallowed_ids.add(tokenizer.convert_tokens_to_ids(f"<unused{i}>"))
+            for i in range(10000):  # gemma-3 has ~8k unused tokens
+                unused_id = tokenizer.convert_tokens_to_ids(f"<unused{i}>")
+                if unused_id == tokenizer.unk_token_id:
+                    break
+                disallowed_ids.add(unused_id)
 
     if tokenizer.bos_token_id is not None:
         disallowed_ids.add(tokenizer.bos_token_id)
@@ -991,6 +997,19 @@ def get_disallowed_ids(tokenizer: PreTrainedTokenizerBase, allow_non_ascii: bool
 
     disallowed_ids = sorted(list(disallowed_ids))
     return torch.tensor(disallowed_ids)
+
+
+def get_stop_token_ids(model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> torch.Tensor:
+    stop_token_ids = []
+    eos_model = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
+    if eos_model is not None:
+        stop_token_ids.extend(eos_model)
+
+    stop_token_ids.append(tokenizer.eos_token_id)
+    if hasattr(tokenizer, "eot_token_id"):
+        stop_token_ids.append(tokenizer.eot_token_id)
+
+    return torch.tensor(list(set(stop_token_ids)), dtype=torch.long)
 
 
 def filter_suffix(

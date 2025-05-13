@@ -12,7 +12,6 @@ hydra:
     dir: ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
 
 name: judge
-save_dir: ${root_dir}/outputs/
 suffixes: ["0","1","2","3","4","5","6","7","8","9"]
 classifier: "cais" # or llama_guard_3_8b
 n_tokens: null

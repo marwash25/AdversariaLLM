@@ -12,6 +12,8 @@ from src.attacks import Attack
 from src.dataset import PromptDataset
 from src.errors import print_exceptions
 from src.io_utils import load_model_and_tokenizer, log_attack, RunConfig, filter_config
+from src.lm_utils import free_vram
+from run_judges import run_judges
 
 torch.use_deterministic_algorithms(True, warn_only=True)
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -25,15 +27,7 @@ def select_configs(cfg: DictConfig, name: str | ListConfig | None) -> list[tuple
     return list(cfg.items())
 
 
-@hydra.main(config_path="./conf", config_name="config", version_base="1.3")
-@print_exceptions
-def run_attacks(cfg: DictConfig) -> None:
-    os.makedirs(cfg.save_dir, exist_ok=True)
-    date_time_string = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
-    logging.info("-------------------")
-    logging.info(f"Commencing run at `{date_time_string}`")
-    logging.info("-------------------")
-
+def collect_configs(cfg: DictConfig) -> list[RunConfig]:
     models_to_run = select_configs(cfg.models, cfg.model_name)
     datasets_to_run = select_configs(cfg.datasets, cfg.dataset_name)
     attacks_to_run = select_configs(cfg.attacks, cfg.attack_name)
@@ -56,7 +50,10 @@ def run_attacks(cfg: DictConfig) -> None:
                 run_config = filter_config(run_config, dset_len, overwrite=cfg.overwrite)
                 if run_config is not None:
                     all_run_configs.append(run_config)
+    return all_run_configs
 
+
+def run_attacks(all_run_configs: list[RunConfig], save_dir: str, date_time_string: str) -> None:
     last_model = None
     last_dataset = None
     last_attack = None
@@ -76,8 +73,41 @@ def run_attacks(cfg: DictConfig) -> None:
         attack = Attack.from_name(run_config.attack)(run_config.attack_params)
         results = attack.run(model, tokenizer, dataset)
 
-        log_attack(run_config, results, cfg.save_dir, date_time_string)
+        log_attack(run_config, results, save_dir, date_time_string)
+
+
+@hydra.main(config_path="./conf", config_name="config", version_base="1.3")
+@print_exceptions
+def main(cfg: DictConfig) -> None:
+    os.makedirs(cfg.save_dir, exist_ok=True)
+    date_time_string = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
+    logging.info("-------------------")
+    logging.info(f"Commencing run at `{date_time_string}`")
+    logging.info("-------------------")
+
+    # 1. Parse/Collect configs for the judge and the attacks
+    OmegaConf.set_struct(cfg, False)
+    judges_to_run = cfg.pop('classifiers')  # remove from config to avoid saving to mongodb
+    OmegaConf.set_struct(cfg, True)
+
+    all_run_configs = collect_configs(cfg)
+
+    # 2. Run the attacks
+    run_attacks(all_run_configs, cfg.save_dir, date_time_string)
+
+    # 3. Run the judges
+    if judges_to_run is None:
+        return
+    for judge in judges_to_run:
+        # Create judge config
+        judge_cfg = OmegaConf.create({
+            "classifier": judge,
+            "suffixes": [date_time_string.split('/')[-1]],  # Use the timestamp from this run
+        })
+        free_vram()
+        # Run the judge
+        run_judges(judge_cfg)
 
 
 if __name__ == "__main__":
-    run_attacks()
+    main()

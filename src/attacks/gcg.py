@@ -209,6 +209,10 @@ class GCGAttack(Attack):
 
     def run(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, dataset: PromptDataset) -> AttackResult:
         self.not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
+        # need to have this filter here for models like gemma-3 which add extra tokens that do not have embeddings
+        # we cannot filter the ids inside the get_disallowed_ids function because we need
+        # the embedding layer weights to see the correct sizes
+        self.not_allowed_ids = self.not_allowed_ids[self.not_allowed_ids < model.get_input_embeddings().weight.size(0)]
         runs = []
         for conversation in dataset:
             t0 = time.time()
@@ -331,6 +335,7 @@ class GCGAttack(Attack):
                 model,
                 tokenizer,
                 token_list=token_list,
+                initial_batch_size=len(token_list),
                 max_new_tokens=self.config.generation_config.max_new_tokens,
                 temperature=self.config.generation_config.temperature,
                 top_p=self.config.generation_config.top_p,

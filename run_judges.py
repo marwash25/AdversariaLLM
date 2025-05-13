@@ -13,7 +13,7 @@ from omegaconf import DictConfig, ListConfig
 from tqdm import tqdm
 
 from src.errors import print_exceptions
-from src.io_utils import get_mongodb_connection, delete_orphaned_runs
+from src.io_utils import CompactJSONEncoder, get_mongodb_connection, delete_orphaned_runs
 from src.judges import Judge
 
 torch.use_deterministic_algorithms(True, warn_only=True)  # determinism
@@ -25,7 +25,6 @@ def collect_run_paths(suffixes: list[str]|str, classifier: str) -> list[str]:
     Collect paths to run files that have not been scored by the specified classifier.
 
     Args:
-        save_dir: Directory containing the database
         suffixes: List of suffixes that must be in the path
         classifier: Name of the classifier to check in scored_by
 
@@ -55,13 +54,16 @@ def collect_run_paths(suffixes: list[str]|str, classifier: str) -> list[str]:
 
 @hydra.main(config_path="./conf", config_name="judge", version_base="1.3")
 @print_exceptions
-def run_judge(cfg: DictConfig) -> None:
+def run_judges(cfg: DictConfig) -> None:
     logging.info("-------------------")
     logging.info("Commencing judge run")
     logging.info("-------------------")
     logging.info(cfg)
 
     paths = collect_run_paths(cfg.suffixes, cfg.classifier)
+    if not paths:
+        logging.info("No unjudged paths found")
+        return
     logging.info(f"Found {len(paths)} paths")
     logging.info("Loading judge...")
     judge = Judge.from_name(cfg.classifier)
@@ -70,10 +72,10 @@ def run_judge(cfg: DictConfig) -> None:
     for path in pbar:
         with filelock.FileLock(path + ".lock") as lock:
             try:
-                run = json.load(open(path))
-                if (cfg.classifier == "overrefusal") != (run["config"]["dataset"] in ("or_bench", "xs_test")):
+                attack_run = json.load(open(path))
+                if (cfg.classifier == "overrefusal") != (attack_run["config"]["dataset"] in ("or_bench", "xs_test")):
                     continue
-                for subrun in run["runs"]:
+                for subrun in attack_run["runs"]:
                     prompt = subrun["original_prompt"]
                     modified_prompts = []
                     if cfg.classifier in subrun["steps"][0]["scores"]:
@@ -97,7 +99,7 @@ def run_judge(cfg: DictConfig) -> None:
                         step["scores"][cfg.classifier] = {k: v[i:i+n_completions] for k, v in results.items()}
                         i += n_completions
                         n += n_completions
-                json.dump(run, open(path, "w"), indent=4)
+                json.dump(attack_run, open(path, "w"), indent=2, cls=CompactJSONEncoder)
                 db = get_mongodb_connection()
                 collection = db.runs
                 collection.update_many({"log_file": path}, {"$addToSet": {"scored_by": cfg.classifier}})
@@ -111,4 +113,4 @@ def run_judge(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    run_judge()
+    run_judges()
