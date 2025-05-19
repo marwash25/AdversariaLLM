@@ -22,7 +22,7 @@ def generate_ragged_batched(
     tokenizer: PreTrainedTokenizerBase,
     token_list: list[torch.IntTensor] | None = None,
     embedding_list: list[torch.FloatTensor] | None = None,
-    initial_batch_size: int = 64,
+    initial_batch_size: int = 256,
     use_cache: bool = True,
     verbose: bool = False,
     **kwargs,
@@ -249,7 +249,7 @@ def generate_ragged(
     all_tokens = []
     for i in range(num_return_sequences):
         tokens = torch.full((B, max_new_tokens), tokenizer.pad_token_id, device=model.device)
-        generation_completed = torch.zeros(B, dtype=torch.bool, device=model.device)
+        finished = torch.zeros(B, dtype=torch.bool, device=model.device)
         if padding_side == "left":
             if use_cache:
                 raise NotImplementedError("KV-cache not implemented for left padding.")
@@ -291,8 +291,8 @@ def generate_ragged(
                     model.get_input_embeddings()(next_tokens).detach()
                 )
                 tokens[:, i] = next_tokens
-                generation_completed |= torch.isin(next_tokens, stop_token_ids)
-                if generation_completed.all():
+                finished |= torch.isin(next_tokens, stop_token_ids)
+                if finished.all():
                     logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
                     break
                 next_token_idx += 1
@@ -323,54 +323,72 @@ def generate_ragged(
                         device=model.device,
                         dtype=model.dtype,
                     )
+                    past_key_values.key_cache = [p.to(model.device) for p in past_key_values.key_cache]
+                    past_key_values.value_cache = [p.to(model.device) for p in past_key_values.value_cache]
                 if next_token_idx.min() > 1:
                     model(
                         inputs_embeds=padded_embeddings[:, : next_token_idx.min() - 1],
                         past_key_values=past_key_values,
                         use_cache=True,
                     )
-                for i in range(max_new_tokens):
-                    # Caching with right padding is a bit tricky:
-                    # We have to feed more than one token at each forward pass :(.
-                    # Instead, we feed a 'window' from the last token of the shortest prompt
-                    # to the last token of the longest prompt.
-                    # This means that caching works best when sequences have similar length.
-                    active_mask = ~generation_completed
-                    active_mask_idx = idx_range[active_mask]
-                    active_embeddings = padded_embeddings[active_mask, next_token_idx.min() - 1 : next_token_idx.max()]
+                # Caching with right padding is a bit tricky:
+                # Consider this set of prompts:
+                #
+                #  0: x x x x x o o o o o p p p p p
+                #  1: x x x x x x o o o o o p p p p
+                #  2: x x x x x x x x x x o o o o o
+                # Each batch element can be in one of three states:
+                #   - A: cache_filling,
+                #   - B: generating,
+                #   - C: finished.
+                # We forward A | B = ~C through the model, but only use outputs of B to
+                # forward-fill the input embeddings.
+                # This means that caching works best when sequences have similar length.
+                lengths = torch.zeros(B, device=model.device, dtype=torch.long)
+                for i in range(max_new_tokens + next_token_idx.max() - next_token_idx.min()):
+                    cur_idx = next_token_idx.min()
+                    generating = (next_token_idx == cur_idx) & ~finished
+
+                    active_embeddings = padded_embeddings[~finished, cur_idx - 1 : cur_idx]
+                    assert active_embeddings.size(1) == 1
+                    cache_position = torch.arange(cur_idx - 1, cur_idx, device=model.device)
+
                     logits = model(
                         inputs_embeds=active_embeddings,
+                        cache_position=cache_position,
                         past_key_values=past_key_values,
                         use_cache=True,
                     ).logits
 
+                    logits_out = torch.empty((B, logits.size(2)), dtype=model.dtype, device=model.device)
+                    logits_out[~finished] = logits[:, 0]
                     next_tokens = torch.full((B,), tokenizer.eos_token_id, device=model.device)
-                    next_token_idx_active = next_token_idx[active_mask]
-                    logits = logits[
-                        torch.arange(logits.size(0)),
-                        next_token_idx_active - next_token_idx.min()
-                    ]
-                    next_tokens[active_mask] = sample_next_token(logits)
-                    padded_embeddings[active_mask_idx, next_token_idx_active] = model.get_input_embeddings()(next_tokens[active_mask])
-                    tokens[:, i] = next_tokens
-                    continue_mask = ~torch.isin(next_tokens, stop_token_ids)[active_mask]
+                    next_tokens[generating] = sample_next_token(logits_out[generating])
+
+                    padded_embeddings[idx_range[generating], next_token_idx.min()] = model.get_input_embeddings()(next_tokens[generating])
+                    tokens[generating, lengths[generating]] = next_tokens[generating]
                     # have to manually crop the past_key_values to the correct length
                     # since we only add a single step at a time
+                    finished_at_this_step = torch.zeros_like(finished)
+                    finished_at_this_step[generating] = torch.isin(next_tokens[generating], stop_token_ids) | (lengths[generating] + 1 == max_new_tokens)
+                    still_active = (~finished & ~finished_at_this_step)[~finished]
+
                     for j in range(len(past_key_values.key_cache)):
                         if not is_gemma:
-                            past_key_values.key_cache[j] = past_key_values.key_cache[j][continue_mask, :, :next_token_idx.min()]
-                            past_key_values.value_cache[j] = past_key_values.value_cache[j][continue_mask, :, :next_token_idx.min()]
+                            past_key_values.key_cache[j] = past_key_values.key_cache[j][still_active]
+                            past_key_values.value_cache[j] = past_key_values.value_cache[j][still_active]
                         else:
-                            past_key_values.key_cache[j][:, :, next_token_idx.min()+1:].fill_(0)
-                            past_key_values.value_cache[j][:, :, next_token_idx.min()+1:].fill_(0)
-                            past_key_values.key_cache[j] = past_key_values.key_cache[j][continue_mask]
-                            past_key_values.value_cache[j] = past_key_values.value_cache[j][continue_mask]
+                            past_key_values.key_cache[j] = past_key_values.key_cache[j][still_active]
+                            past_key_values.value_cache[j] = past_key_values.value_cache[j][still_active]
 
-                    generation_completed |= torch.isin(next_tokens, stop_token_ids)
-                    if generation_completed.all():
-                        logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
+                    finished |= finished_at_this_step
+                    if finished.all():
+                        if i < max_new_tokens - 1:
+                            logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
                         break
-                    next_token_idx += 1
+
+                    next_token_idx[next_token_idx == cur_idx] += 1
+                    lengths[generating] += 1
             else:
                 for i in range(max_new_tokens):
                     outputs = model(inputs_embeds=padded_embeddings[:, : next_token_idx.max()])
@@ -380,8 +398,8 @@ def generate_ragged(
                         model.get_input_embeddings()(next_tokens)
                     )
                     tokens[:, i] = next_tokens
-                    generation_completed |= torch.isin(next_tokens, stop_token_ids)
-                    if generation_completed.all():
+                    finished |= torch.isin(next_tokens, stop_token_ids)
+                    if finished.all():
                         logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
                         break
                     next_token_idx += 1
@@ -1003,7 +1021,10 @@ def get_stop_token_ids(model: PreTrainedModel, tokenizer: PreTrainedTokenizerBas
     stop_token_ids = []
     eos_model = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
     if eos_model is not None:
-        stop_token_ids.extend(eos_model)
+        if isinstance(eos_model, list):
+            stop_token_ids.extend(eos_model)
+        else:
+            stop_token_ids.append(eos_model)
 
     stop_token_ids.append(tokenizer.eos_token_id)
     if hasattr(tokenizer, "eot_token_id"):

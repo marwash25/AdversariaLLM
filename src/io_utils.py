@@ -2,14 +2,16 @@ import gc
 import json
 import logging
 import os
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 
+import orjson
 import torch
 from omegaconf import OmegaConf
 from pymongo import MongoClient
 from pymongo.synchronous.database import Database
-from transformers.utils.logging import disable_progress_bar
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers.utils.logging import disable_progress_bar
 
 from src.attacks import AttackResult
 
@@ -338,3 +340,198 @@ def delete_orphaned_runs():
         if not os.path.exists(log_file):
             print(f"Log file not found: {log_file}, deleting from database")
             db.runs.delete_one({"_id": item["_id"]})
+
+
+def check_match(doc_fragment, filter_fragment):
+    """
+    Recursively checks whether ``doc_fragment`` satisfies ``filter_fragment``.
+
+    Supported filter types
+    ----------------------
+    * **primitive** (str/int/float/bool/None)  - exact equality
+    * **iterable**  (list/tuple/set)           - *any* element of the
+      iterable must match  (“gcg **or** autodan”, …)
+      If the document side is itself an iterable, **intersection ≥ 1** counts
+      as a hit.
+    * **dict**                                 - every key in the filter dict
+      must be present in the document and its value must match recursively
+      (this is the behaviour you already had).
+
+    Examples
+    --------
+    filter_by = {
+        "attack": ["gcg", "autodan"],           # <- match-any
+    }
+    """
+    # --- 1. dict → recurse over its keys --------------------------------------
+    if isinstance(filter_fragment, dict):
+        if not isinstance(doc_fragment, dict):
+            return False
+        for k, v in filter_fragment.items():
+            if k not in doc_fragment or not check_match(doc_fragment[k], v):
+                return False
+        return True  # every key matched
+
+    # --- 2. iterable → “any of these values is fine” --------------------------
+    if isinstance(filter_fragment, (list, tuple, set)):
+        # doc side is also iterable  →  true if the two are the same
+        if isinstance(doc_fragment, (list, tuple, set)):
+            return filter_fragment == doc_fragment
+            # return any(item in filter_fragment for item in doc_fragment)
+        # doc side is a single value  →  true if it is one of the allowed ones
+        return doc_fragment in filter_fragment
+
+    # --- 3. primitive equality ------------------------------------------------
+    return doc_fragment == filter_fragment
+
+
+def get_nested_value(data: dict, path: list[str], default="unknown"):
+    """
+    Safely retrieves a value from a nested dictionary using a path list/tuple.
+
+    Args:
+        data (dict): The dictionary to search within.
+        path (list or tuple): A list/tuple of keys representing the path.
+        default: The value to return if the path is invalid or value not found.
+
+    Returns:
+        The value found at the path, or the default value.
+    """
+    current = data
+    for key in path:
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        else:
+            return default # Path doesn't exist or intermediate element isn't a dict
+    return current
+
+
+def get_filtered_and_grouped_paths(filter_by, group_by) -> dict[tuple[str], list[str]]:
+    """
+    Retrieves log paths from MongoDB filtered by criteria and grouped according to group_by.
+
+    Args:
+        filter_by (dict): Filtering criteria. Can contain nested dictionaries.
+        group_by (list or tuple): List/tuple of keys to group by from the 'config' field.
+
+    Returns:
+        dict: A dictionary where keys are group identifiers (tuples of strings)
+              and values are lists of log paths.
+    """
+    # Connect to MongoDB
+    db = get_mongodb_connection()
+    collection = db.runs
+
+    # Use MongoDB's find() method to get all documents
+    all_results = list(collection.find())
+
+    # Filter in Python using the check_match helper for complex nested conditions
+    if filter_by:
+        filtered_results = [
+            doc for doc in all_results
+            if check_match(doc['config'], filter_by)
+        ]
+    else:
+        filtered_results = all_results
+
+    # --- Grouping ---
+    if not group_by:
+        return {("all",): [r["log_file"] for r in filtered_results if "log_file" in r]}
+
+    grouped_results = {}
+    for result in filtered_results:
+        # Ensure the result has 'config' and 'log_file' before processing
+        if "config" not in result or "log_file" not in result:
+            continue  # Skip records missing essential fields
+
+        config_data = result["config"]
+        log_path = result["log_file"]
+
+        # Create a group key based on the specified group_by fields
+        group_key_parts = []
+        for key_spec in group_by:
+            if isinstance(key_spec, str):
+                value = get_nested_value(config_data, [key_spec])
+                group_key_parts.append(f"{key_spec}={value}")
+            elif isinstance(key_spec, (list, tuple)):
+                value = get_nested_value(config_data, key_spec)
+                key_name = '.'.join(map(str, key_spec))  # Ensure sub-keys are strings for join
+                group_key_parts.append(f"{key_name}={value}")
+            else:
+                group_key_parts.append(f"invalid_group_spec={key_spec}")
+
+        # Use a tuple of sorted key parts for consistent group keys
+        group_key_tuple = tuple(sorted(group_key_parts))
+
+        # Add the log path to the appropriate group
+        if group_key_tuple not in grouped_results:
+            grouped_results[group_key_tuple] = []
+        grouped_results[group_key_tuple].append(log_path)
+    return grouped_results
+
+
+def _gather(value, prefix: tuple[str], out):
+    """
+    Recursively collect every numeric leaf (float / int or list of them)
+    and store it under its full path.
+    """
+    # leaf node: number or list of numbers
+    if isinstance(value, (int, float)) or isinstance(value, list) and isinstance(value[0], (int, float)):
+        if len(prefix) == 1:
+            prefix = prefix[0]
+        out[prefix].append(value)
+    elif isinstance(value, dict):                     # keep descending
+        for k, v in value.items():
+            _gather(v, prefix + (k,), out)
+    elif isinstance(value, list):                     # either a list of dicts or a list of numbers
+        if value and isinstance(value[0], (dict, list)):
+            for v in value:
+                _gather(v, prefix, out)               # sub-lists of dicts
+
+
+def collect_results(paths) -> dict[tuple[str], dict[str, list[float]]]:
+    """
+    Loads JSONs corresponding to a list of paths from disk.
+
+    Parameters
+    ----------
+    paths : dict
+        A dictionary where keys are group identifiers (tuples of strings)
+        and values are lists of log paths.
+
+    Returns
+    -------
+    dict
+        A dictionary where keys are group identifiers (tuples of strings)
+        and values are dictionaries of collected metrics.
+    """
+    all_results = {}
+    for k, v in paths.items():
+        aggregated_results = defaultdict(list)
+        for path in v:
+            results = cached_json_load(path)
+            for run in results["runs"]:
+                collected_metrics = defaultdict(list)
+                for step in run["steps"]:
+                    for metric in step.keys():
+                        # this will fill collected_metrics with values from step[metric]
+                        # and handles nested containers
+                        _gather(step[metric], (metric,), collected_metrics)
+                for metric, v in collected_metrics.items():
+                    aggregated_results[metric].append(v)
+        all_results[k] = aggregated_results
+    return all_results
+
+
+JSON_CACHE = {}
+def cached_json_load(path):
+    mod_time = os.path.getmtime(path)
+    if path in JSON_CACHE:
+        if JSON_CACHE[path][0] == mod_time:
+            return JSON_CACHE[path][1]
+        del JSON_CACHE[path]
+    # Get the last modification time of the file
+    # Return both the data and the modification time
+    data = orjson.loads(open(path, "rb").read())
+    JSON_CACHE[path] = (mod_time, data)
+    return data
