@@ -35,6 +35,12 @@ class AttackStepResult:
     # attack, this is step_time / batch_size).
     time_taken: float = 0.0
 
+    # FLOPS, excluding all sampling from the model which is not necessary for the algorithm.
+    # For example, GCG only samples from the model once after the optimization, so we do
+    # not include sampling FLOPS. PAIR on the other hand relies on generations from the
+    # model during the optimization process, so we do include sampling FLOPS for that.
+    flops: Optional[int] = None
+
     # Optional fields, depending on the attack type
     # ---
     # Loss computed at this step (e.g., target loss for GCG)

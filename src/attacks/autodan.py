@@ -20,20 +20,13 @@ import torch
 from accelerate.utils import find_executable_batch_size
 from tqdm import trange
 
+from src.attacks.attack import (Attack, AttackResult, AttackStepResult,
+                                GenerationConfig, SingleAttackRunResult)
 from src.io_utils import load_model_and_tokenizer
-from src.lm_utils import get_losses_batched, generate_ragged_batched, prepare_conversation
-
-from src.attacks.attack import Attack, AttackResult, GenerationConfig, AttackStepResult, SingleAttackRunResult
+from src.lm_utils import (generate_ragged_batched, get_flops, get_losses_batched,
+                          prepare_conversation)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-@dataclass
-class AutoDANResult:
-    losses: list[float]
-    attacks: list[str]
-    completions: list[str]
-    prompt: str
 
 
 @dataclass
@@ -107,8 +100,10 @@ class AutoDANAttack(Attack):
             batch_attacks = []
             batch_losses = []
             batch_times = []
+            batch_flops = []
             current_loss = None
 
+            flops = 0
             for _ in (pbar := trange(self.config.num_steps, file=sys.stdout)):
                 t1 = time.time()
                 tokens = []
@@ -128,6 +123,7 @@ class AutoDANAttack(Attack):
                 token_list = [torch.cat(t) for t in tokens]
                 targets = [t.roll(-1, 0) for t in token_list]
                 loss = get_losses_batched(model, targets, token_list=token_list)
+                flops += get_flops(model, sum(len(t) for t in token_list), 0, "forward")
                 loss = torch.tensor([l[-tl:].mean().item() for l, tl in zip(loss, [t[-1].size(0) for t in tokens])])
 
                 best_new_adv_prefix_id = loss.argmin()
@@ -137,6 +133,7 @@ class AutoDANAttack(Attack):
                 batch_losses.append(current_loss)
                 batch_attacks.append(best_new_adv_prefix)
                 batch_times.append(time.time() - t1)
+                batch_flops.append(flops)
                 # ====== Checking for early stopping if loss stuck at local minima ======
                 if previous_loss is None or current_loss < previous_loss:
                     previous_loss = current_loss
@@ -145,7 +142,7 @@ class AutoDANAttack(Attack):
                     early_stopping_threshold -= 1
                     if early_stopping_threshold == 0:
                         break
-                optim_strings = self.sample_control(
+                optim_strings, flops = self.sample_control(
                     control_prefixes=optim_strings[: self.config.batch_size],
                     loss_list=loss.float().cpu().numpy().tolist(),
                     num_elites=int(self.config.batch_size * self.config.num_elites),
@@ -185,6 +182,7 @@ class AutoDANAttack(Attack):
                     model_completions=completions,
                     time_taken=batch_times[i] / len(batch_completions),
                     loss=batch_losses[i],
+                    flops=batch_flops[i],
                     model_input=attack_conversations[i],
                     model_input_tokens=adv_prompt_tokens[i].tolist()
                 )
@@ -210,7 +208,7 @@ class AutoDANAttack(Attack):
         num_points=5,
         mutation=0.01,
         mutate_model=None,
-    ) -> list[str]:
+    ) -> tuple[list[str], float]:
         """
         This function samples the control prefixes for the next generation.
         The new samples are generated via genetic algorithms.
@@ -228,7 +226,7 @@ class AutoDANAttack(Attack):
             control_prefixes, loss_list, batch_size - len(elites)
         )
         # Step 4: Apply crossover and mutation to the selected parents
-        mutated_offspring = self.apply_crossover_and_mutation(
+        mutated_offspring, flops = self.apply_crossover_and_mutation(
             parents_list,
             tokenizer,
             crossover_probability=crossover,
@@ -240,7 +238,7 @@ class AutoDANAttack(Attack):
         # Combine elites with the mutated offspring
         next_generation = elites + mutated_offspring
         assert len(next_generation) == batch_size, f"{len(next_generation)} == {batch_size}"
-        return next_generation
+        return next_generation, flops
 
     @staticmethod
     def roulette_wheel_selection(data_list, loss_list, num_selected) -> list:
@@ -261,7 +259,7 @@ class AutoDANAttack(Attack):
         num_points=3,
         mutation_rate=0.01,
         mutate_model=None,
-    ) -> list[str]:
+    ) -> tuple[list[str], float]:
         offspring = []
         for i in range(0, len(selected_data), 2):
             parent1 = selected_data[i]
@@ -287,9 +285,9 @@ class AutoDANAttack(Attack):
             if random.random() <= mutation_rate:
                 offspring_to_mutate.append(s)
         if not offspring_to_mutate:
-            return offspring
+            return offspring, 0
         # ====== Mutate =====
-        mutated_offspring = mutate_model.batched_generate(
+        mutated_offspring, flops = mutate_model.batched_generate(
             offspring_to_mutate,
             tokenizer,
             max_n_tokens=1400,
@@ -301,12 +299,12 @@ class AutoDANAttack(Attack):
             index = offspring.index(s)
             offspring[index] = mutated_offspring[i]
 
-        return offspring
+        return offspring, flops
 
     @staticmethod
     def crossover(str1: str, str2: str, num_points: int) -> tuple[str, str]:
-        sentences1 = [s for s in re.split("(?<=[.!?])\s+", str1) if s]
-        sentences2 = [s for s in re.split("(?<=[.!?])\s+", str2) if s]
+        sentences1 = [s for s in re.split(r"(?<=[.!?])\s+", str1) if s]
+        sentences2 = [s for s in re.split(r"(?<=[.!?])\s+", str2) if s]
         try:
             max_swaps = min(len(sentences1), len(sentences2)) - 1
             num_swaps = min(num_points, max_swaps)
@@ -403,10 +401,16 @@ class HuggingFace:
             temperature=temperature,
             eos_token_id=self.eos_token_ids,
         )
+        flops = get_flops(
+            self.model,
+            sum(len(tokenizer.encode(t)) for t in inputs),
+            sum(len(tokenizer.encode(t)) for t in outputs),
+            "forward"
+        )
         outputs = [m + " " + o.strip() for o, m in zip(outputs, init_msgs)]
         outputs = self.process_outputs(outputs)
 
-        return outputs
+        return outputs, flops
 
     @staticmethod
     def process_outputs(sentences):

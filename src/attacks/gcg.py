@@ -27,6 +27,7 @@ mostly related to tokenization.
 """
 import gc
 import logging
+import math
 import random
 import sys
 import time
@@ -43,7 +44,7 @@ from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
 
 from src.lm_utils import (filter_suffix, generate_ragged_batched,
                           get_disallowed_ids, prepare_conversation,
-                          with_max_batchsize, TokenMergeError)
+                          with_max_batchsize, TokenMergeError, get_flops)
 
 from src.dataset import PromptDataset
 from .attack import Attack, AttackResult, GenerationConfig, SingleAttackRunResult, AttackStepResult
@@ -127,8 +128,9 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
         log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
         probs = torch.exp(log_probs)
         entropy = -(probs * log_probs).sum(dim=-1)  # (B, T)
+        D = shift_logits.size(-1)
         # We want to maximize entropy, so we negate it to make it a loss to minimize
-        loss = -entropy.mean(dim=-1)  # (B, T) -> (B,)
+        loss = -entropy.mean(dim=-1) + math.log(D)  # (B, T) -> (B,)
     elif loss_type == "entropy_no_disallowed":
         # Maximize entropy of predicted logits, while excluding disallowed ids
         log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
@@ -141,7 +143,8 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
 
         allowed_probs = probs * ~mask
         entropy = -(allowed_probs * log_probs).sum(dim=-1)  # (B, T)
-        entropy_loss = -entropy.mean(dim=-1)
+        D = shift_logits.size(-1)
+        entropy_loss = -entropy.mean(dim=-1) + math.log(D)
         # We want to maximize entropy, so we negate it to make it a loss to minimize
         loss = entropy_loss + disallowed_loss  # (B, T) -> (B,)
     elif loss_type == "entropy_first_token":
@@ -150,14 +153,16 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
         probs = torch.exp(log_probs)
         entropy = -(probs * log_probs).sum(dim=-1)  # (B, T)
         # We want to maximize entropy, so we negate it to make it a loss to minimize
-        loss = -entropy[:, 0]  # (B, T) -> (B,)
+        D = shift_logits.size(-1)
+        loss = -entropy[:, 0] + math.log(D) # (B, T) -> (B,)
     elif loss_type == "entropy_first_token_high_then_low":
         log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
         probs = torch.exp(log_probs)
         entropy = -(probs * log_probs).sum(dim=-1)  # (B, T)
+        D = shift_logits.size(-1)
         # Maximize entropy of first token
         # Minimize entropy of all other tokens
-        loss = -entropy[:, 0] + entropy[:, 1:].mean(dim=-1)  # (B, T) -> (B,)
+        loss = -entropy[:, 0] + math.log(D) + entropy[:, 1:].mean(dim=-1)  # (B, T) -> (B,)
     elif loss_type == "entropy_adaptive":
         log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
         probs = torch.exp(log_probs)
@@ -165,7 +170,8 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
         # Maximize entropy of first token
         # Minimize entropy of all other tokens
         mask = (probs[:, 0].max(dim=-1).values < 0.7).any()  # (B, D) -> (,)
-        loss = -entropy[:, 0] + mask * entropy[:, 1:].mean(dim=-1)  # (B, T) -> (B,)
+        D = shift_logits.size(-1)
+        loss = -entropy[:, 0] + math.log(D) + mask * entropy[:, 1:].mean(dim=-1)  # (B, T) -> (B,)
     elif loss_type == "smallmax":
         max_logits = shift_logits.max(dim=-1).values
         loss = max_logits.mean(dim=-1)
@@ -242,15 +248,16 @@ class GCGAttack(Attack):
             pre_prompt_embeds, post_embeds, target_embeds = [
                 embedding_layer(ids) for ids in (pre_prompt_ids, post_ids, target_ids)
             ]
-
             # Compute the KV Cache for tokens that appear before the optimized tokens
-            if self.config.use_prefix_cache and "gemma-2" not in model.name_or_path:
+            if self.config.use_prefix_cache and "gemma" not in model.name_or_path:
                 with torch.no_grad():
                     self.prefix_cache = DynamicCache()
                     output = model(inputs_embeds=pre_prompt_embeds, past_key_values=self.prefix_cache, use_cache=True)
                     self.prefix_cache = output.past_key_values
+                flops_prefill = get_flops(model, pre_prompt_embeds.shape[0]*pre_prompt_embeds.shape[1], 0, "forward")
             else:
                 self.prefix_cache = None
+                flops_prefill = 0
 
             self.target_ids = target_ids
             self.pre_prompt_embeds = pre_prompt_embeds
@@ -262,21 +269,22 @@ class GCGAttack(Attack):
             else:
                 self.target_length = target_ids.size(1)
             # Initialize the attack buffer
-            buffer = self.init_buffer(model, attack_ids)
+            buffer, flops_init = self.init_buffer(model, attack_ids)
             optim_ids = buffer.get_best_ids()
             token_selection = SubstitutionSelectionStrategy(self.config.token_selection, self.config, self.prefix_cache, self.pre_prompt_embeds, self.post_embeds, self.target_embeds, self.target_ids, self.not_allowed_ids)
-
             losses = []
             times = []
+            flops = []
             optim_strings = []
             self.stop_flag = False
             current_loss = buffer.get_lowest_loss()
+
             for _ in (pbar := trange(self.config.num_steps, file=sys.stdout)):
                 t0a = time.time()
                 token_selection.target_ids = self.target_ids[:, :self.target_length]
                 token_selection.target_embeds = self.target_embeds[:, :self.target_length]
                 # Compute the token gradient
-                sampled_ids, sampled_ids_pos, grad = token_selection(
+                sampled_ids, sampled_ids_pos, grad, flops_select = token_selection(
                     optim_ids.squeeze(0),
                     model,
                     self.config.search_width,
@@ -300,7 +308,8 @@ class GCGAttack(Attack):
                         sampled_ids_pos = sampled_ids_pos[idx]
 
                     compute_loss_fn = partial(self.compute_candidates_loss, model)
-                    loss, acc = with_max_batchsize(compute_loss_fn, sampled_ids)
+                    loss, acc, flops_loss = with_max_batchsize(compute_loss_fn, sampled_ids)
+                    flops_loss = flops_loss.sum().item()
 
                     current_loss = loss.min().item()
                     optim_ids = sampled_ids[loss.argmin()].unsqueeze(0)
@@ -309,6 +318,9 @@ class GCGAttack(Attack):
                     # Update the buffer based on the loss
                     losses.append(current_loss)
                     times.append(time.time() - t0a)
+                    flops.append(flops_prefill + flops_select + flops_loss + flops_init)
+                    flops_prefill = 0
+                    flops_init = 0
                     if buffer.size == 0 or current_loss < buffer.get_highest_loss():
                         buffer.add(current_loss, optim_ids)
 
@@ -350,6 +362,7 @@ class GCGAttack(Attack):
                     model_completions=batch_completions[i],
                     time_taken=times[i],
                     loss=losses[i],
+                    flops=flops[i],
                     model_input=attack_conversations[i],
                     model_input_tokens=token_list[i].tolist(),
                 )
@@ -372,12 +385,13 @@ class GCGAttack(Attack):
 
         # Compute the loss on the initial buffer entries
         compute_loss_fn = partial(self.compute_candidates_loss, model)
-        init_buffer_losses, _ = with_max_batchsize(compute_loss_fn, init_buffer_ids)
+        init_buffer_losses, _, flops_init = with_max_batchsize(compute_loss_fn, init_buffer_ids)
+        flops_init = flops_init.sum()
 
         # Populate the buffer
         for i in range(true_buffer_size):
             buffer.add(init_buffer_losses[i], init_buffer_ids[[i]])
-        return buffer
+        return buffer, flops_init.item()
 
     @torch.no_grad()
     def compute_candidates_loss(
@@ -436,6 +450,7 @@ class GCGAttack(Attack):
                 dim=1,
             )
             outputs = model(inputs_embeds=input_embeds)
+        flops = get_flops(model, input_embeds.shape[1], 0, "forward")
 
         logits = outputs.logits
         tmp = logits.size(1) - self.target_ids[:, :self.target_length].size(1)
@@ -457,7 +472,7 @@ class GCGAttack(Attack):
         gc.collect()
         torch.cuda.empty_cache()
 
-        return torch.cat(all_loss, dim=0), torch.cat(all_acc, dim=0)
+        return torch.cat(all_loss, dim=0), torch.cat(all_acc, dim=0), torch.tensor(flops).expand_as(loss)
 
 
 class AttackBuffer:
@@ -573,7 +588,10 @@ class SubstitutionSelectionStrategy:
                 sampled token ids
         """
         # Initial gradient computation
-        grad = self.compute_token_gradient(ids.unsqueeze(0), model).squeeze(0)  # (n_optim_ids, vocab_size)
+        flops = 0
+        grad, flops_grad = self.compute_token_gradient(ids.unsqueeze(0), model)
+        grad = grad.squeeze(0)  # (n_optim_ids, vocab_size)
+        flops += flops_grad
 
         n_smoothing = self.config.grad_smoothing
         if n_smoothing > 1:
@@ -595,7 +613,8 @@ class SubstitutionSelectionStrategy:
                 random_indices = torch.tensor([random.choice(allowed_ids) for _ in range(current_batch_size)],
                                              device=ids.device).unsqueeze(1)
                 grad_ids_batch.scatter_(1, random_positions, random_indices)
-                batch_grads = self.compute_token_gradient(grad_ids_batch, model).detach()
+                batch_grads, flops_grad = self.compute_token_gradient(grad_ids_batch, model).detach()
+                flops += flops_grad
                 all_grads += batch_grads.sum(0)
             grad = all_grads / n_smoothing
         grad_momentum = self.config.grad_momentum
@@ -628,7 +647,7 @@ class SubstitutionSelectionStrategy:
             1, sampled_ids_pos, sampled_ids_val
         )  # (search_width, n_optim_ids)
 
-        return new_ids, sampled_ids_pos, grad
+        return new_ids, sampled_ids_pos, grad, flops
 
     @torch.no_grad()
     def _random_overall(
@@ -675,7 +694,7 @@ class SubstitutionSelectionStrategy:
         new_ids = original_ids.scatter_(1, sampled_ids_pos, sampled_topk_idx)
 
         grad = None
-        return new_ids, sampled_ids_pos, grad
+        return new_ids, sampled_ids_pos, grad, 0
 
     @torch.no_grad()
     def _random_per_position(
@@ -725,7 +744,7 @@ class SubstitutionSelectionStrategy:
         sampled_ids_pos = positions.repeat_interleave(samples_per_position)
         original_ids = original_ids[:samples_per_position * ids.shape[0]]
         new_ids = original_ids.scatter_(1, sampled_ids_pos.unsqueeze(1), sampled_topk_idx.unsqueeze(1))
-        return new_ids, sampled_ids_pos
+        return new_ids, sampled_ids_pos, None, 0
 
     def _lowest_gradient_magnitude(
         self,
@@ -753,7 +772,7 @@ class SubstitutionSelectionStrategy:
             sampled_ids : Tensor, shape = (search_width, n_optim_ids)
                 sampled token ids
         """
-        grad = self.compute_token_gradient(ids.unsqueeze(0), model).squeeze(0)  # (n_optim_ids, vocab_size)
+        grad, flops_grad = self.compute_token_gradient(ids.unsqueeze(0), model).squeeze(0)  # (n_optim_ids, vocab_size)
         n_optim_ids = len(ids)
         original_ids = ids.repeat(search_width, 1)
 
@@ -784,7 +803,7 @@ class SubstitutionSelectionStrategy:
             1, sampled_ids_pos, sampled_topk_idx
         )  # (search_width, n_optim_ids)
 
-        return new_ids, sampled_ids_pos
+        return new_ids, sampled_ids_pos, None, flops_grad
 
     def compute_token_gradient(
         self,
@@ -868,4 +887,5 @@ class SubstitutionSelectionStrategy:
             create_graph=False,
             retain_graph=False
         )[0]
-        return optim_ids_onehot_grad
+        flops = get_flops(model, input_embeds.shape[0]*input_embeds.shape[1], 0, "forward_and_backward")
+        return optim_ids_onehot_grad, flops

@@ -66,6 +66,7 @@ class PrefillingAttack(Attack):
                         model_completions=completions[i],
                         time_taken=(t_end - t_start) / B,
                         loss=None,
+                        flops=0,
                         model_input=dataset[i],
                         model_input_tokens=token_list[i].tolist(),
                     )

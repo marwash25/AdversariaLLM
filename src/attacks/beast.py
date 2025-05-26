@@ -13,13 +13,13 @@ Implementation adapted from https://github.com/dreadnode/research/blob/main/note
 import time
 from dataclasses import dataclass, field
 from functools import partial
-
+import copy
 import torch
 from tqdm import trange
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from src.lm_utils import (generate_ragged_batched, get_disallowed_ids,
-                          with_max_batchsize, prepare_conversation)
+                          with_max_batchsize, prepare_conversation, get_flops)
 
 from src.attacks.attack import Attack, AttackResult, GenerationConfig, SingleAttackRunResult, AttackStepResult
 from src.types import Conversation
@@ -64,7 +64,7 @@ class BEASTAttack(Attack):
                 completions, and execution times.
         """
         t_start = time.time()
-        attacks, losses, times, prompts, token_list = [], [], [], [], []
+        attacks, losses, times, prompts, token_list, flops_list = [], [], [], [], [], []
 
         # Get disallowed token IDs once
         self.disallowed_ids = get_disallowed_ids(
@@ -90,34 +90,41 @@ class BEASTAttack(Attack):
             # Compute KV cache for prefix tokens
             if self.config.use_prefix_cache:
                 self.populate_prefix_cache(model, pre_tokens, prompt_tokens)
+                flops_prefix = get_flops(model, pre_tokens.numel() + prompt_tokens.numel(), 0, "forward")
+            else:
+                flops_prefix = 0
 
-            initial_ppl = self.get_perplexity(
+            initial_ppl, flops_ppl = self.get_perplexity(
                 model,
                 pre_tokens,
                 prompt_tokens,
                 [attack_tokens],
                 post_tokens,
                 target_tokens,
-            )[0]
+            )
+            initial_ppl = initial_ppl[0]
 
             # Initial sampling
-            beams = self.sample(
+            beams, flops_sample = self.sample(
                 model,
                 k=self.config.k1,
                 pre_tokens=pre_tokens,
                 prompt_tokens=prompt_tokens,
                 attack_token_list=[attack_tokens],
                 post_tokens=post_tokens,
-            )[0]  # shape is (k1,)
+            )  # shape is (k1,)
+            beams = beams[0]
+            flops = flops_prefix + flops_ppl + flops_sample
             per_sample_attacks = [""]
             per_sample_times = [time.time() - t0]
             per_sample_losses = [torch.log(torch.tensor(initial_ppl)).item()]
-
+            per_sample_flops = [flops]
             beams: list[torch.LongTensor] = [torch.LongTensor([]) for b in beams]
             for i in (pbar := trange(1, self.config.num_steps)):
+                flops = 0
                 t1 = time.time()
                 # Get next K1 x K2 candidates
-                next_tokens = self.sample(
+                next_tokens, flops_sample = self.sample(
                     model,
                     self.config.k2,
                     pre_tokens,
@@ -132,7 +139,7 @@ class BEASTAttack(Attack):
                     candidates.extend([torch.cat((beam, t.unsqueeze(0))) for t in next_token])
 
                 # Score candidates
-                scores = self.get_perplexity(
+                scores, flops_ppl = self.get_perplexity(
                     model,
                     pre_tokens,
                     prompt_tokens,
@@ -144,6 +151,7 @@ class BEASTAttack(Attack):
                 # Take the K1 best by lowest score
                 sorting_indices = torch.tensor(scores).argsort().tolist()
                 beams = [candidates[i] for i in sorting_indices[:self.config.k1]]
+                flops = flops_sample + flops_ppl
 
                 # Record best result
                 best_idx = sorting_indices[0]
@@ -153,11 +161,13 @@ class BEASTAttack(Attack):
 
                 per_sample_attacks.append(best_suffix)
                 per_sample_losses.append(best_loss)
+                per_sample_flops.append(flops)
                 pbar.set_postfix({"loss": best_loss, "attack": best_suffix})
                 per_sample_times.append(time.time() - t1)
 
             losses.append(per_sample_losses)
             times.append(per_sample_times)
+            flops_list.append(per_sample_flops)
             # Prepare tokens for generation
             attack_conversations = []
             token_list_batch = []
@@ -197,6 +207,7 @@ class BEASTAttack(Attack):
                     model_completions=outputs[i*self.config.num_steps + j],
                     time_taken=times[i][j],
                     loss=losses[i][j],
+                    flops=flops_list[i][j],
                     model_input=attacks[i][j],
                     model_input_tokens=token_list[i*self.config.num_steps + j].tolist()
                 )
@@ -224,7 +235,7 @@ class BEASTAttack(Attack):
         attack_tokens_list,
         post_tokens,
         target_tokens,
-    ) -> list[float]:
+    ) -> tuple[list[float], int]:
         # Create tensor based on whether prefix cache is available
         T_cur = attack_tokens_list[0].size(0)
         T = self.config.num_steps
@@ -266,16 +277,16 @@ class BEASTAttack(Attack):
 
         def get_log_probs(target_tokens, attention_mask, x):
             # Expand prefix cache to match batch size if available
-            expanded_prefix_cache = None
+            cache = None
             if self.prefix_cache is not None:
-                expanded_prefix_cache = tuple(
-                    tuple(t.expand(x.size(0), -1, -1, -1) for t in layer)
-                    for layer in self.prefix_cache
-                )
+                cache = copy.deepcopy(self.prefix_cache)
+                for i in range(len(cache)):
+                    cache.key_cache[i] = cache.key_cache[i].expand(x.size(0), -1, -1, -1)
+                    cache.value_cache[i] = cache.value_cache[i].expand(x.size(0), -1, -1, -1)
             attention_mask = attention_mask.unsqueeze(0).repeat(x.size(0), 1).to(model.device)
 
             # Get logits and compute log probabilities
-            logits = model(input_ids=x.to(model.device), past_key_values=expanded_prefix_cache, attention_mask=attention_mask).logits
+            logits = model(input_ids=x.to(model.device), past_key_values=cache, attention_mask=attention_mask).logits
             output_logits = logits[:, -target_tokens.shape[0]:]
             log_probs = torch.nn.functional.log_softmax(output_logits, dim=-1).cpu()
 
@@ -291,9 +302,10 @@ class BEASTAttack(Attack):
 
         # Process in batches
         mean_log_probs = with_max_batchsize(get_log_probs_fn, tensor[:, :-1], initial_batch_size=512)
+        flops = get_flops(model, tensor[:, :-1].numel(), 0, "forward")
 
         perplexity = torch.exp(-mean_log_probs).tolist()
-        return perplexity
+        return perplexity, flops
 
     def sample(
         self,
@@ -303,7 +315,7 @@ class BEASTAttack(Attack):
         prompt_tokens,
         attack_token_list,
         post_tokens,
-    ) -> torch.LongTensor:
+    ) -> tuple[torch.LongTensor, int]:
         if self.prefix_cache is not None:
             # Use the prefix cache to avoid recomputing the prefix
             tensor = torch.stack([
@@ -312,20 +324,21 @@ class BEASTAttack(Attack):
             ]).to(model.device)
 
             # Expand cache to match batch size
-            expanded_prefix_cache = tuple(
-                tuple(t.expand(tensor.size(0), -1, -1, -1) for t in layer)
-                for layer in self.prefix_cache
-            )
+            cache = copy.deepcopy(self.prefix_cache)
+            for i in range(len(cache)):
+                cache.key_cache[i] = cache.key_cache[i].expand(tensor.size(0), -1, -1, -1)
+                cache.value_cache[i] = cache.value_cache[i].expand(tensor.size(0), -1, -1, -1)
         else:
             # Fall back to the original implementation if prefix cache is not available
             tensor = torch.stack([
                 torch.cat([pre_tokens, prompt_tokens, attack_tokens, post_tokens])
                 for attack_tokens in attack_token_list
             ]).to(model.device)
-            expanded_prefix_cache = None
+            cache = None
 
         # Get logits for next token prediction
-        logits = model(input_ids=tensor, past_key_values=expanded_prefix_cache).logits[:, -1, :]
+        logits = model(input_ids=tensor, past_key_values=cache).logits[:, -1, :]
+        flops = get_flops(model, tensor.numel(), 0, "forward")
 
         # Filter out disallowed tokens
         if self.disallowed_ids is not None:
@@ -333,4 +346,4 @@ class BEASTAttack(Attack):
 
         probs = torch.softmax(logits / self.config.search_temperature, dim=-1)
         tokens = torch.multinomial(probs, k, replacement=False)
-        return tokens.cpu()  # Return as CPU tensor
+        return tokens.cpu(), flops   # Return as CPU tensor

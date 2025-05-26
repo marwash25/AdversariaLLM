@@ -1118,3 +1118,34 @@ def filter_suffix(
             f"{recon_ids[-1][1], recon_ids[-1][3]}"
         )
     return retain_idx
+
+
+def get_flops(model: PreTrainedModel, n_tokens_in: int, n_tokens_out: int, type: Literal["forward", "backward", "forward_and_backward"]) -> int:
+    """Estimate FLOPS for a model using Kaplan et al. (2020).
+    Basic formula is 2 * n_params * n_tokens, and twice that for backwards passes
+
+    Parameters
+    ----------
+    model : PreTrainedModel
+        The model to estimate FLOPS for.
+    n_tokens_in : int
+        The number of tokens to estimate FLOPS for.
+    n_tokens_out : int
+        The number of tokens to estimate FLOPS for.
+    type : Literal["forward", "backward", "forward_and_backward"]
+        Operations to include in the FLOPS calculation.
+
+    Returns
+    -------
+    int
+        The estimated FLOPS.
+    """
+    n_tokens = n_tokens_in + n_tokens_out
+    if type == "forward":
+        return model.num_parameters(exclude_embeddings=True) * n_tokens * 2
+    elif type == "backward":
+        return model.num_parameters(exclude_embeddings=True) * n_tokens * 4
+    elif type == "forward_and_backward":
+        return model.num_parameters(exclude_embeddings=True) * n_tokens * 6
+    else:
+        raise ValueError(f"Invalid type: {type}")
