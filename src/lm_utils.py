@@ -4,15 +4,17 @@ import random
 import string
 import sys
 from functools import lru_cache
-from typing import Callable, Literal
+from typing import Callable, Literal, Optional
 
+import regex
+import json5
 import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 from transformers import DynamicCache, HybridCache, PreTrainedModel, PreTrainedTokenizerBase
 
-from src.attacks.attack import Conversation
+from src.types import Conversation, JsonSchema
 from src.io_utils import free_vram
 
 
@@ -174,6 +176,7 @@ def generate_ragged(
     top_p: float = 1.0,
     top_k: int = 0,
     num_return_sequences: int = 1,
+    json_schema: JsonSchema = None
 ) -> list[list[str]] | list[list[torch.Tensor]]:
     """
     Generate completions for multiple prompts in a single batch.
@@ -254,6 +257,8 @@ def generate_ragged(
     stop_ids = get_stop_token_ids(model, tokenizer).to(model.device)
     idx_range = torch.arange(B, device=model.device)
     all_tokens = []
+    token_filter = JSONFilter(json_schema, tokenizer, B) if json_schema else NullFilter()
+    prev_tokens = torch.full((B,), tokenizer.pad_token_id, device=model.device)
     for i in range(num_return_sequences):
         tokens = torch.full((B, max_new_tokens), tokenizer.pad_token_id, device=model.device)
         finished = torch.zeros(B, dtype=torch.bool, device=model.device)
@@ -293,6 +298,7 @@ def generate_ragged(
                     position_ids=position_ids[:, :next_token_idx],
                 )
                 logits = outputs.logits[:, -1]
+                logits = token_filter.step(prev_tokens, logits)
                 next_tokens = sample_next_token(logits)
                 padded_embeddings[idx_range, next_token_idx] = (
                     model.get_input_embeddings()(next_tokens).detach()
@@ -302,6 +308,8 @@ def generate_ragged(
                 if finished.all():
                     logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
                     break
+                prev_tokens.fill_(tokenizer.pad_token_id)     # reset sentinel
+                prev_tokens[~finished] = next_tokens[~finished]
                 next_token_idx += 1
         elif padding_side == "right":
             # Add right padding
@@ -369,8 +377,11 @@ def generate_ragged(
 
                     logits_out = torch.empty((B, logits.size(2)), dtype=model.dtype, device=model.device)
                     logits_out[~finished] = logits[:, 0]
+                    logits_out = token_filter.step(prev_tokens, logits_out)
                     next_tokens = torch.full((B,), tokenizer.eos_token_id, device=model.device)
                     next_tokens[generating] = sample_next_token(logits_out[generating])
+                    prev_tokens.fill_(tokenizer.pad_token_id)
+                    prev_tokens[generating] = next_tokens[generating]
 
                     padded_embeddings[idx_range[generating], next_token_idx.min()] = model.get_input_embeddings()(next_tokens[generating])
                     tokens[generating, lengths[generating]] = next_tokens[generating]
@@ -400,6 +411,7 @@ def generate_ragged(
                 for i in range(max_new_tokens):
                     outputs = model(inputs_embeds=padded_embeddings[:, : next_token_idx.max()])
                     logits = outputs.logits[torch.arange(B), next_token_idx - 1]
+                    logits = token_filter.step(prev_tokens, logits)
                     next_tokens = sample_next_token(logits)
                     padded_embeddings[idx_range, next_token_idx] = (
                         model.get_input_embeddings()(next_tokens)
@@ -409,6 +421,8 @@ def generate_ragged(
                     if finished.all():
                         logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
                         break
+                    prev_tokens.fill_(tokenizer.pad_token_id)     # reset sentinel
+                    prev_tokens[~finished] = next_tokens[~finished]
                     next_token_idx += 1
         else:
             raise ValueError(f"Unknown padding_side: {padding_side}")
@@ -1156,3 +1170,72 @@ def get_flops(model: PreTrainedModel, n_tokens_in: int, n_tokens_out: int, type:
         return model.num_parameters(exclude_embeddings=True) * n_tokens * 6
     else:
         raise ValueError(f"Invalid type: {type}")
+
+class NullFilter:  # <- used when json_schema=None
+    def step(
+        self,
+        token_histories: list[list[int]],  # token IDs so far, per row
+        logits: torch.Tensor,  # (B, vocab)
+    ) -> torch.Tensor:
+        return logits  # no masking
+
+
+class JSONFilter:
+    """One-per-call helper that masks logits so the next token keeps every
+    sequence JSON-schema valid.  Internally uses lm-format-enforcer.TokenEnforcer.
+    """
+
+    def __init__(self, schema: dict, tokenizer: PreTrainedTokenizerBase, batch_size: int):
+        # ── lazy import: users who never request JSON output needn't pip-install
+        from lmformatenforcer import JsonSchemaParser
+        from lmformatenforcer.integrations.transformers import (
+            build_token_enforcer_tokenizer_data,
+        )
+        from lmformatenforcer.tokenenforcer import TokenEnforcer
+
+        tok_data = build_token_enforcer_tokenizer_data(tokenizer)
+        self.enforcers: list[TokenEnforcer] = [
+            TokenEnforcer(tok_data, JsonSchemaParser(schema)) for _ in range(batch_size)
+        ]
+        self.token_histories = [[] for _ in range(batch_size)]
+        self.PAD = tokenizer.pad_token_id  # sentinel for “no new token”
+        self.tokenizer = tokenizer
+
+    # ---------------------------------------------------------------- #
+    # one call per generation step: advance each parser *and* mask logits
+    # ---------------------------------------------------------------- #
+    def step(self, prev_tokens: torch.LongTensor, logits: torch.Tensor) -> torch.Tensor:
+        B = logits.size(0)
+        # ① advance each parser with last step’s token (if any)
+        for i in range(B):
+            tid = prev_tokens[i].item()
+            if tid != self.PAD:
+                self.token_histories[i].append(tid)
+
+        # ② mask logits so only schema-legal IDs survive
+        masked = torch.full_like(logits, float("-inf"))
+        vocab = logits.shape[1]
+        for i, flt in enumerate(self.enforcers):
+            allowed = [idx for idx in flt.get_allowed_tokens(self.token_histories[i]) if 0 <= idx < vocab]
+            masked[i, allowed] = logits[i, allowed]
+        return masked
+
+
+def parse_json_response(output: str) -> Optional[dict]:
+    """
+    Attempts to extract and parse a JSON object from a string.
+    Uses json5 for more lenient parsing. Returns None if parsing fails.
+    """
+    try:
+        # Match the first valid-looking JSON object in the output
+        match = regex.search(r'\{(?:[^{}]|(?R))*\}', output, regex.DOTALL)
+        if not match:
+            raise ValueError("No JSON object found in the response.")
+
+        json_str = match.group(0)
+        data = json5.loads(json_str)
+        return data
+
+    except Exception as e:
+        print(f"[Error] Failed to parse JSON response from {output}: {e}")
+        return None
