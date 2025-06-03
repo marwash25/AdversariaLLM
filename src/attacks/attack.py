@@ -58,6 +58,9 @@ class AttackStepResult:
 class SingleAttackRunResult:
     """Stores the results of running a single attack on a single conversation."""
     # The original multi-turn conversation from the dataset
+    # We include the target response (usually `Sure, here's how to...`) as the
+    # assistant message in the original conversation to make it easier to reproduce
+    # results in the future.
     original_prompt: Conversation
 
     # Results for each step of the attack
