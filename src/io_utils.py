@@ -396,6 +396,27 @@ def check_match(doc_fragment, filter_fragment):
     return doc_fragment == filter_fragment
 
 
+def normalize_value_for_grouping(value):
+    """
+    Normalize a value for consistent grouping.
+
+    Converts numeric values to a canonical form to ensure that 0 and 0.0,
+    or 1 and 1.0, etc. are treated as identical for grouping purposes.
+    For dictionaries and lists, recursively normalizes all contained values.
+    """
+    if isinstance(value, dict):
+        return {k: normalize_value_for_grouping(v) for k, v in value.items()}
+    elif isinstance(value, (list, tuple)):
+        normalized_list = [normalize_value_for_grouping(item) for item in value]
+        return type(value)(normalized_list)  # preserve the original type (list or tuple)
+    elif isinstance(value, (int, float)):
+        # Convert to int if it's a whole number, otherwise keep as float
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        return value
+    return value
+
+
 def get_nested_value(data: dict, path: list[str], default="unknown"):
     """
     Safely retrieves a value from a nested dictionary using a path list/tuple.
@@ -463,11 +484,13 @@ def get_filtered_and_grouped_paths(filter_by, group_by) -> dict[tuple[str], list
         for key_spec in group_by:
             if isinstance(key_spec, str):
                 value = get_nested_value(config_data, [key_spec])
-                group_key_parts.append(f"{key_spec}={value}")
+                normalized_value = normalize_value_for_grouping(value)
+                group_key_parts.append(f"{key_spec}={normalized_value}")
             elif isinstance(key_spec, (list, tuple)):
                 value = get_nested_value(config_data, key_spec)
-                key_name = '.'.join(map(str, key_spec))  # Ensure sub-keys are strings for join
-                group_key_parts.append(f"{key_name}={value}")
+                normalized_value = normalize_value_for_grouping(value)
+                key_name = '.'.join(map(str, key_spec))
+                group_key_parts.append(f"{key_name}={normalized_value}")
             else:
                 group_key_parts.append(f"invalid_group_spec={key_spec}")
 
@@ -529,7 +552,8 @@ def collect_results(paths, infer_sampling_flops=False) -> dict[tuple[str], dict[
                     if infer_sampling_flops:
                         max_new_tokens = results["config"]["attack_params"]["generation_config"]["max_new_tokens"]
                         model_params = num_model_params(results["config"]["model_params"]["id"])
-                        step["flops_sampling"] = model_params * (max_new_tokens + len(step["model_input_tokens"])) * 2
+                        step["flops_sampling_prefill_cache"] = model_params * len(step["model_input_tokens"]) * 2
+                        step["flops_sampling_generation"] = model_params * max_new_tokens * 2
                     for metric in step.keys():
                         # this will fill collected_metrics with values from step[metric]
                         # and handles nested containers

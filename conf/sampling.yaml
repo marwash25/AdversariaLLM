@@ -13,16 +13,19 @@ hydra:
     dir: ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
 
 name: testing
-num_return_sequences: 50  # we generate completions such that the final result has num_return_sequences completions
+save_dir: ${root_dir}/outputs/
+num_return_sequences: 100  # we generate completions such that the final result has num_return_sequences completions
 
 filter_by:
   model: meta-llama/Meta-Llama-3.1-8B-Instruct
   attack: gcg
   attack_params:
     num_steps: 250
+    loss: ce
+    token_selection: default
     generation_config:
       num_return_sequences: 50
   dataset_params:
-    idx: "list(range(0,20))"
+    idx: 0
 
 

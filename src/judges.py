@@ -402,4 +402,3 @@ CLASS:
             categories.append(answer_category)
 
         return {"category": categories}
-

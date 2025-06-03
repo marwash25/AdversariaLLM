@@ -140,6 +140,7 @@ class DirectAttack(Attack):
                 model_completions=model_completions,
                 time_taken=(t1 - t0) / B,
                 loss=loss,
+                flops=0,
                 model_input=model_input,
                 model_input_tokens=model_input_tokens,
             )
