@@ -193,6 +193,30 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
         tgt_dist[0, 0, disallowed_ids] = 0
         loss = torch.nn.functional.kl_div(probs, tgt_dist.expand(B, T, -1), reduction="none") # (B, T, D) -> (B, T)
         loss = loss[:, 0] # (B, T) -> (B,)
+    elif loss_type == "kl_allowed_only":
+        probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
+        B, T, D = probs.shape
+        import json
+        allowed_ids = json.load(open("/ceph/ssd/staff/beyer/llm-quick-check/cache/google/gemma-3-1b-it/normal_tokens.json"))
+        N_valid = len(allowed_ids)
+        mask = torch.ones((1, 1, D), device=probs.device, dtype=torch.bool)
+        mask[0, 0, allowed_ids] = False
+        tgt_dist = torch.full((1, 1, D), device=probs.device, fill_value=1 / N_valid)
+        tgt_dist[mask] = 0
+        loss = torch.nn.functional.kl_div(probs, tgt_dist.expand(B, T, -1), reduction="none") # (B, T, D) -> (B, T)
+        loss = loss[:, 0] # (B, T) -> (B,)
+    elif loss_type == "kl_allowed_only_all_tokens":
+        probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
+        B, T, D = probs.shape
+        import json
+        allowed_ids = json.load(open("/ceph/ssd/staff/beyer/llm-quick-check/cache/google/gemma-3-1b-it/normal_tokens.json"))
+        N_valid = len(allowed_ids)
+        mask = torch.ones((1, 1, D), device=probs.device, dtype=torch.bool)
+        mask[0, 0, allowed_ids] = False
+        tgt_dist = torch.full((1, 1, D), device=probs.device, fill_value=1 / N_valid)
+        tgt_dist[mask] = 0
+        loss = torch.nn.functional.kl_div(probs, tgt_dist.expand(B, T, -1), reduction="none") # (B, T, D) -> (B, T)
+        loss = loss.mean(dim=1) # (B, T) -> (B,)
     else:
         raise NotImplementedError(f"Loss function {loss_type} not implemented")
 

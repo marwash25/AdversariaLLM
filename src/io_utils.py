@@ -536,14 +536,14 @@ def _gather(value, prefix: tuple[str], out):
     and store it under its full path.
     """
     # leaf node: number or list of numbers
-    if isinstance(value, (int, float)) or isinstance(value, list) and isinstance(value[0], (int, float)):
+    if isinstance(value, (int, float, str)) or isinstance(value, list) and isinstance(value[0], (int, float, str)):
         if len(prefix) == 1:
             prefix = prefix[0]
         out[prefix].append(value)
     elif isinstance(value, dict):                     # keep descending
         for k, v in value.items():
             _gather(v, prefix + (k,), out)
-    elif isinstance(value, list):                     # either a list of dicts or a list of numbers
+    elif isinstance(value, list):                     # list of containers
         if value and isinstance(value[0], (dict, list)):
             for v in value:
                 _gather(v, prefix, out)               # sub-lists of dicts

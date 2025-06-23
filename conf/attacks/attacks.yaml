@@ -101,6 +101,7 @@ beast:
   allow_non_ascii: True
   allow_special: False
   use_prefix_cache: True
+  mask_undecided_tokens: False
 bon:
   name: bon
   type: discrete

@@ -28,8 +28,6 @@ def select_configs(cfg: DictConfig, name: str | ListConfig | None) -> list[tuple
 
 
 def collect_configs(cfg: DictConfig) -> list[RunConfig]:
-    if hasattr(cfg, 'model_name') or hasattr(cfg, 'dataset_name') or hasattr(cfg, 'attack_name'):
-        raise ValueError("model_name, dataset_name, and attack_name are deprecated. Use model, dataset, and attack instead.")
     models_to_run = select_configs(cfg.models, cfg.model)
     datasets_to_run = select_configs(cfg.datasets, cfg.dataset)
     attacks_to_run = select_configs(cfg.attacks, cfg.attack)

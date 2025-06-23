@@ -41,6 +41,7 @@ class BEASTConfig:
     allow_non_ascii: bool = False
     allow_special: bool = False
     use_prefix_cache: bool = True
+    mask_undecided_tokens: bool = False
 
 
 class BEASTAttack(Attack):
@@ -73,6 +74,7 @@ class BEASTAttack(Attack):
             self.config.allow_non_ascii,
             self.config.allow_special
         ).to(model.device)
+        self.disallowed_ids = self.disallowed_ids[self.disallowed_ids < model.get_input_embeddings().weight.size(0)]
 
         for conversation in dataset:
             t0 = time.time()
@@ -89,7 +91,7 @@ class BEASTAttack(Attack):
             )[0]
 
             # Compute KV cache for prefix tokens
-            if self.config.use_prefix_cache:
+            if self.config.use_prefix_cache and "gemma" not in model.name_or_path:
                 self.populate_prefix_cache(model, pre_tokens, prompt_tokens)
                 flops_prefix = get_flops(model, pre_tokens.numel() + prompt_tokens.numel(), 0, "forward")
             else:
@@ -256,8 +258,11 @@ class BEASTAttack(Attack):
                 padded_attack_tokens_list.append(attack_tokens)
         # Replace original list with padded version
         attack_tokens_list = padded_attack_tokens_list
-        attention_mask = torch.zeros(T, dtype=torch.long, device=attack_tokens_list[0].device)
-        attention_mask[:T_cur] = 1
+        if self.config.mask_undecided_tokens:
+            attention_mask = torch.zeros(T, dtype=torch.long, device=attack_tokens_list[0].device)
+            attention_mask[:T_cur] = 1
+        else:
+            attention_mask = None
 
         if self.prefix_cache is not None:
             # With prefix cache, we don't need to include prefix tokens
@@ -271,20 +276,24 @@ class BEASTAttack(Attack):
                 torch.cat([pre_tokens, prompt_tokens, attack_tokens, post_tokens, target_tokens])
                 for attack_tokens in attack_tokens_list
             ]
-        attention_mask = torch.cat([torch.ones(pre_tokens.size(0) + prompt_tokens.size(0)), attention_mask, torch.ones(post_tokens.size(0) + target_tokens.size(0))])
-        attention_mask = attention_mask.to(model.device)
+        if attention_mask is not None:
+            attention_mask = torch.cat([torch.ones(pre_tokens.size(0) + prompt_tokens.size(0)), attention_mask, torch.ones(post_tokens.size(0) + target_tokens.size(0))])
+            attention_mask = attention_mask[:-1].to(model.device)
 
         tensor = torch.stack(tokens_to_concat)
 
         def get_log_probs(target_tokens, attention_mask, x):
+            B = x.size(0)
             # Expand prefix cache to match batch size if available
-            cache = None
             if self.prefix_cache is not None:
                 cache = copy.deepcopy(self.prefix_cache)
-                for i in range(len(cache)):
-                    cache.key_cache[i] = cache.key_cache[i].expand(x.size(0), -1, -1, -1)
-                    cache.value_cache[i] = cache.value_cache[i].expand(x.size(0), -1, -1, -1)
-            attention_mask = attention_mask.unsqueeze(0).repeat(x.size(0), 1).to(model.device)
+                for i in range(len(cache.key_cache)):
+                    cache.key_cache[i] = cache.key_cache[i].expand(B, -1, -1, -1)
+                    cache.value_cache[i] = cache.value_cache[i].expand(B, -1, -1, -1)
+            else:
+                cache = None
+            if attention_mask is not None:
+                attention_mask = attention_mask.unsqueeze(0).repeat(B, 1).to(model.device)
 
             # Get logits and compute log probabilities
             logits = model(input_ids=x.to(model.device), past_key_values=cache, attention_mask=attention_mask).logits

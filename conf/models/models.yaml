@@ -169,6 +169,15 @@ meta-llama/Llama-2-7b-chat-hf:
   dtype: bfloat16
   chat_template: llama-2-chat
   trust_remote_code: True
+Unispac/Llama2-7B-Chat-Augmented:
+  id: Unispac/Llama2-7B-Chat-Augmented
+  tokenizer_id: Unispac/Llama2-7B-Chat-Augmented
+  short_name: Llama
+  developer_name: Meta
+  compile: False
+  dtype: bfloat16
+  chat_template: llama-2-chat
+  trust_remote_code: True
 ContinuousAT/Llama-2-7B-CAT:
   id: ContinuousAT/Llama-2-7B-CAT
   tokenizer_id: meta-llama/Llama-2-7b-chat-hf
