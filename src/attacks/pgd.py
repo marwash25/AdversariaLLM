@@ -55,6 +55,7 @@ class PGDConfig:
     attack_space: str = "embedding"
     random_restart_interval: int = 0
     random_restart_epsilon: float = 0.1
+    log_embeddings: bool = False
 
 
 class PGDAttack(Attack):
@@ -300,11 +301,17 @@ class PGDAttack(Attack):
              # Create step results, but only the last one has meaningful completions here
              steps = []
              for step in range(self.config.num_steps):
-                 steps.append(AttackStepResult(
+                if self.config.log_embeddings:
+                     model_input_embeddings = batch_perturbed_embeddings_list[i][step].cpu()
+                else:
+                    model_input_embeddings = None
+                steps.append(AttackStepResult(
                      step=step,
                      model_completions=outputs[i * self.config.num_steps + step],
                      time_taken=batch_times[i][step],
                      loss=batch_losses[i][step],
+                     model_input_embeddings=model_input_embeddings,
+                     model_input=original_conversations_batch[i],
                  ))
              input_conversation = original_conversations_batch[i]
              runs.append(SingleAttackRunResult(

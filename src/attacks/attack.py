@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from abc import abstractmethod
+from typing import Union
 
+from torch import Tensor
 import transformers
 from beartype import beartype
 from beartype.typing import Literal, Optional, Generic, TypeVar
@@ -51,6 +53,8 @@ class AttackStepResult:
     model_input: Optional[Conversation] = None
     # Actual unrolled input tokens (i.e. including the system prompt, if present)
     model_input_tokens: Optional[list[int]] = None
+
+    model_input_embeddings: Optional[Union[Tensor, str]] = None
 
 
 @beartype
