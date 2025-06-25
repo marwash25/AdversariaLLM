@@ -12,6 +12,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from pymongo import MongoClient
 from pymongo.synchronous.database import Database
+import safetensors.torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from transformers.utils.logging import disable_progress_bar
 
@@ -253,27 +254,27 @@ class RunConfig:
     attack_params: dict
 
 
-def offload_tensors(cfg: DictConfig, result: AttackResult):
+def offload_tensors(cfg: DictConfig, run_config: dict, result: AttackResult):
     """Offload tensors from the AttackResult to separate .safetensors"""
+    if not any(step.model_input_embeddings is not None for run in result.runs for step in run.steps):
+        return
+
     assert cfg.embed_dir is not None, "cfg.embed_dir must be set to offload tensors"
     if not os.path.exists(cfg.embed_dir):
         os.makedirs(cfg.embed_dir, exist_ok=True)
-    
+
     for i, run in enumerate(result.runs):
         for j, step in enumerate(run.steps):
             if step.model_input_embeddings is not None:
-                run_hash = hashlib.sha256(f"{run.original_prompt} {step.model_completions}, {step.step}".encode()).hexdigest()
+                run_hash = hashlib.sha256(f"{str(run_config)} {run.original_prompt} {step.model_completions}, {step.step}".encode()).hexdigest()
                 filename = f"{run_hash}.safetensors"
                 embed_path = os.path.join(cfg.embed_dir, filename)
-                import safetensors.torch
                 safetensors.torch.save_file({"embeddings": step.model_input_embeddings}, embed_path)
                 logging.info(f"Saved embeddings for run {i}, step {j} to {embed_path}")
                 step.model_input_embeddings = embed_path
 
 def log_attack(run_config: RunConfig, result: AttackResult, cfg: DictConfig, date_time_string: str):
     """Logs the attack results to a JSON file and MongoDB."""
-
-    offload_tensors(cfg, result)
 
     save_dir = cfg.save_dir
     # Create a structured log message as a JSON object
@@ -283,6 +284,8 @@ def log_attack(run_config: RunConfig, result: AttackResult, cfg: DictConfig, dat
     log_message = {
         "config": OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)
     }
+    offload_tensors(cfg, log_message["config"], result)
+
     log_message.update(asdict(result))
     # Find the first available run_i.json file
     i = 0
