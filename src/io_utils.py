@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 
 import orjson
+import safetensors.torch
 import torch
 from omegaconf import DictConfig, OmegaConf
 from pymongo import MongoClient
@@ -254,29 +255,31 @@ class RunConfig:
     attack_params: dict
 
 
-def offload_tensors(cfg: DictConfig, run_config: dict, result: AttackResult):
+def offload_tensors(run_config: RunConfig, result: AttackResult, embed_dir: str):
     """Offload tensors from the AttackResult to separate .safetensors"""
+    assert embed_dir is not None, "embed_dir must be set to offload tensors"
     if not any(step.model_input_embeddings is not None for run in result.runs for step in run.steps):
         return
 
-    assert cfg.embed_dir is not None, "cfg.embed_dir must be set to offload tensors"
-    if not os.path.exists(cfg.embed_dir):
-        os.makedirs(cfg.embed_dir, exist_ok=True)
+    if not os.path.exists(embed_dir):
+        os.makedirs(embed_dir, exist_ok=True)
 
     for i, run in enumerate(result.runs):
         for j, step in enumerate(run.steps):
             if step.model_input_embeddings is not None:
                 run_hash = hashlib.sha256(f"{str(run_config)} {run.original_prompt} {step.model_completions}, {step.step}".encode()).hexdigest()
                 filename = f"{run_hash}.safetensors"
-                embed_path = os.path.join(cfg.embed_dir, filename)
+                embed_path = os.path.join(embed_dir, filename)
                 safetensors.torch.save_file({"embeddings": step.model_input_embeddings}, embed_path)
                 logging.info(f"Saved embeddings for run {i}, step {j} to {embed_path}")
                 step.model_input_embeddings = embed_path
+
 
 def log_attack(run_config: RunConfig, result: AttackResult, cfg: DictConfig, date_time_string: str):
     """Logs the attack results to a JSON file and MongoDB."""
 
     save_dir = cfg.save_dir
+    embed_dir = cfg.embed_dir
     # Create a structured log message as a JSON object
     OmegaConf.resolve(run_config.attack_params)
     OmegaConf.resolve(run_config.dataset_params)
@@ -284,7 +287,7 @@ def log_attack(run_config: RunConfig, result: AttackResult, cfg: DictConfig, dat
     log_message = {
         "config": OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)
     }
-    offload_tensors(cfg, log_message["config"], result)
+    offload_tensors(run_config, result, embed_dir)
 
     log_message.update(asdict(result))
     # Find the first available run_i.json file
@@ -372,14 +375,15 @@ def filter_config(run_config: RunConfig, dset_len: int, overwrite: bool = False)
     return run_config
 
 
-def delete_orphaned_runs():
+def delete_orphaned_runs(dry_run: bool = False):
     db = get_mongodb_connection()
     items = db.runs.find()
     for item in items:
         log_file = item["log_file"]
         if not os.path.exists(log_file):
             print(f"Log file not found: {log_file}, deleting from database")
-            db.runs.delete_one({"_id": item["_id"]})
+            if not dry_run:
+                db.runs.delete_one({"_id": item["_id"]})
 
 
 def check_match(doc_fragment, filter_fragment):
@@ -629,6 +633,6 @@ def load_embedding(path):
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Embedding file not found: {path}")
-    
+
     # Load the embedding from the file
     return safetensors.torch.load_file(path, device="cpu")["embeddings"]

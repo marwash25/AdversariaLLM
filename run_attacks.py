@@ -17,6 +17,7 @@ from run_judges import run_judges
 
 torch.use_deterministic_algorithms(True, warn_only=True)
 torch.backends.cuda.matmul.allow_tf32 = True
+torch._dynamo.config.recompile_limit = 512  # needed for gemma 3 on AutoDAN
 
 
 def select_configs(cfg: DictConfig, name: str | ListConfig | None) -> list[tuple[str, DictConfig]]:
@@ -58,6 +59,8 @@ def run_attacks(all_run_configs: list[RunConfig], cfg: DictConfig, date_time_str
     last_dataset = None
     last_attack = None
     for run_config in all_run_configs:
+        # To avoid reloading the model and dataset for every attack,
+        # we only reload something if it's different from the last run
         if last_model != run_config.model:
             logging.info(f"Target: {run_config.model}\n{OmegaConf.to_yaml(run_config.model_params, resolve=True)}")
             last_model = run_config.model
@@ -87,7 +90,9 @@ def main(cfg: DictConfig) -> None:
 
     # 1. Parse/Collect configs for the judge and the attacks
     OmegaConf.set_struct(cfg, False)
-    judges_to_run = cfg.pop('classifiers')  # remove from config to avoid saving to mongodb
+    # Remove classifiers from config to avoid saving to mongodb
+    # This way we don't re-run the attacks when only the classifiers change
+    judges_to_run = cfg.pop('classifiers')
     OmegaConf.set_struct(cfg, True)
 
     all_run_configs = collect_configs(cfg)

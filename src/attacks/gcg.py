@@ -31,6 +31,7 @@ import math
 import random
 import sys
 import time
+import string
 
 from dataclasses import dataclass, field
 from functools import partial
@@ -75,9 +76,11 @@ class GCGConfig:
     verbosity: str = "WARNING"
     token_selection: str = "default"
     grow_target: bool = False
+    grad_smoothing: int = 1  # 1 = no smoothing, 2 = smooth over 2 tokens, etc.
+    grad_momentum: float = 0.0  # momentum over steps
 
 
-def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mellowmax_alpha: float = 1.0, disallowed_ids: Tensor = None) -> Tensor:
+def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mellowmax_alpha: float = 1.0, disallowed_ids: Tensor = None, tokenizer: PreTrainedTokenizer = None) -> Tensor:
     """Computes the loss based on the specified loss type.
 
     Args:
@@ -125,7 +128,7 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
     # label-free objectives:
     elif loss_type == "entropy":
         # Maximize entropy of predicted logits
-        log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
+        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
         probs = torch.exp(log_probs)
         entropy = -(probs * log_probs).sum(dim=-1)  # (B, T)
         D = shift_logits.size(-1)
@@ -133,7 +136,7 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
         loss = -entropy.mean(dim=-1) + math.log(D)  # (B, T) -> (B,)
     elif loss_type == "entropy_no_disallowed":
         # Maximize entropy of predicted logits, while excluding disallowed ids
-        log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
+        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
         probs = torch.exp(log_probs)
         B, T, D = probs.shape
         mask = torch.zeros((1,1,D), device=probs.device, dtype=torch.bool)
@@ -149,14 +152,14 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
         loss = entropy_loss + disallowed_loss  # (B, T) -> (B,)
     elif loss_type == "entropy_first_token":
         # Maximize entropy of first token
-        log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
+        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
         probs = torch.exp(log_probs)
         entropy = -(probs * log_probs).sum(dim=-1)  # (B, T)
         # We want to maximize entropy, so we negate it to make it a loss to minimize
         D = shift_logits.size(-1)
         loss = -entropy[:, 0] + math.log(D) # (B, T) -> (B,)
     elif loss_type == "entropy_first_token_high_then_low":
-        log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
+        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
         probs = torch.exp(log_probs)
         entropy = -(probs * log_probs).sum(dim=-1)  # (B, T)
         D = shift_logits.size(-1)
@@ -164,7 +167,7 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
         # Minimize entropy of all other tokens
         loss = -entropy[:, 0] + math.log(D) + entropy[:, 1:].mean(dim=-1)  # (B, T) -> (B,)
     elif loss_type == "entropy_adaptive":
-        log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
+        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
         probs = torch.exp(log_probs)
         entropy = -(probs * log_probs).sum(dim=-1)  # (B, T)
         # Maximize entropy of first token
@@ -186,13 +189,49 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
         probs = torch.nn.functional.softmax(shift_logits[:, 0, :], dim=-1) # (B, T, D) -> (B, D)
         loss = probs.max(dim=-1).values # (B, D) -> (B,)
     elif loss_type == "kl_allowed":
-        probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
-        B, T, D = probs.shape
+        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
+        B, T, D = log_probs.shape
         N_valid = D - len(disallowed_ids)
-        tgt_dist = torch.full((1, 1, D), device=probs.device, fill_value=1 / N_valid)
+        tgt_dist = torch.full((1, 1, D), device=log_probs.device, fill_value=1 / N_valid)
         tgt_dist[0, 0, disallowed_ids] = 0
-        loss = torch.nn.functional.kl_div(probs, tgt_dist.expand(B, T, -1), reduction="none") # (B, T, D) -> (B, T)
+        loss = torch.nn.functional.kl_div(log_probs, tgt_dist.expand(B, T, -1), reduction="none").sum(dim=-1) # (B, T, D) -> (B, T)
         loss = loss[:, 0] # (B, T) -> (B,)
+    elif loss_type == "kl_allowed_fwd":
+        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
+        B, T, D = log_probs.shape
+        N_valid = D - len(disallowed_ids)
+        tgt_dist = torch.full((1, 1, D), device=log_probs.device, fill_value=1 / N_valid)
+        tgt_dist[0, 0, disallowed_ids] = 0
+        model_probs = log_probs.exp()
+        log_tgt = torch.log(tgt_dist + 1e-30)
+        loss = torch.nn.functional.kl_div(
+            log_tgt.expand(B, T, -1),
+            model_probs,
+            reduction="none"
+        )                                 # (B, T, D)
+        loss = loss.sum(dim=-1)[:, 0]  # (B, T, D) -> (B,)
+    elif loss_type == "kl_allowed_fwd_ascii_only":
+        allowed_toks = string.ascii_letters + string.whitespace + string.digits + string.punctuation + tokenizer.convert_ids_to_tokens(tokenizer.encode("a b")[-1:])[0][0]
+        new_disallowed_ids = []
+        for i in range(len(tokenizer)):
+            if i in disallowed_ids:
+                new_disallowed_ids.append(i)
+            elif any(c not in allowed_toks for c in tokenizer.convert_ids_to_tokens([i])[0]):
+                new_disallowed_ids.append(i)
+
+        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
+        B, T, D = log_probs.shape
+        N_valid = D - len(new_disallowed_ids)
+        tgt_dist = torch.full((1, 1, D), device=log_probs.device, fill_value=1 / N_valid)
+        tgt_dist[0, 0, new_disallowed_ids] = 0
+        model_probs = log_probs.exp()
+        log_tgt = torch.log(tgt_dist + 1e-30) # tiny ε avoids log(0) → -inf-nan
+        loss = torch.nn.functional.kl_div(
+            log_tgt.expand(B, T, -1),
+            model_probs,
+            reduction="none"
+        )                                 # (B, T, D)
+        loss = loss.sum(dim=-1)[:, 0]  # (B, T, D) -> (B,)
     else:
         raise NotImplementedError(f"Loss function {loss_type} not implemented")
 
@@ -202,6 +241,7 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
 class GCGAttack(Attack):
     def __init__(self, config: GCGConfig):
         super().__init__(config)
+        self.tokenizer = None  # Will be set in run()
         self.logger = logging.getLogger("nanogcg")
         if not self.logger.hasHandlers():
             handler = logging.StreamHandler()
@@ -214,6 +254,7 @@ class GCGAttack(Attack):
             self.logger.setLevel(logging.INFO)
 
     def run(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, dataset: PromptDataset) -> AttackResult:
+        self.tokenizer = tokenizer  # Store tokenizer as instance variable
         self.not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
         # need to have this filter here for models like gemma-3 which add extra tokens that do not have embeddings
         # we cannot filter the ids inside the get_disallowed_ids function because we need
@@ -271,7 +312,7 @@ class GCGAttack(Attack):
             # Initialize the attack buffer
             buffer, flops_init = self.init_buffer(model, attack_ids)
             optim_ids = buffer.get_best_ids()
-            token_selection = SubstitutionSelectionStrategy(self.config.token_selection, self.config, self.prefix_cache, self.pre_prompt_embeds, self.post_embeds, self.target_embeds, self.target_ids, self.not_allowed_ids)
+            token_selection = SubstitutionSelectionStrategy(self.config.token_selection, self.config, self.prefix_cache, self.pre_prompt_embeds, self.post_embeds, self.target_embeds, self.target_ids, self.not_allowed_ids, self.tokenizer)
             losses = []
             times = []
             flops = []
@@ -404,8 +445,8 @@ class GCGAttack(Attack):
         Args:
             model : transformers.PreTrainedModel
                 the model to compute the loss with respect to
-            input_embeds : Tensor, shape = (B, T, D)
-                the embeddings of the candidate sequences to evaluate
+            attack_ids : Tensor, shape = (B, T)
+                the attack token ids to evaluate
 
         Returns:
             loss : Tensor, shape = (B,)
@@ -457,7 +498,7 @@ class GCGAttack(Attack):
         shift_logits = logits[..., tmp - 1 : -1, :].contiguous()
         shift_labels = self.target_ids[:, :self.target_length].repeat(B, 1)
 
-        loss = compute_loss(shift_logits, shift_labels, self.config.loss, self.config.mellowmax_alpha, self.not_allowed_ids)
+        loss = compute_loss(shift_logits, shift_labels, self.config.loss, self.config.mellowmax_alpha, self.not_allowed_ids, self.tokenizer)
 
         acc = (shift_logits.argmax(-1) == shift_labels).all(-1)  # (B, T) -> (B,)
         loss = loss.view(B, -1).mean(dim=-1)
@@ -503,7 +544,7 @@ class AttackBuffer:
 
 
 class SubstitutionSelectionStrategy:
-    def __init__(self, strategy: str, config: GCGConfig, prefix_cache: list[tuple[Tensor, Tensor]], pre_prompt_embeds: Tensor, post_embeds: Tensor, target_embeds: Tensor, target_ids: Tensor, not_allowed_ids: Tensor):
+    def __init__(self, strategy: str, config: GCGConfig, prefix_cache: list[tuple[Tensor, Tensor]], pre_prompt_embeds: Tensor, post_embeds: Tensor, target_embeds: Tensor, target_ids: Tensor, not_allowed_ids: Tensor, tokenizer: PreTrainedTokenizer):
         self.config = config
         self.strategy = strategy
         self.prefix_cache = prefix_cache
@@ -512,6 +553,7 @@ class SubstitutionSelectionStrategy:
         self.target_embeds = target_embeds
         self.target_ids = target_ids
         self.not_allowed_ids = not_allowed_ids
+        self.tokenizer = tokenizer
         self.grad_buffer = None
 
     def __call__(
@@ -878,7 +920,7 @@ class SubstitutionSelectionStrategy:
         shift_logits = logits[..., shift - 1 : -1, :].contiguous()  # (1, num_target_ids, vocab_size)
         shift_labels = self.target_ids.repeat(B, 1)
 
-        loss = compute_loss(shift_logits, shift_labels, self.config.loss, self.config.mellowmax_alpha, self.not_allowed_ids)
+        loss = compute_loss(shift_logits, shift_labels, self.config.loss, self.config.mellowmax_alpha, self.not_allowed_ids, self.tokenizer)
         loss = loss.mean()
 
         optim_ids_onehot_grad = torch.autograd.grad(

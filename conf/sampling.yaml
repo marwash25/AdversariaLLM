@@ -14,7 +14,7 @@ hydra:
 
 name: testing
 save_dir: ${root_dir}/outputs/
-num_return_sequences: 100  # we generate completions such that the final result has num_return_sequences completions
+num_return_sequences: 500  # we generate completions such that the final result has num_return_sequences completions
 
 filter_by:
   model: meta-llama/Meta-Llama-3.1-8B-Instruct

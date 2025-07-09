@@ -9,12 +9,15 @@ Usage:
     python3 slurm_status.py -d        # Show detailed view with individual job info
 """
 
-import os
-import time
 import argparse
-from pathlib import Path
-from datetime import datetime
+import os
 import re
+import subprocess
+import time
+from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
+
 
 # Color codes for terminal output
 class Colors:
@@ -28,13 +31,32 @@ class Colors:
     BOLD = '\033[1m'      # Bold
     END = '\033[0m'       # Reset
 
+@lru_cache(maxsize=None)
+def get_jobs():
+    """Get all jobs in the SLURM queue"""
+    result = subprocess.run(['squeue', '-l', '-r'], capture_output=True, text=True, timeout=10)
+    jobs = {}
+    for line in result.stdout.splitlines()[1:]:
+        id = line.split()[0]
+        status = line.split()[4]
+        jobs[id] = status
+    return jobs
+
 def check_job_status(job_dir):
     """Check the status of a single SLURM job"""
     # Look for log files with the correct naming pattern
     log_files = list(job_dir.glob("*_log.out"))
+    job_id = job_dir.name
 
     if not log_files:
-        return "NO_LOG", "No log file found"
+        # Check if job is still in SLURM queue
+        try:
+            jobs = get_jobs()
+            if job_id in jobs and jobs[job_id] == "PENDING":
+                return "PENDING", "Job is currently pending"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass  # squeue not available or timed out
+        return "UNKNOWN", "No log file found"
 
     log_out = log_files[0]
     log_err = log_out.with_suffix('.err')
@@ -49,12 +71,23 @@ def check_job_status(job_dir):
 
         # Look for completion indicators in the last 10 lines
         last_lines = ''.join(lines[-10:]).lower()
+
+        if any("Attack logged to" in line for line in lines):
+            return "SUCCESS", "Completed successfully"
+        elif any("Skipping" in line and " because it already exists" in line for line in lines):
+            return "SUCCESS", "Skipped, already exists"
+        # Check if log file was modified in the last 2 minutes (job is likely still running)
+        if time.time() - os.path.getmtime(log_out) < 120:
+            return "RUNNING", "Job is currently running"
+        # Check if job is still in SLURM queue
+        try:
+            jobs = get_jobs()
+            if job_id in jobs and jobs[job_id] == "RUNNING":
+                return "RUNNING", "Job is currently running"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass  # squeue not available or timed out
         if any(word in err_lines for word in ["error", "failed", "exception", "traceback"]):
             return "FAILED", "Error detected in logs"
-        elif "job completed successfully" in last_lines:
-            return "SUCCESS", "Completed successfully"
-        elif "exiting after successful completion" in last_lines:
-            return "SUCCESS", "Completed successfully"
         elif any(word in last_lines for word in ["error", "failed", "exception", "traceback"]):
             return "FAILED", "Error detected in logs"
         else:
@@ -66,11 +99,6 @@ def check_job_status(job_dir):
                 if "cancelled at" in last_lines:
                     return "FAILED", "Cancelled"
                 return "FAILED", "Error detected in logs"
-
-        # Check if log file was modified in the last 2 minutes (job is likely still running)
-        if time.time() - os.path.getmtime(log_out) < 120:
-            return "RUNNING", "Job is currently running"
-
         return "UNKNOWN", "Status unclear"
 
     except Exception as e:
@@ -85,7 +113,7 @@ def get_run_timestamp(run_path):
     except:
         return datetime.min
 
-def get_multirun_status(max_runs=20, detailed=False):
+def get_multirun_status(max_runs=20, detailed=False, failed=False):
     """Get status of all multirun jobs"""
     multirun_path = Path("multirun")
 
@@ -110,6 +138,7 @@ def get_multirun_status(max_runs=20, detailed=False):
     successful_runs = 0
     failed_runs = 0
     running_runs = 0
+    pending_runs = 0
 
     for submitit_dir in submitit_dirs[:max_runs]:
         run_path = submitit_dir.parent
@@ -134,7 +163,8 @@ def get_multirun_status(max_runs=20, detailed=False):
         success_count = sum(1 for _, status, _ in job_statuses if status == "SUCCESS")
         failed_count = sum(1 for _, status, _ in job_statuses if status == "FAILED")
         running_count = sum(1 for _, status, _ in job_statuses if status == "RUNNING")
-        unknown_count = sum(1 for _, status, _ in job_statuses if status not in ["SUCCESS", "FAILED", "RUNNING"])
+        pending_count = sum(1 for _, status, _ in job_statuses if status == "PENDING")
+        unknown_count = sum(1 for _, status, _ in job_statuses if status not in ["SUCCESS", "FAILED", "RUNNING", "PENDING"])
         total_jobs = len(job_statuses)
 
         if success_count == total_jobs:
@@ -152,9 +182,14 @@ def get_multirun_status(max_runs=20, detailed=False):
             status_icon = "🏃"
             status_color = Colors.YELLOW
             running_runs += 1
+        elif pending_count > 0:
+            run_status = "PENDING"
+            status_icon = "⏳"
+            status_color = Colors.YELLOW
+            pending_runs += 1
         else:
-            run_status = "PARTIAL"
-            status_icon = "⚠️"
+            run_status = "UNKNOWN"
+            status_icon = "⚠️ "
             status_color = Colors.YELLOW
 
         # Print run summary
@@ -165,6 +200,7 @@ def get_multirun_status(max_runs=20, detailed=False):
               f"{Colors.GREEN}{success_count}✓{Colors.END} "
               f"{Colors.RED}{failed_count}✗{Colors.END} "
               f"{Colors.YELLOW}{running_count}🏃{Colors.END} "
+              f"{Colors.YELLOW}{pending_count}⏳{Colors.END} "
               f"{Colors.YELLOW}{unknown_count}?{Colors.END}")
 
         # Show detailed job info if requested
@@ -172,6 +208,11 @@ def get_multirun_status(max_runs=20, detailed=False):
             for job_name, status, message in job_statuses:
                 if status != "SUCCESS":
                     color = Colors.RED if status == "FAILED" else Colors.YELLOW
+                    print(f"    {color}└─ {job_name}: {message}{Colors.END}")
+        if not detailed and failed:
+            for job_name, status, message in job_statuses:
+                if status == "FAILED":
+                    color = Colors.RED
                     print(f"    {color}└─ {job_name}: {message}{Colors.END}")
 
     # Print summary
@@ -190,11 +231,13 @@ def main():
                        help="Number of recent runs to show (default: 20)")
     parser.add_argument("-d", "--detailed", action="store_true",
                        help="Show detailed information for failed/unknown jobs")
+    parser.add_argument("-f", "--failed", action="store_true",
+                       help="Show only failed jobs")
 
     args = parser.parse_args()
 
     try:
-        get_multirun_status(max_runs=args.num_runs, detailed=args.detailed)
+        get_multirun_status(max_runs=args.num_runs, detailed=args.detailed, failed=args.failed)
     except KeyboardInterrupt:
         print(f"\n{Colors.YELLOW}Interrupted by user{Colors.END}")
     except Exception as e:

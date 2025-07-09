@@ -5,6 +5,7 @@ Due to memory limits, we do not use a judge model and just return a score of 1 f
 
 import ast
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -12,12 +13,11 @@ from typing import Optional
 import torch
 import transformers
 from tqdm import trange
-import re
 
-from src.attacks import (Attack, AttackResult, AttackStepResult,
-                         GenerationConfig, SingleAttackRunResult)
+from src.attacks import (Attack, AttackResult, AttackStepResult, GenerationConfig,
+                         SingleAttackRunResult)
 from src.io_utils import load_model_and_tokenizer
-from src.lm_utils import generate_ragged_batched, prepare_conversation, get_flops
+from src.lm_utils import generate_ragged_batched, get_flops, prepare_conversation
 from src.types import Conversation
 
 
@@ -48,9 +48,9 @@ class TargetModelConfig:
 class JudgeModelConfig:
     id: Optional[str] = None
     tokenizer_id: Optional[str] = None
-    dtype: Optional[str] = None
-    compile: Optional[bool] = None
-    trust_remote_code: Optional[bool] = None
+    dtype: str = "bfloat16"
+    compile: bool = False
+    trust_remote_code: bool = False
     short_name: Optional[str] = None
     developer_name: Optional[str] = None
     chat_template: Optional[str] = None
@@ -300,8 +300,8 @@ class AttackLM:
             tokens = torch.cat(tokens)
 
             while tokens.size(0) + self.max_new_tokens > tokenizer.model_max_length and len(conv) > 3:
-                # maintain system message, remove user+assistant message pairs until we fit
-                # in context window
+                # maintain system message, remove user+assistant message pairs until we
+                # fit in context window
                 conv = conv[:1] + conv[3:]
 
                 tokens = [t for tokens in prepare_conversation(tokenizer, conv) for t in tokens]
@@ -346,9 +346,7 @@ class AttackLM:
                 break
 
         if any([output is None for output in valid_outputs]):
-            logging.info(
-                f"Failed to generate output after {self.max_attempts} attempts. Terminating."
-            )
+            raise ValueError(f"Failed to generate output after {self.max_attempts} attempts, run again with more attempts or fewer steps.")
         return valid_outputs, flops
 
 

@@ -181,7 +181,7 @@ class BEASTAttack(Attack):
                 ]
                 attack_conversations.append(attack_conv)
 
-                tokens = prepare_conversation(tokenizer, conversation, attack_conv)[0][:5]
+                tokens = prepare_conversation(tokenizer, attack_conv)[0][:5]
                 token_list_batch.append(torch.cat(tokens))
             attacks.append(attack_conversations)
             token_list.extend(token_list_batch)

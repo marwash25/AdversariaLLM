@@ -343,26 +343,6 @@ class HuggingFace:
             self.tokenizer = tokenizer
 
         self.eos_token_ids = [self.tokenizer.eos_token_id]
-        self.generation_batch_size = 64
-
-    def batch_generate_bs(self, batch_size, inputs, **generation_kwargs):
-        gen_outputs = []
-        for i in range(0, len(inputs), batch_size):
-            inputs_b = inputs[i : i + batch_size]
-            encoded_b = self.tokenizer(inputs_b, return_tensors="pt", padding="longest")
-            output_ids = self.model.generate(
-                **encoded_b.to(self.model.device),
-                pad_token_id=self.tokenizer.eos_token_id,
-                **generation_kwargs,
-            ).cpu()
-
-            if not self.model.config.is_encoder_decoder:
-                output_ids = output_ids[:, encoded_b["input_ids"].shape[1] :]
-            decoded_outputs = self.tokenizer.batch_decode(
-                output_ids, skip_special_tokens=True
-            )
-            gen_outputs.extend(decoded_outputs)
-        return gen_outputs
 
     @torch.no_grad
     def batched_generate(
@@ -373,38 +353,37 @@ class HuggingFace:
         temperature: float = 1.0,
     ):
         inputs = [
-            f"You are a helpful and creative assistant who writes well.\nPlease revise the following sentences with no changes to its length and only output the revised version, the sentences are: \n '{sentence}'."
+            f"""You are a helpful and creative assistant who writes well.
+Please revise the following sentence with no changes to their length and only output the revised version, the sentence is:
+'{sentence}'."""
             for sentence in sentences
         ]
         # === we init with some starting tokens to make sure that the generated sequences are in-distribution=====
         init_msgs = [" ".join(sentence.split()[:2]) for sentence in sentences]
 
-        messages = [
-            [{"role": "user", "content": msg + init_msg}]
+        conversations = [
+            [{"role": "user", "content": msg + init_msg}, {"role": "assistant", "content": ""}]
             for msg, init_msg in zip(inputs, init_msgs)
         ]
-        inputs = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        # Remove BOS token in batch
-        if tokenizer.bos_token:
-            for j in range(len(inputs)):
-                inputs[j] = inputs[j].removeprefix(tokenizer.bos_token)
+        input_tokens = [
+            torch.cat(
+                prepare_conversation(tokenizer, conversation)[0][:-1]
+            ) for conversation in conversations
+        ]
 
-        generation_function = find_executable_batch_size(
-            self.batch_generate_bs, self.generation_batch_size
-        )
-        outputs = generation_function(
-            inputs,
+        output_tokens = generate_ragged_batched(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            token_list=input_tokens,
             max_new_tokens=max_n_tokens,
-            do_sample=True,
             temperature=temperature,
-            eos_token_id=self.eos_token_ids,
+            return_tokens=True
         )
+        outputs = [self.tokenizer.decode(o[0]) for o in output_tokens]
         flops = get_flops(
             self.model,
-            sum(len(tokenizer.encode(t)) for t in inputs),
-            sum(len(tokenizer.encode(t)) for t in outputs),
+            sum(len(t) for t in input_tokens),
+            sum(len(t) for t in output_tokens),
             "forward"
         )
         outputs = [m + " " + o.strip() for o, m in zip(outputs, init_msgs)]
