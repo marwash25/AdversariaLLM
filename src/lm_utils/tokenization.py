@@ -8,10 +8,11 @@ including chat template handling and token preparation for attacks.
 import copy
 import random
 import string
-import torch
-import torch.nn.functional as F
 from functools import lru_cache
 from typing import Literal
+
+import torch
+import torch.nn.functional as F
 from transformers import PreTrainedTokenizerBase
 
 from ..types import Conversation

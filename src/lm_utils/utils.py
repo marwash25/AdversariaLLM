@@ -5,8 +5,9 @@ This module provides utility functions for token handling, model introspection,
 and other general-purpose operations.
 """
 
-import torch
 from typing import Literal
+
+import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 

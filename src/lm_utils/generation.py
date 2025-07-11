@@ -6,17 +6,17 @@ and loss computation functions.
 """
 
 import logging
-import sys
+from typing import Literal
+
 import torch
 import torch.nn.functional as F
-from typing import Literal
-from transformers import DynamicCache, HybridCache, PreTrainedModel, PreTrainedTokenizerBase
+from transformers import (DynamicCache, HybridCache, PreTrainedModel,
+                          PreTrainedTokenizerBase)
 
-from ..io_utils import free_vram
 from ..types import JsonSchema
 from .batching import with_max_batchsize
 from .json_utils import JSONFilter, NullFilter, validate_json_strings
-from .sampling import top_p_filtering, top_k_filtering
+from .sampling import top_k_filtering, top_p_filtering
 from .utils import get_stop_token_ids
 
 

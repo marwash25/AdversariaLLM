@@ -6,10 +6,11 @@ during text generation, including logits filtering and validation.
 """
 
 import copy
-import json5
 import logging
-import torch
 from typing import Any, Iterator, Mapping, Optional, Sequence
+
+import json5
+import torch
 from transformers import PreTrainedTokenizerBase
 
 from ..types import JsonSchema
@@ -40,9 +41,8 @@ class JSONFilter:
         max_ws_run: int = 2,
     ):
         from lmformatenforcer import JsonSchemaParser
-        from lmformatenforcer.integrations.transformers import (
-            build_token_enforcer_tokenizer_data,
-        )
+        from lmformatenforcer.integrations.transformers import \
+            build_token_enforcer_tokenizer_data
         from lmformatenforcer.tokenenforcer import TokenEnforcer
 
         tok_data = build_token_enforcer_tokenizer_data(tokenizer)

@@ -12,8 +12,9 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Optional
-from openai import OpenAI
+
 import torch
+from openai import OpenAI
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from ..types import Conversation, JsonSchema
