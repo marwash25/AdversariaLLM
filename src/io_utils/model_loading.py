@@ -8,12 +8,11 @@ and tokenizers with various optimizations and model-specific configurations.
 import gc
 import os
 from functools import lru_cache
+from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from transformers.utils.logging import disable_progress_bar
-
-from .memory import free_vram
 
 disable_progress_bar()  # disable progress bar for model loading
 
@@ -119,10 +118,10 @@ def load_model_and_tokenizer(model_params):
 
 
 def load_chat_template(template_name):
-    chat_template_dir = os.path.dirname(os.path.dirname(__file__))
-    chat_template = open(os.path.join(chat_template_dir, f"chat_templates/chat_templates/{template_name}.jinja")).read()
-    chat_template = chat_template.replace("    ", "").replace("\n", "")
-    return chat_template
+    # Get project root by going up from current file
+    project_root = Path(__file__).parent.parent.parent
+    template_path = project_root / "chat_templates" / "chat_templates" / f"{template_name}.jinja"
+    return template_path.read_text().replace("    ", "").replace("\n", "")
 
 
 @lru_cache(maxsize=None)
