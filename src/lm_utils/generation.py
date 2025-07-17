@@ -312,18 +312,18 @@ def generate_ragged(
                     # since we only add a single step at a time
                     finished_at_this_step = torch.zeros_like(finished)
                     finished_at_this_step[generating] = torch.isin(next_tokens[generating], stop_ids) | (lengths[generating] + 1 == max_new_tokens)
-                    still_active = (~finished & ~finished_at_this_step)[~finished].cpu()
 
                     if finished_at_this_step.any():
+                        still_active = (~finished & ~finished_at_this_step)[~finished]
                         for j in range(len(past_key_values.key_cache)):
                             past_key_values.key_cache[j] = past_key_values.key_cache[j][still_active].clone()
                             past_key_values.value_cache[j] = past_key_values.value_cache[j][still_active].clone()
-                        finished |= finished_at_this_step
 
-                    if finished.all():
-                        if i < max_new_tokens - 1:
-                            logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
-                        break
+                        finished |= finished_at_this_step
+                        if finished.all():
+                            if i < max_new_tokens - 1:
+                                logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
+                            break
 
                     next_token_idx[next_token_idx == cur_idx] += 1
                     lengths[generating] += 1

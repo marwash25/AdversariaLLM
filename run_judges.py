@@ -9,12 +9,12 @@ import sys
 import filelock
 import hydra
 import torch
+from judgezoo import Judge
 from omegaconf import DictConfig, ListConfig
 from tqdm import tqdm
 
 from src.errors import print_exceptions
 from src.io_utils import CompactJSONEncoder, get_mongodb_connection, delete_orphaned_runs
-from src.judges import Judge
 
 torch.use_deterministic_algorithms(True, warn_only=True)  # determinism
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -88,7 +88,7 @@ def run_judges(cfg: DictConfig) -> None:
                             if modified_prompt[-1]["role"] == "assistant":
                                 modified_prompt[-1]["content"] = model_input[-1]["content"] + completion
                             else:
-                                modified_prompt.append({"role": "assistant", "content": model_input[-1]["content"] + completion})
+                                modified_prompt.append({"role": "assistant", "content": completion})
                             modified_prompts.append(modified_prompt)
                     pbar.set_description(f"{len(modified_prompts)} | {n} total")
                     results = judge(modified_prompts)
