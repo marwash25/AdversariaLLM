@@ -42,13 +42,12 @@ from torch import Tensor
 from tqdm import trange
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
 
-from src.dataset import PromptDataset
-from src.lm_utils import (TokenMergeError, filter_suffix, generate_ragged_batched,
-                          get_disallowed_ids, get_flops, prepare_conversation,
-                          with_max_batchsize)
-
 from .attack import (Attack, AttackResult, AttackStepResult, GenerationConfig,
                      SingleAttackRunResult)
+from ..dataset import PromptDataset
+from ..lm_utils import (TokenMergeError, filter_suffix, generate_ragged_batched,
+                        get_disallowed_ids, get_flops, prepare_conversation,
+                        with_max_batchsize)
 
 
 @dataclass

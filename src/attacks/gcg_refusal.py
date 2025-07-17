@@ -13,9 +13,9 @@ from accelerate.utils import find_executable_batch_size
 from torch import Tensor
 from tqdm import trange
 
-from src.lm_utils import filter_suffix, get_disallowed_ids, generate_ragged_batched, prepare_tokens
-
 from .attack import Attack, AttackResult
+from ..lm_utils import filter_suffix, get_disallowed_ids, generate_ragged_batched, prepare_tokens
+
 
 
 @dataclass

@@ -19,10 +19,10 @@ import numpy as np
 import torch
 from tqdm import trange
 
-from src.attacks.attack import (Attack, AttackResult, AttackStepResult,
-                                GenerationConfig, SingleAttackRunResult)
-from src.io_utils import load_model_and_tokenizer
-from src.lm_utils import (generate_ragged_batched, get_flops, get_losses_batched,
+from .attack import (Attack, AttackResult, AttackStepResult, GenerationConfig,
+                     SingleAttackRunResult)
+from ..io_utils import load_model_and_tokenizer
+from ..lm_utils import (generate_ragged_batched, get_flops, get_losses_batched,
                           prepare_conversation)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

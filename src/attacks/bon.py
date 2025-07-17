@@ -19,11 +19,11 @@ import torch
 import transformers
 from transformers import PreTrainedTokenizer
 
-from src.attacks import (Attack, AttackResult, AttackStepResult,
-                         GenerationConfig, SingleAttackRunResult)
-from src.lm_utils import (generate_ragged_batched, get_losses_batched,
-                          prepare_conversation)
-from src.types import Conversation
+from .attack import (Attack, AttackResult, AttackStepResult,
+                     GenerationConfig, SingleAttackRunResult)
+from ..lm_utils import (generate_ragged_batched, get_losses_batched,
+                        prepare_conversation)
+from ..types import Conversation
 
 
 @dataclass

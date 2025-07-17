@@ -21,9 +21,9 @@ from tqdm import trange
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .attack import (Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult)
-from src.lm_utils import (generate_ragged_batched, get_disallowed_ids, get_flops,
+from ..lm_utils import (generate_ragged_batched, get_disallowed_ids, get_flops,
                           prepare_conversation, with_max_batchsize)
-from src.types import Conversation
+from ..types import Conversation
 
 
 @dataclass

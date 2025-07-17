@@ -15,11 +15,11 @@ import torch
 import transformers
 from tqdm import trange
 
-from src.attacks import (Attack, AttackResult, AttackStepResult, GenerationConfig,
-                         SingleAttackRunResult)
-from src.io_utils import load_model_and_tokenizer
-from src.lm_utils import generate_ragged_batched, get_flops, prepare_conversation
-from src.types import Conversation
+from .attack import (Attack, AttackResult, AttackStepResult, GenerationConfig,
+                     SingleAttackRunResult)
+from ..io_utils import load_model_and_tokenizer
+from ..lm_utils import generate_ragged_batched, get_flops, prepare_conversation
+from ..types import Conversation
 
 
 @dataclass

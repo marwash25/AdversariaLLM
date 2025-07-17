@@ -8,8 +8,8 @@ from beartype import beartype
 from beartype.typing import Literal, Optional, Generic, TypeVar
 from omegaconf import DictConfig
 
-from src.dataset import PromptDataset
-from src.types import Conversation
+from ..dataset import PromptDataset
+from ..types import Conversation
 
 
 @dataclass

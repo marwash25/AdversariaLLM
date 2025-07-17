@@ -18,8 +18,8 @@ import torch.nn as nn
 from tqdm import tqdm, trange
 from transformers import GenerationConfig as HuggingFaceGenerationConfig
 
-from src.io_utils import free_vram, load_model_and_tokenizer
-from src.lm_utils import generate_ragged_batched, get_losses_batched, prepare_conversation
+from ..io_utils import free_vram, load_model_and_tokenizer
+from ..lm_utils import generate_ragged_batched, get_losses_batched, prepare_conversation
 
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
 

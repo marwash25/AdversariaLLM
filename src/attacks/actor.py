@@ -16,9 +16,9 @@ from beartype.typing import Optional
 from dotenv import load_dotenv
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from src.io_utils import load_model_and_tokenizer
-from src.lm_utils import APITextGenerator, LocalTextGenerator, TextGenerator
-from src.types import Conversation
+from ..io_utils import load_model_and_tokenizer
+from ..lm_utils import APITextGenerator, LocalTextGenerator, TextGenerator
+from ..types import Conversation
 
 from .attack import Attack, AttackResult, AttackStepResult, SingleAttackRunResult
 

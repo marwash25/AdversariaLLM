@@ -8,8 +8,9 @@ import time
 import torch
 import transformers
 
-from src.attacks.attack import Attack, GenerationConfig, AttackResult, AttackStepResult, SingleAttackRunResult
-from src.lm_utils import generate_ragged_batched, get_losses_batched, prepare_conversation
+from .attack import (Attack, AttackResult, AttackStepResult, GenerationConfig,
+                     SingleAttackRunResult)
+from ..lm_utils import generate_ragged_batched, get_losses_batched, prepare_conversation
 
 
 @dataclass
