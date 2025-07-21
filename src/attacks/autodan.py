@@ -121,7 +121,8 @@ class AutoDANAttack(Attack):
 
                 token_list = [torch.cat(t) for t in tokens]
                 targets = [t.roll(-1, 0) for t in token_list]
-                loss = get_losses_batched(model, targets, token_list=token_list)
+                with torch.no_grad():
+                    loss = get_losses_batched(model, targets, token_list=token_list)
                 flops += get_flops(model, sum(len(t) for t in token_list), 0, "forward")
                 loss = torch.tensor([l[-tl:].mean().item() for l, tl in zip(loss, [t[-1].size(0) for t in tokens])])
 

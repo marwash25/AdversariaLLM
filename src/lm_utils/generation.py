@@ -371,7 +371,6 @@ def generate_ragged(
     return completion
 
 
-@torch.no_grad
 def get_losses_batched(
     model: PreTrainedModel,
     targets: list[torch.Tensor],

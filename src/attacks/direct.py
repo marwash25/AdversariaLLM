@@ -79,12 +79,13 @@ class DirectAttack(Attack):
         shifted_target_tensors_list = [t.roll(-1, 0) for t in full_token_tensors_list]
 
         # Calculate loss for the full sequences
-        all_losses_per_token = get_losses_batched(
-            model,
-            targets=shifted_target_tensors_list,
-            token_list=full_token_tensors_list,
-            initial_batch_size=B,
-        )
+        with torch.no_grad():
+            all_losses_per_token = get_losses_batched(
+                model,
+                targets=shifted_target_tensors_list,
+                token_list=full_token_tensors_list,
+                initial_batch_size=B,
+            )
 
         # Extract average loss *only* over the target tokens for each instance
         instance_losses = []

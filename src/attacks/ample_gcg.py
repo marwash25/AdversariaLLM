@@ -139,11 +139,12 @@ class AmpleGCGAttack(Attack):
         token_list = [torch.cat(t, dim=0) for t in token_list]
         targets = [t.roll(-1, 0) for t in token_list]
 
-        losses = get_losses_batched(
-            model,
-            targets=targets,
-            token_list=token_list,
-        )
+        with torch.no_grad():
+            losses = get_losses_batched(
+                model,
+                targets=targets,
+                token_list=token_list,
+            )
         losses = [l[-tl:].mean().item() for l, tl in zip(losses, target_lengths)]
         return losses
 

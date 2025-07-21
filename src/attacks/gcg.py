@@ -196,19 +196,19 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, mel
         loss = torch.nn.functional.kl_div(log_probs, tgt_dist.expand(B, T, -1), reduction="none").sum(dim=-1) # (B, T, D) -> (B, T)
         loss = loss[:, 0] # (B, T) -> (B,)
     elif loss_type == "kl_allowed_fwd":
-        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
-        B, T, D = log_probs.shape
-        N_valid = D - len(disallowed_ids)
-        tgt_dist = torch.full((1, 1, D), device=log_probs.device, fill_value=1 / N_valid)
-        tgt_dist[0, 0, disallowed_ids] = 0
+        log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)[:, 0]
+        B, V = log_probs.shape
+        N_valid = V - len(disallowed_ids)
+        tgt_dist = torch.full((1, V), device=log_probs.device, fill_value=1 / N_valid)
+        tgt_dist[0, disallowed_ids] = 0
         model_probs = log_probs.exp()
         log_tgt = torch.log(tgt_dist + 1e-30)
         loss = torch.nn.functional.kl_div(
-            log_tgt.expand(B, T, -1),
+            log_tgt.expand(B, -1),
             model_probs,
             reduction="none"
-        )                                 # (B, T, D)
-        loss = loss.sum(dim=-1)[:, 0]  # (B, T, D) -> (B,)
+        )                                 # (B, D)
+        loss = loss.sum(dim=-1)  # (B, D) -> (B,)
     elif loss_type == "kl_allowed_fwd_ascii_only":
         allowed_toks = string.ascii_letters + string.whitespace + string.digits + string.punctuation + tokenizer.convert_ids_to_tokens(tokenizer.encode("a b")[-1:])[0][0]
         new_disallowed_ids = []
@@ -437,6 +437,7 @@ class GCGAttack(Attack):
             # Compute loss on candidates
             compute_loss_fn = partial(self.compute_candidates_loss, model)
             loss, acc, flops_loss = with_max_batchsize(compute_loss_fn, sampled_ids)
+
             torch.cuda.synchronize()  # Ensure GPU computation is complete
             flops_loss = flops_loss.sum().item()
             t_loss_end = time.time()
@@ -535,10 +536,9 @@ class GCGAttack(Attack):
         shift_logits = logits[..., tmp - 1 : -1, :].contiguous()
         shift_labels = self.target_ids[:, :self.target_length].repeat(B, 1)
 
-        loss = compute_loss(shift_logits, shift_labels, self.config.loss, self.config.mellowmax_alpha, self.not_allowed_ids, self.tokenizer)
+        loss = compute_loss(shift_logits, shift_labels, self.config.loss, self.config.mellowmax_alpha, self.not_allowed_ids, self.tokenizer)  # (B,)
 
         acc = (shift_logits.argmax(-1) == shift_labels).all(-1)  # (B, T) -> (B,)
-        loss = loss.view(B, -1).mean(dim=-1) # (B, T) -> (B,)
 
         if self.config.early_stop:
             if acc.any().item():

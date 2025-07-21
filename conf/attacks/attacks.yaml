@@ -206,60 +206,20 @@ gcg_reinforce:
   search_width: 512
   topk: 256
   n_replace: 1
-  buffer_size: 0
-  loss: "ce"
-  use_constrained_gradient: False
   mellowmax_alpha: 1.0
-  early_stop: False
   use_prefix_cache: True
   allow_non_ascii: False
   allow_special: False
   filter_ids: True
   verbosity: WARNING
   token_selection: default
-  grow_target: False
-  grad_smoothing: 1
-  grad_momentum: 0.0
-  # REINFORCE-specific parameters
-  judge_model_name: "cais/HarmBench-Llama-2-13b-cls"
-  judge_weight: 1.0
-  target_weight: 0.0
-  # Generation parameters
-  gen_max_len: 128
-  gen_topk: 256
-  gen_temperatures: [0.0, 0.7]
-  gen_additional_judge_lengths: [20, 40, 80]
-  gen_in_parallel_over_temps: False
-  # Baseline parameters
-  bsln_temperature_complete: 0.0
-  bsln_reward_clamp_min: 0.5
-  bsln_reward_clamp_max: 1.0
-  bsln_ignore: False
-  # REINFORCE weighting
-  include_most_harmful: True
-  include_most_harmful_min_reward_thres: 0.2
-  include_most_harmful_likelihood_thres: 0.75
-  add_nogen_reward_baseline: 0.1
-  token_reinforce_weighting: "token"
-  normalize_reinforce_loss: True
-  judge_with_control: False
-  # Search parameters
-  search_target_metric: "agg_reinforce_loss"
-  search_monotonically: False
-  search_deterministic_loss: True
-  search_patience: -1
-  search_greedy_reward_exploit_threshold: 0.8
-  search_sample_strategy: "gradient"
-  selection_extend_length_harmfulness: 0.01
-  selection_starting_batch_size: 256
-  # Early stopping
-  early_stopping_abort: False
-  early_stopping_abort_min_loss: 0.1
-  early_stopping_key: "agg_reinforce_loss"
-  # Token position weighting
-  token_position_weighting_kwargs:
-    name: "linear"
-    first_last_ratio: 5.0
+  judge_model_id: "strong_reject"
+  optim_num_return_sequences: 1
+  optim_max_new_tokens: 256
+  optim_temperature: 0.7
+  optim_top_p: 1.0
+  optim_top_k: 0
+  reward_baseline: 0.1
 human_jailbreaks:
   name: human_jailbreaks
   type: discrete
