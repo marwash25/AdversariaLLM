@@ -220,6 +220,8 @@ gcg_reinforce:
   optim_top_p: 1.0
   optim_top_k: 0
   reward_baseline: 0.1
+  token_position_weight_ratio: 5.0
+  include_y_affirmative: True
 human_jailbreaks:
   name: human_jailbreaks
   type: discrete

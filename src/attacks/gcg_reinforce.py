@@ -73,6 +73,8 @@ class GCGReinforceConfig:
     optim_top_p: float = 1.0
     optim_top_k: int = 0
     reward_baseline: float = 0.1  # all generations below this are penalized no matter what
+    token_position_weight_ratio: float = 5.0
+    include_y_affirmative: bool = True
 
 
 class GCGReinforceAttack(Attack):
@@ -273,11 +275,9 @@ class GCGReinforceAttack(Attack):
         advantages = self.compute_advantages(rewards)  # (num_gens,)
         optim_ids_one_hot = F.one_hot(optim_ids, num_classes=self.tokenizer.vocab_size).to(self.model.dtype).requires_grad_(True)
         loss_for_grad = self.compute_reinforce_loss(generations, advantages, optim_ids_one_hot)[0]
-        print(loss_for_grad.shape, optim_ids_one_hot.shape)
         grad = torch.autograd.grad([loss_for_grad], [optim_ids_one_hot])[0].squeeze(0)
         t_grad = time.time() - t_grad_start
         print(f"  Compute gradients: {t_grad:.2f}s")
-
         t_sample_start = time.time()
         if grad.isinf().all() or grad.isnan().all():
             candidate_ids, candidate_ids_pos = _random_overall(
@@ -359,6 +359,8 @@ class GCGReinforceAttack(Attack):
             num_return_sequences=self.config.optim_num_return_sequences,
             return_tokens=True
         )[0]
+        if self.config.include_y_affirmative:
+            completions.append(self.target_ids[0])  # add y_affirmative
 
         conversation_with_completions: Conversation = [
             [
@@ -370,6 +372,8 @@ class GCGReinforceAttack(Attack):
         judgements = self.judge(conversation_with_completions)["p_harmful"]
         rewards = torch.tensor(judgements).to(self.model.device)
 
+        if self.config.include_y_affirmative:
+            rewards[-1] = max(rewards[-1], 0.5)
         gc.collect()
         torch.cuda.empty_cache()
         flops = 0
@@ -393,7 +397,6 @@ class GCGReinforceAttack(Attack):
         if self.config.reward_baseline > 0:
             n += 1
         advantages = (rewards * n - total_sum) / (n - 1)
-        print(advantages)
         return advantages + 1e-8
 
     def compute_affirmative_loss(self, candidate_ids: Tensor) -> Tensor:
@@ -541,15 +544,21 @@ class GCGReinforceAttack(Attack):
             initial_batch_size=512,
         )
 
+        token_weights = torch.linspace(self.config.token_position_weight_ratio, 1, self.config.optim_max_new_tokens, device=self.model.device)
         # Reshape losses back to (B, N) and normalize by sequence length
         reinforce_losses = torch.zeros((B, N), device=self.model.device)
         for i, gen in enumerate(generations):
             gen_len = len(gen)
             start_idx = i * N
             end_idx = start_idx + N
-            batch_losses = torch.stack([losses_list[idx][-gen_len:].sum() / gen_len for idx in range(start_idx, end_idx)])
+            weights = token_weights[:gen_len].clone()
+            weights = weights / weights.sum()
+            batch_losses = torch.stack([(losses_list[idx][-gen_len:] * weights).sum() for idx in range(start_idx, end_idx)])
             reinforce_losses[i, :] = batch_losses
         # Apply advantages and take mean over generations
+        if N == 1:
+            for gen, adv, loss in zip(generations, advantages, reinforce_losses):
+                print(self.tokenizer.decode(gen)[:100], adv.item(), loss.item())
         reinforce_losses = (reinforce_losses * advantages.unsqueeze(1)).mean(dim=0)  # (N,)
 
         return reinforce_losses
@@ -584,18 +593,18 @@ class GCGReinforceAttack(Attack):
         # print(f"    Affirmative loss computation: {t_affirmative:.3f}s")
 
         # Compute entropy maximization loss
-        t_entropy_start = time.time()
-        entropy_losses = self.compute_entropy_loss(candidate_ids)
-        t_entropy = time.time() - t_entropy_start
+        # t_entropy_start = time.time()
+        # entropy_losses = self.compute_entropy_loss(candidate_ids)
+        # t_entropy = time.time() - t_entropy_start
         # print(f"    Entropy loss computation: {t_entropy:.3f}s")
 
         # Combine losses
         # print(reinforce_losses, affirmative_losses, entropy_losses)
-        losses = reinforce_losses + entropy_losses / 50
+        losses = reinforce_losses
         # losses = entropy_losses
 
         t_total_candidates = time.time() - t0_candidates
-        # print(f"    Total candidates loss: {t_total_candidates:.3f}s")
+        print(f"    Total candidates loss: {t_total_candidates:.3f}s")
         return losses
 
 
