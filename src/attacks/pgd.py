@@ -93,6 +93,8 @@ class PGDAttack(Attack):
         # be saved to disk. Future runs should be able to use the config to avoid duplications.
         if self.config.embedding_scale is None:
             embeddings = model.get_input_embeddings().weight
+            if hasattr(model.get_input_embeddings(), "embed_scale"):  # For gemma
+                embeddings = embeddings * model.get_input_embeddings().embed_scale.to(embeddings)
             if self.config.projection == "l2":
                 self.embedding_scale = embeddings.norm(dim=-1).mean().item()
             elif self.config.projection == "l1":
@@ -324,7 +326,10 @@ class PGDAttack(Attack):
 
     def _maybe_convert_to_embeddings(self, embeddings_or_one_hot, model):
         if self.config.attack_space == "one-hot":
-            return embeddings_or_one_hot @ model.get_input_embeddings().weight
+            embeddings = embeddings_or_one_hot @ model.get_input_embeddings().weight
+            if hasattr(model.get_input_embeddings(), "embed_scale"):  # For gemma
+                embeddings = embeddings * model.get_input_embeddings().embed_scale.to(embeddings)
+            return embeddings
         else:
             return embeddings_or_one_hot
 

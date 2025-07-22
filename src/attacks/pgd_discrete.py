@@ -453,6 +453,8 @@ class PGDDiscreteAttack(Attack):
         B = x_batch.size(0)
         disallowed_ids = get_disallowed_ids(tokenizer, allow_non_ascii=False, allow_special=False)
         emb_matrix = model.get_input_embeddings().weight # V, D
+        if hasattr(model.get_input_embeddings(), "embed_scale"):  # For gemma
+            emb_matrix = emb_matrix * model.get_input_embeddings().embed_scale.to(emb_matrix)
 
         # --- Initialization ---
         batch_losses = [[] for _ in range(B)] # Continuous loss history

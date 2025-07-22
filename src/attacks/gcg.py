@@ -915,6 +915,8 @@ class SubstitutionSelectionStrategy:
             ) @ embedding_layer.weight
         else:
             optim_embeds = optim_ids_onehot @ embedding_layer.weight
+        if hasattr(embedding_layer, "embed_scale"):  # For gemma
+            optim_embeds = optim_embeds * embedding_layer.embed_scale.to(optim_embeds)
 
         B = optim_embeds.shape[0]
         if self.prefix_cache:

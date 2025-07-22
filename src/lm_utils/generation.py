@@ -167,6 +167,13 @@ def generate_ragged(
             return [[] for _ in range(B)]
 
     def sample_next_token(logits: torch.Tensor) -> torch.Tensor:
+        """
+        Sample a next token from the logits.
+        Args:
+            logits: (B, V)
+        Returns:
+            next_tokens: (B,)
+        """
         if temperature > 0.0:
             logits = logits / temperature
             if top_p < 1.0:

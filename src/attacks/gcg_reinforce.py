@@ -200,7 +200,7 @@ class GCGReinforceAttack(Attack):
                 {
                     "Mean Reward": current_reward.mean().item(),
                     "Max Reward": current_reward.max().item(),
-                    "Loss": loss.item(),
+                    "Loss": loss,
                     "Best Attack": optim_strings[-1][:80],
                 }
             )
@@ -278,7 +278,6 @@ class GCGReinforceAttack(Attack):
         grad = torch.autograd.grad([loss_for_grad], [optim_ids_one_hot])[0].squeeze(0)
         t_grad = time.time() - t_grad_start
         print(f"  Compute gradients: {t_grad:.2f}s")
-        t_sample_start = time.time()
         if grad.isinf().all() or grad.isnan().all():
             candidate_ids, candidate_ids_pos = _random_overall(
                 ids=optim_ids.squeeze(0),
@@ -295,8 +294,6 @@ class GCGReinforceAttack(Attack):
                 n_replace=self.config.n_replace,
                 not_allowed_ids=self.not_allowed_ids,
             )
-        t_sample = time.time() - t_sample_start
-        print(f"  Sample candidates: {t_sample:.2f}s")
 
         with torch.no_grad():
             # Sample candidate token sequences
@@ -315,7 +312,7 @@ class GCGReinforceAttack(Attack):
             compute_loss_fn = partial(self.compute_candidates_loss, generations, advantages)
             loss_for_candidates = with_max_batchsize(compute_loss_fn, candidate_ids)
             optim_ids = candidate_ids[loss_for_candidates.argmin()].unsqueeze(0)
-            current_loss = loss_for_candidates[loss_for_candidates.argmin()]
+            current_loss = loss_for_candidates[loss_for_candidates.argmin()].item()
             flops_for_step = flops_loss.sum().item()
             # Update the buffer based on the loss
 
@@ -339,10 +336,20 @@ class GCGReinforceAttack(Attack):
             reward : Tensor, shape = (B,)
                 the GCG reward on all candidate sequences
         """
+        # Convert candidate_ids to one_hot and get embeddings
+        if attack_ids.dim() == 2:
+            # Can't compute gradients in this scenario
+            candidate_ids_one_hot = F.one_hot(attack_ids, num_classes=self.tokenizer.vocab_size).to(self.model.dtype)
+        else:
+            candidate_ids_one_hot = attack_ids
+        optim_embeds = candidate_ids_one_hot @ self.model.get_input_embeddings().weight  # (N, T, V)
+        optim_embeds_v2 = self.model.get_input_embeddings()(attack_ids)
+        print(optim_embeds.shape, optim_embeds_v2.shape, self.model.get_input_embeddings().embed_scale)
+        print(torch.allclose(optim_embeds, optim_embeds_v2), torch.mean(torch.abs(optim_embeds - optim_embeds_v2)))
         embeds_to_generate_with = torch.cat(
             [
                 self.pre_prompt_embeds,
-                self.model.get_input_embeddings()(attack_ids),
+                optim_embeds,
                 self.post_embeds,
             ],
             dim=1,
@@ -398,51 +405,6 @@ class GCGReinforceAttack(Attack):
             n += 1
         advantages = (rewards * n - total_sum) / (n - 1)
         return advantages + 1e-8
-
-    def compute_affirmative_loss(self, candidate_ids: Tensor) -> Tensor:
-        """Computes the affirmative loss for candidate token id sequences.
-
-        Args:
-            candidate_ids: (N, T) tensor
-
-        Returns:
-            loss: (N,) tensor
-        """
-        N = candidate_ids.shape[0]
-
-        # Convert candidate_ids to one_hot and get embeddings
-        candidate_ids_one_hot = F.one_hot(candidate_ids, num_classes=self.tokenizer.vocab_size).to(self.model.dtype)
-        optim_embeds = candidate_ids_one_hot @ self.model.get_input_embeddings().weight  # (N, T, V)
-
-        # Prepare input embeddings
-        embedding_list = []
-        targets = []
-        pre: Tensor = self.pre_prompt_embeds           # (L_pre , V)
-        post: Tensor = self.post_embeds                 # (L_post, V)
-        pre = pre.expand(optim_embeds.size(0), -1, -1)   # (N, L_pre , V)
-        post = post.expand(optim_embeds.size(0), -1, -1)    # (N, L_post, V)
-
-        tgt_emb = self.target_embeds.expand(optim_embeds.size(0), -1, -1) # (N, L_gen , V)
-        L_gen = self.target_embeds.size(1)
-        full_embeds = torch.cat([pre, optim_embeds, post, tgt_emb], dim=1) # (N, L_pre + L_opt + L_post + L_gen, V)
-        seq_len = full_embeds.size(1)
-        tgt = full_embeds.new_zeros((optim_embeds.size(0), seq_len), dtype=torch.long)
-        tgt[:, -L_gen - 1:-1] = self.target_ids[0]                # broadcast gen into every row
-
-        embedding_list.extend([e for e in full_embeds])            # list of (N, …, V)
-        targets.extend([t for t in tgt])                           # list of (N, …)
-
-        # Get losses using get_losses_batched
-        losses_list = get_losses_batched(
-            model=self.model,
-            targets=targets, # len(generations) * N * (T,)
-            embedding_list=embedding_list, # len(generations) * N * (T, V)
-            padding_side="right",
-            initial_batch_size=512,
-        )
-        affirmatives_losses = torch.stack([losses_list[idx][-L_gen:].mean() for idx in range(N)])
-
-        return affirmatives_losses
 
     def compute_entropy_loss(self, candidate_ids: Tensor) -> Tensor:
         """Computes the entropy maximization loss using kl_allowed_fwd for candidate token id sequences.
@@ -512,41 +474,47 @@ class GCGReinforceAttack(Attack):
             candidate_ids_one_hot = F.one_hot(candidate_ids, num_classes=self.tokenizer.vocab_size).to(self.model.dtype)
         else:
             candidate_ids_one_hot = candidate_ids
-        optim_embeds = candidate_ids_one_hot @ self.model.get_input_embeddings().weight  # (N, T, V)
+        embedding_layer = self.model.get_input_embeddings()
+        optim_embeds = candidate_ids_one_hot @ embedding_layer.weight  # (N, T, V)
+        if hasattr(embedding_layer, "embed_scale"):  # For gemma
+            optim_embeds = optim_embeds * embedding_layer.embed_scale.to(optim_embeds)
 
         # Create input embeddings for each candidate and generation combination
+        pre = self.pre_prompt_embeds.expand(N, -1, -1)  # (N, L_pre , V)
+        post = self.post_embeds.expand(N, -1, -1)  # (N, L_post, V)
+        non_gen_embeds = torch.cat([pre, optim_embeds, post], dim=1)  # (N, L_pre + L_opt + L_post, V)
+
         embedding_list = []
         targets = []
-        pre: Tensor = self.pre_prompt_embeds           # (L_pre , V)
-        post: Tensor = self.post_embeds                 # (L_post, V)
-        pre = pre.expand(optim_embeds.size(0), -1, -1)   # (N, L_pre , V)
-        post = post.expand(optim_embeds.size(0), -1, -1)    # (N, L_post, V)
 
-        for gen in generations:                     # keep outer loop (ragged lengths)
+        for gen in generations:
             gen = gen.to(self.model.device)
-            gen_emb: Tensor = self.model.get_input_embeddings()(gen)   # (L_gen , V)
-            gen_emb = gen_emb.unsqueeze(0).expand(optim_embeds.size(0), *gen_emb.shape) # (N, L_gen , V)
-            full_embeds = torch.cat([pre, optim_embeds, post, gen_emb], dim=1) # (N, L_pre + L_opt + L_post + L_gen, V)
+            gen_embeds: Tensor = self.model.get_input_embeddings()(gen)  # (L_gen , V)
+            gen_embeds = gen_embeds.unsqueeze(0).expand(N, -1, -1) # (N, L_gen , V)
+            full_embeds = torch.cat([non_gen_embeds, gen_embeds], dim=1) # (N, L_pre + L_opt + L_post + L_gen, V)
 
             seq_len = full_embeds.size(1)
-            tgt = full_embeds.new_zeros((optim_embeds.size(0), seq_len), dtype=torch.long)
-            tgt[:, -len(gen) - 1:-1] = gen                # broadcast gen into every row
+            tgt = torch.zeros((N, seq_len), dtype=torch.long, device=self.model.device)
+            tgt[:, -len(gen) - 1:-1] = gen
 
-            embedding_list.extend([e for e in full_embeds])            # list of (N, …, V)
-            targets.extend([t for t in tgt])                           # list of (N, …)
+            embedding_list.extend([e for e in full_embeds])
+            targets.extend([t for t in tgt])
 
         # Get losses using get_losses_batched
         losses_list = get_losses_batched(
             model=self.model,
-            targets=targets, # len(generations) * N * (T,)
-            embedding_list=embedding_list, # len(generations) * N * (T, V)
+            targets=targets,  # len(generations) * N * (T,)
+            embedding_list=embedding_list,  # len(generations) * N * (T, V)
             padding_side="right",
             initial_batch_size=512,
         )
 
         token_weights = torch.linspace(self.config.token_position_weight_ratio, 1, self.config.optim_max_new_tokens, device=self.model.device)
+        # token_weights = torch.arange(self.config.optim_max_new_tokens, device=self.model.device)
+        # token_weights = 0.8 ** token_weights
         # Reshape losses back to (B, N) and normalize by sequence length
         reinforce_losses = torch.zeros((B, N), device=self.model.device)
+
         for i, gen in enumerate(generations):
             gen_len = len(gen)
             start_idx = i * N
@@ -557,8 +525,29 @@ class GCGReinforceAttack(Attack):
             reinforce_losses[i, :] = batch_losses
         # Apply advantages and take mean over generations
         if N == 1:
-            for gen, adv, loss in zip(generations, advantages, reinforce_losses):
+            losses_ragged = []
+            losses_reweighted = []
+            for i, (gen, adv, loss) in enumerate(zip(generations, advantages, reinforce_losses)):
+                gen_len = len(gen)
                 print(self.tokenizer.decode(gen)[:100], adv.item(), loss.item())
+                losses_list[i]
+                losses_ragged.append(losses_list[i][-gen_len:])
+                weights = token_weights[:gen_len].clone()
+                weights = weights / weights.sum()
+                losses_reweighted.append((losses_list[i][-gen_len:] * weights))
+
+            from matplotlib import pyplot as plt
+            fig, axes = plt.subplots(1, len(losses_ragged), figsize=(5 * len(losses_ragged), 5))
+            if len(losses_ragged) == 1:
+                axes = [axes]
+            for i, (lr, lw) in enumerate(zip(losses_ragged, losses_reweighted)):
+                axes[i].plot(lr.float().cpu().detach().numpy(), "r", label="raw")
+                axes[i].plot(lw.float().cpu().detach().numpy(), "b", label="reweighted")
+                axes[i].legend()
+                axes[i].set_title(f"Generation {i}")
+            plt.tight_layout()
+            plt.savefig(f"losses_reweighted_{int(time.time())}.png")
+            plt.close()
         reinforce_losses = (reinforce_losses * advantages.unsqueeze(1)).mean(dim=0)  # (N,)
 
         return reinforce_losses
@@ -585,12 +574,6 @@ class GCGReinforceAttack(Attack):
         reinforce_losses = self.compute_reinforce_loss(generations, advantages, candidate_ids)
         t_reinforce = time.time() - t_reinforce_start
         print(f"    REINFORCE loss computation: {t_reinforce:.3f}s")
-
-        # # Compute affirmative loss
-        # t_affirmative_start = time.time()
-        # affirmative_losses = self.compute_affirmative_loss(candidate_ids)
-        # t_affirmative = time.time() - t_affirmative_start
-        # print(f"    Affirmative loss computation: {t_affirmative:.3f}s")
 
         # Compute entropy maximization loss
         # t_entropy_start = time.time()
@@ -642,25 +625,19 @@ def _sample_ids_from_grad(
     original_ids = ids.repeat(search_width, 1)
 
     if not_allowed_ids is not None:
-        # when we have a non-differentiable loss, we try fully random sampling
         if grad.isinf().all() or grad.isnan().all():
             raise ValueError("Gradient is all inf or nan")
         grad[:, not_allowed_ids.to(grad.device)] = float("inf")
 
+    # fmt: off
     topk_ids = grad.topk(topk, dim=1, largest=False, sorted=False).indices  # (n_optim_ids, topk)
+    sampled_ids_pos = torch.randint(0, n_optim_ids, (search_width, n_replace), device=grad.device)  # (search_width, n_replace)
+    sampled_topk_idx = torch.randint(0, topk, (search_width, n_replace, 1), device=grad.device)  # (search_width, n_replace, 1)
 
-    sampled_ids_pos = torch.randint(
-        0, n_optim_ids, (search_width, n_replace), device=grad.device
-    )  # (search_width, n_replace)
-    sampled_topk_idx = torch.randint(
-        0, topk, (search_width, n_replace, 1), device=grad.device
-    )
-
-    sampled_ids_val = (
-        topk_ids[sampled_ids_pos].gather(2, sampled_topk_idx).squeeze(2)
-    )  # (search_width, n_replace)
+    sampled_ids_val = topk_ids[sampled_ids_pos].gather(2, sampled_topk_idx).squeeze(2)  # (search_width, n_replace)
 
     new_ids = original_ids.scatter_(1, sampled_ids_pos, sampled_ids_val)  # (search_width, n_optim_ids)
+    # fmt: on
 
     return new_ids, sampled_ids_pos
 
