@@ -798,28 +798,37 @@ class SubstitutionSelectionStrategy:
         Returns:
             sampled_ids : Tensor, shape = (search_width, n_optim_ids)
                 sampled token ids
+            sampled_ids_pos : Tensor, shape = (search_width, 1)
+                the positions of the sampled token ids
+            grad : Tensor, shape = (N, V)
+                the gradient of the GCG loss computed with respect to the one-hot token embeddings
+            flops : int
+                the number of floating-point operations
         """
         # Sample search_width//ids.shape[0] substitutions at each position
-        samples_per_position = search_width // ids.shape[0]
-        positions = torch.arange(ids.shape[0], device=ids.device)
-        original_ids = ids.repeat(search_width, 1)
+        N = ids.shape[0]
+        V = model.get_input_embeddings().weight.size(0)
+        samples_per_position = search_width // N
+
+        positions = torch.arange(N, device=ids.device) # (N,)
+        original_ids = ids.repeat(search_width, 1) # (search_width, N)
 
         # Get valid ids for each position (all except not_allowed_ids)
-        valid_ids = torch.ones((ids.shape[0], model.get_input_embeddings().weight.size(0)), dtype=torch.bool, device=ids.device)
+        valid_ids = torch.ones((N, V), dtype=torch.bool, device=ids.device)
         if self.not_allowed_ids is not None:
             valid_ids[:, self.not_allowed_ids.to(ids.device)] = False
 
         # Sample indices for each position in parallel
-        sampled_ids = torch.empty((ids.shape[0], samples_per_position), dtype=torch.long, device=ids.device)
-        rand_perm = torch.argsort(torch.rand_like(valid_ids.float()), dim=1)
-        valid_perm = torch.masked_select(rand_perm, valid_ids).reshape(ids.shape[0], -1)
+        sampled_ids = torch.empty((N, samples_per_position), dtype=torch.long, device=ids.device) # (N, samples_per_position)
+        rand_perm = torch.argsort(torch.rand_like(valid_ids.float()), dim=1) # (N, V)
+        valid_perm = torch.masked_select(rand_perm, valid_ids).reshape(N, -1) # (N, samples_per_position)
         sampled_ids = valid_perm[:, :samples_per_position]
 
         # Reshape to (total_samples, 1) format
         sampled_topk_idx = sampled_ids.reshape(-1)
         sampled_ids_pos = positions.repeat_interleave(samples_per_position)
-        original_ids = original_ids[:samples_per_position * ids.shape[0]]
-        new_ids = original_ids.scatter_(1, sampled_ids_pos.unsqueeze(1), sampled_topk_idx.unsqueeze(1))
+        original_ids = original_ids[:samples_per_position * N] # (search_width * N,)
+        new_ids = original_ids.scatter_(1, sampled_ids_pos.unsqueeze(1), sampled_topk_idx.unsqueeze(1)) # (search_width * N,) -> (search_width, N)
         return new_ids, sampled_ids_pos, None, 0
 
     def _lowest_gradient_magnitude(

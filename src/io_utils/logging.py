@@ -5,6 +5,7 @@ This module provides functions for logging attack results to JSON files
 and managing tensor offloading for large model embeddings.
 """
 
+import copy
 import hashlib
 import json
 import logging
@@ -41,28 +42,32 @@ def offload_tensors(run_config, result: AttackResult, embed_dir: str):
 
 def log_attack(run_config, result: AttackResult, cfg: DictConfig, date_time_string: str):
     """Logs the attack results to a JSON file and MongoDB."""
-
     save_dir = cfg.save_dir
     embed_dir = cfg.embed_dir
-    # Create a structured log message as a JSON object
-    OmegaConf.resolve(run_config.attack_params)
-    OmegaConf.resolve(run_config.dataset_params)
-    OmegaConf.resolve(run_config.model_params)
-    log_message = {
-        "config": OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)
-    }
-    offload_tensors(run_config, result, embed_dir)
+    for idx, run in enumerate(result.runs):
+        subrun_config = copy.deepcopy(run_config)
+        subrun_config.dataset_params["idx"] = [run_config.dataset_params["idx"][idx]]
+        subrun_result = AttackResult(runs=[run])
 
-    log_message.update(asdict(result))
-    # Find the first available run_i.json file
-    i = 0
-    log_dir = os.path.join(save_dir, date_time_string)
-    while os.path.exists(os.path.join(log_dir, str(i), f"run.json")):
-        i += 1
-    log_file = os.path.join(log_dir, str(i), f"run.json")
+        # Create a structured log message as a JSON object
+        OmegaConf.resolve(subrun_config.attack_params)
+        OmegaConf.resolve(subrun_config.dataset_params)
+        OmegaConf.resolve(subrun_config.model_params)
+        log_message = {
+            "config": OmegaConf.to_container(OmegaConf.structured(subrun_config), resolve=True)
+        }
+        offload_tensors(subrun_config, subrun_result, embed_dir)
 
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    with open(log_file, "w") as f:
-        json.dump(log_message, f, indent=2, cls=CompactJSONEncoder)
-    logging.info(f"Attack logged to {log_file}")
-    log_config_to_db(run_config, result, log_file)
+        log_message.update(asdict(subrun_result))
+        # Find the first available run_i.json file
+        i = 0
+        log_dir = os.path.join(save_dir, date_time_string)
+        while os.path.exists(os.path.join(log_dir, str(i), f"run.json")):
+            i += 1
+        log_file = os.path.join(log_dir, str(i), f"run.json")
+
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        with open(log_file, "w") as f:
+            json.dump(log_message, f, indent=2, cls=CompactJSONEncoder)
+        logging.info(f"Attack logged to {log_file}")
+        log_config_to_db(subrun_config, subrun_result, log_file)

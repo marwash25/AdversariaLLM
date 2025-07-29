@@ -19,7 +19,15 @@ save_dir: ${root_dir}/outputs/
 embed_dir: ${root_dir}/embeddings/
 overwrite: false
 
-classifiers: ["strong_reject"] # anything from judgezoo
+classifiers: ["strong_reject"]  # anything from judgezoo
+
+# Top-level generation config for easier overriding
+generation_config:
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 0
+  max_new_tokens: 256
+  num_return_sequences: 1
 
 # overrides for parallelism
 attack: null

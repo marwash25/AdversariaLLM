@@ -66,22 +66,36 @@ class GCGReinforceConfig:
     filter_ids: bool = True
     verbosity: str = "WARNING"
     token_selection: str = "default"
+    # REINFORCE parameters
     judge_model_id: str = "strong_reject"
-    optim_num_return_sequences: int = 10
     optim_max_new_tokens: int = 256
     optim_temperature: float = 0.7
     optim_top_p: float = 1.0
     optim_top_k: int = 0
     reward_baseline: float = 0.1  # all generations below this are penalized no matter what
     token_position_weight_ratio: float = 5.0
-    include_y_affirmative: bool = True
+    token_position_weight_type: str = "linear"
+    loss_include_categories: tuple[str] = ("samples", "greedy", "buffer", "affirmative")
+    selection_include_categories: tuple[str] = ("greedy", "buffer", "affirmative")
+    optim_num_return_sequences: int = 2
+    elite_buffer_size: int = 1
+    optim_num_return_sequences_for_grad: int = 0
+    exploit_greedy: bool = False
+    harmful_threshold: float = 0.5
+    entropy_losses_weight: float = 0.0
 
 
-class GCGReinforceAttack(Attack):
+class GCGReinforceAttack(Attack[GCGReinforceConfig]):
     def __init__(self, config: GCGReinforceConfig):
         super().__init__(config)
         self.tokenizer = None  # Will be set in run()
         self.model = None
+        self.elite_buffer = []  # List of (generation, reward) tuples
+        self.previous_greedy_reward = None  # Track previous greedy reward for exploit_greedy
+        self.previous_optim_ids = None  # Track previous optim_ids for exploit_greedy
+        self.previous_rewards = None  # Track previous rewards for exploit_greedy
+        self.previous_generations = None  # Track previous generations for exploit_greedy
+        self.previous_categories = None  # Track previous categories for exploit_greedy
         self.logger = logging.getLogger("gcg_reinforce")
         if not self.logger.hasHandlers():
             handler = logging.StreamHandler()
@@ -119,51 +133,10 @@ class GCGReinforceAttack(Attack):
         return AttackResult(runs=runs)
 
     def _attack_single_conversation(
-        self, model, tokenizer, conversation
+        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, conversation: Conversation
     ) -> SingleAttackRunResult:
         t0 = time.time()
-        try:
-            attack_conversation: Conversation = [
-                {
-                    "role": "user",
-                    "content": conversation[0]["content"] + self.config.optim_str_init,
-                },
-                {"role": "assistant", "content": conversation[1]["content"]},
-            ]
-            (
-                pre_ids,
-                attack_prefix_ids,
-                prompt_ids,
-                attack_suffix_ids,
-                post_ids,
-                target_ids,
-            ) = prepare_conversation(tokenizer, conversation, attack_conversation)[0]
-        except TokenMergeError:
-            attack_conversation: Conversation = [
-                {
-                    "role": "user",
-                    "content": conversation[0]["content"]
-                    + " "
-                    + self.config.optim_str_init,
-                },
-                {"role": "assistant", "content": conversation[1]["content"]},
-            ]
-            (
-                pre_ids,
-                attack_prefix_ids,
-                prompt_ids,
-                attack_suffix_ids,
-                post_ids,
-                target_ids,
-            ) = prepare_conversation(tokenizer, conversation, attack_conversation)[0]
-
-        pre_ids = pre_ids.unsqueeze(0).to(model.device)
-        # attack_prefix_ids = attack_prefix_ids.unsqueeze(0).to(model.device)
-        prompt_ids = prompt_ids.unsqueeze(0).to(model.device)
-        pre_prompt_ids = torch.cat([pre_ids, prompt_ids], dim=1)
-        attack_ids = attack_suffix_ids.unsqueeze(0).to(model.device)
-        post_ids = post_ids.unsqueeze(0).to(model.device)
-        target_ids = target_ids.unsqueeze(0).to(model.device)
+        pre_prompt_ids, attack_suffix_ids, post_ids, target_ids = self._tokenize_conversation(conversation)
 
         # Embed everything that doesn't get optimized
         embedding_layer = model.get_input_embeddings()
@@ -177,21 +150,24 @@ class GCGReinforceAttack(Attack):
         self.target_embeds = target_embeds
 
         # Initialize the attack buffer
-        optim_ids = attack_ids
+        optim_ids = attack_suffix_ids
 
         rewards = []
         times = []
         flops = []
         optim_strings = []
         losses = []
+        entropies = []
         for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
-            current_reward, loss, time_for_step, optim_ids, flops_for_step = (
+            current_reward, loss, time_for_step, optim_ids, flops_for_step, entropy = (
                 self._single_step(conversation, optim_ids)
             )
             rewards.append(current_reward.mean().item())
             losses.append(loss)
             times.append(time_for_step)
             optim_strings.append(self.tokenizer.batch_decode(optim_ids)[0])
+            entropies.append(entropy)
+
             if i == 0:
                 flops.append(flops_for_step)
             else:
@@ -201,6 +177,7 @@ class GCGReinforceAttack(Attack):
                     "Mean Reward": current_reward.mean().item(),
                     "Max Reward": current_reward.max().item(),
                     "Loss": loss,
+                    "Entropy": entropy,
                     "Best Attack": optim_strings[-1][:80],
                 }
             )
@@ -267,17 +244,31 @@ class GCGReinforceAttack(Attack):
         t0a = time.time()
 
         t_rewards_start = time.time()
-        rewards, generations, flops_loss = self.compute_candidate_rewards(conversation, optim_ids)
+        rewards, generations, flops_loss, categories = self.compute_candidate_rewards(conversation, optim_ids)
         t_rewards = time.time() - t_rewards_start
         print(f"  Compute rewards: {t_rewards:.2f}s")
 
+        # Once the greedy generation has become harmful, we only accept new optim_ids if
+        # the greedy generation remains harmful.
+        if "greedy" in self.config.loss_include_categories and self.config.exploit_greedy:
+            if self.previous_greedy_reward is not None and self.previous_greedy_reward > self.config.harmful_threshold:
+                if self._get_greedy_reward(rewards) <= self.config.harmful_threshold:
+                    print(f"  Exploit greedy: Rejected new optim_ids (greedy_reward={self._get_greedy_reward(rewards):.3f} <= {self.config.harmful_threshold})")
+                    optim_ids = self.previous_optim_ids
+                    rewards = self.previous_rewards
+                    generations = self.previous_generations
+                    categories = self.previous_categories
+
         t_grad_start = time.time()
         advantages = self.compute_advantages(rewards)  # (num_gens,)
-        optim_ids_one_hot = F.one_hot(optim_ids, num_classes=self.tokenizer.vocab_size).to(self.model.dtype).requires_grad_(True)
-        loss_for_grad = self.compute_reinforce_loss(generations, advantages, optim_ids_one_hot)[0]
+
+        optim_ids_one_hot = F.one_hot(optim_ids, num_classes=self.model.get_input_embeddings().weight.size(0)).to(self.model.dtype).requires_grad_(True)
+        loss_for_grad, flops_loss = self.compute_reinforce_loss(generations, advantages, optim_ids_one_hot, rewards, categories)
+
         grad = torch.autograd.grad([loss_for_grad], [optim_ids_one_hot])[0].squeeze(0)
         t_grad = time.time() - t_grad_start
         print(f"  Compute gradients: {t_grad:.2f}s")
+
         if grad.isinf().all() or grad.isnan().all():
             candidate_ids, candidate_ids_pos = _random_overall(
                 ids=optim_ids.squeeze(0),
@@ -309,25 +300,38 @@ class GCGReinforceAttack(Attack):
                 )
                 candidate_ids = candidate_ids[idx] # (B, T)
                 candidate_ids_pos = candidate_ids_pos[idx] # (B, T)
-            compute_loss_fn = partial(self.compute_candidates_loss, generations, advantages)
-            loss_for_candidates = with_max_batchsize(compute_loss_fn, candidate_ids)
+            keep_idx = []
+            for cat in self.config.selection_include_categories:
+                keep_idx.extend([i for i, c in enumerate(categories) if c == cat])
+
+            compute_loss_fn = partial(self.compute_candidates_loss, [generations[i] for i in keep_idx], advantages[keep_idx], [categories[i] for i in keep_idx])
+            loss_for_candidates, flops_loss = with_max_batchsize(compute_loss_fn, candidate_ids)
+
             optim_ids = candidate_ids[loss_for_candidates.argmin()].unsqueeze(0)
             current_loss = loss_for_candidates[loss_for_candidates.argmin()].item()
-            flops_for_step = flops_loss.sum().item()
+            flops_for_step = flops_loss.sum().long().item()
             # Update the buffer based on the loss
 
-        return rewards, current_loss, time.time() - t0a, optim_ids, flops_for_step
+        # Compute entropy of first predicted token
+        entropy = self.compute_first_token_entropy(optim_ids)
+        self.previous_optim_ids = optim_ids
+        self.previous_rewards = rewards
+        self.previous_generations = generations
+        self.previous_categories = categories
+        self.previous_greedy_reward = self._get_greedy_reward(rewards)
+
+        return rewards, current_loss, time.time() - t0a, optim_ids, flops_for_step, entropy
 
     @torch.no_grad()
     def compute_candidate_rewards(
         self,
         conversation: Conversation,
-        attack_ids: Tensor,
+        attack_suffix_ids: Tensor,
     ) -> Tensor:
         """Computes the GCG reward on all candidate token id sequences.
 
         Args:
-            attack_ids : Tensor, shape = (1, T)
+            attack_suffix_ids : Tensor, shape = (1, T)
                 the attack token ids to evaluate
             conversation : Conversation
                 the original dataset conversation to evaluate
@@ -336,20 +340,13 @@ class GCGReinforceAttack(Attack):
             reward : Tensor, shape = (B,)
                 the GCG reward on all candidate sequences
         """
+        flops = 0
+
         # Convert candidate_ids to one_hot and get embeddings
-        if attack_ids.dim() == 2:
-            # Can't compute gradients in this scenario
-            candidate_ids_one_hot = F.one_hot(attack_ids, num_classes=self.tokenizer.vocab_size).to(self.model.dtype)
-        else:
-            candidate_ids_one_hot = attack_ids
-        optim_embeds = candidate_ids_one_hot @ self.model.get_input_embeddings().weight  # (N, T, V)
-        optim_embeds_v2 = self.model.get_input_embeddings()(attack_ids)
-        print(optim_embeds.shape, optim_embeds_v2.shape, self.model.get_input_embeddings().embed_scale)
-        print(torch.allclose(optim_embeds, optim_embeds_v2), torch.mean(torch.abs(optim_embeds - optim_embeds_v2)))
         embeds_to_generate_with = torch.cat(
             [
                 self.pre_prompt_embeds,
-                optim_embeds,
+                self.model.get_input_embeddings()(attack_suffix_ids),
                 self.post_embeds,
             ],
             dim=1,
@@ -366,8 +363,43 @@ class GCGReinforceAttack(Attack):
             num_return_sequences=self.config.optim_num_return_sequences,
             return_tokens=True
         )[0]
-        if self.config.include_y_affirmative:
+
+        # Track categories
+        categories = ["samples"] * len(completions)
+        n_input_tokens = embeds_to_generate_with.size(0) * self.config.optim_num_return_sequences
+        # Take into account prefix caching.
+        n_redundant_tokens = self.pre_prompt_embeds.size(1) * (self.config.optim_num_return_sequences - 1)
+        n_input_tokens -= n_redundant_tokens
+        n_output_tokens = sum(len(c) for c in completions)
+        flops += get_flops(self.model, n_input_tokens, n_output_tokens, "forward")
+
+        if "greedy" in self.config.loss_include_categories:
+            # Generate greedy response (temperature=0)
+            greedy_completion = generate_ragged_batched(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                embedding_list=[embeds_to_generate_with],
+                max_new_tokens=self.config.optim_max_new_tokens,
+                temperature=0.0,  # Greedy sampling
+                top_p=1.0,
+                top_k=0,
+                num_return_sequences=1,
+                return_tokens=True
+            )[0][0]  # Get the first (and only) completion
+            completions.append(greedy_completion)
+            categories.append("greedy")
+            n_input_tokens = embeds_to_generate_with.size(0) - self.pre_prompt_embeds.size(1)
+            n_output_tokens = len(greedy_completion)
+            flops += get_flops(self.model, n_input_tokens, n_output_tokens, "forward")
+
+        if "buffer" in self.config.loss_include_categories and self.config.elite_buffer_size > 0 and len(self.elite_buffer) > 0:
+            elite_completions = self._get_elite_completions()
+            completions.extend(elite_completions)
+            categories.extend(["buffer"] * len(elite_completions))
+
+        if "affirmative" in self.config.loss_include_categories:
             completions.append(self.target_ids[0])  # add y_affirmative
+            categories.append("affirmative")
 
         conversation_with_completions: Conversation = [
             [
@@ -377,18 +409,50 @@ class GCGReinforceAttack(Attack):
         ]
 
         judgements = self.judge(conversation_with_completions)["p_harmful"]
+        if self.config.judge_model_id == "strong_reject":
+            inputs = [
+                self.judge.tokenizer(self.judge.SR_CLS_PROMPT.format(behavior=c[0]["content"], response=c[1]["content"])).input_ids
+                for c in conversation_with_completions
+            ]
+            n_input_tokens = sum(len(pr) for pr in inputs)
+            n_output_tokens = 1 * len(inputs)
+            flops += get_flops(self.judge.classifier, n_input_tokens, n_output_tokens, "forward")
+        elif self.config.judge_model_id == "harmbench":
+            cls_prompt = self.judge.tokenizer.apply_chat_template(
+                self.judge.CLS_CONVERSATION, tokenize=False
+            )
+            inputs = [
+                self.judge.tokenizer(cls_prompt.format(behavior=c[0]["content"], generation=c[1]["content"])).input_ids
+                for c in conversation_with_completions
+            ]
+            n_input_tokens = sum(len(pr) for pr in inputs)
+            n_output_tokens = 1 * len(inputs)
+            flops += get_flops(self.judge.classifier, n_input_tokens, n_output_tokens, "forward")
+        else:
+            logging.warning(f"We do not compute flops for the judge `{self.config.judge_model_id}` right now")
         rewards = torch.tensor(judgements).to(self.model.device)
 
-        if self.config.include_y_affirmative:
+        if "affirmative" in self.config.loss_include_categories:
             rewards[-1] = max(rewards[-1], 0.5)
+
+        if "buffer" in self.config.loss_include_categories and self.config.elite_buffer_size > 0:
+            self._update_elite_buffer(completions, rewards)
+
+        # Select top-k sequences by reward for gradient computation
+        if self.config.optim_num_return_sequences_for_grad != 0 and len(rewards) > self.config.optim_num_return_sequences_for_grad:
+            top_k_indices = torch.topk(rewards, self.config.optim_num_return_sequences_for_grad, sorted=False).indices
+            completions = [completions[i] for i in top_k_indices]
+            rewards = rewards[top_k_indices]
+            categories = [categories[i] for i in top_k_indices]
+
         gc.collect()
         torch.cuda.empty_cache()
-        flops = 0
 
         return (
             rewards,
             completions,
-            torch.tensor(flops).expand_as(rewards),
+            flops,
+            categories,
         )
 
     def compute_advantages(self, rewards):
@@ -405,6 +469,101 @@ class GCGReinforceAttack(Attack):
             n += 1
         advantages = (rewards * n - total_sum) / (n - 1)
         return advantages + 1e-8
+
+    @torch.no_grad()
+    def compute_first_token_entropy(self, optim_ids: Tensor) -> float:
+        """Computes the entropy of the first predicted token distribution.
+
+        Args:
+            optim_ids: Tensor, shape = (1, T) - Current attack token ids
+
+        Returns:
+            entropy: float - Entropy of the first token distribution
+        """
+        # Get embeddings for the current attack sequence
+        optim_embeds = self.model.get_input_embeddings()(optim_ids)  # (1, T, D)
+
+        # Prepare full input embeddings
+        full_embeds = torch.cat([
+            self.pre_prompt_embeds,  # (1, L_pre, D)
+            optim_embeds,            # (1, T, D)
+            self.post_embeds         # (1, L_post, D)
+        ], dim=1)  # (1, L_total, D)
+
+        # Forward pass to get logits
+        outputs = self.model(inputs_embeds=full_embeds)
+
+        # Get logits for the first generated token (position after input sequence)
+        first_token_logits = outputs.logits[0, -1, :]  # (V,)
+
+        # Compute entropy: H(p) = -sum(p * log(p))
+        probs = F.softmax(first_token_logits.float(), dim=-1)  # (V,)
+        log_probs = F.log_softmax(first_token_logits.float(), dim=-1)  # (V,)
+        entropy = -(probs * log_probs).sum().item()
+
+        return entropy
+
+    def _get_greedy_reward(self, rewards: Tensor) -> float:
+        """Extract the greedy completion reward from the rewards tensor.
+
+        The greedy completion is added after the regular generated completions
+        but before elite buffer and affirmative completions.
+
+        Args:
+            rewards: Tensor of shape (N,) containing all completion rewards
+
+        Returns:
+            greedy_reward: float - The reward for the greedy completion
+        """
+        assert "greedy" in self.config.loss_include_categories, "Greedy reward is only available if greedy is in loss_include_categories"
+
+        # The greedy completion is at index optim_num_return_sequences
+        greedy_idx = self.config.optim_num_return_sequences
+        return rewards[greedy_idx].item()
+
+    @torch.no_grad()
+    def _evaluate_greedy_reward(self, conversation: Conversation, attack_suffix_ids: Tensor) -> float:
+        """Evaluate the greedy completion reward for a given attack string.
+
+        Args:
+            conversation: The original conversation
+            attack_suffix_ids: Tensor of shape (1, T) - Attack token ids to evaluate
+
+        Returns:
+            greedy_reward: float - The reward for the greedy completion
+        """
+        # Get embeddings for the attack sequence
+        embeds_to_generate_with = torch.cat(
+            [
+                self.pre_prompt_embeds,
+                self.model.get_input_embeddings()(attack_suffix_ids),
+                self.post_embeds,
+            ],
+            dim=1,
+        )[0]  # (T, V)
+
+        # Generate greedy response
+        greedy_completion = generate_ragged_batched(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            embedding_list=[embeds_to_generate_with],
+            max_new_tokens=self.config.optim_max_new_tokens,
+            temperature=0.0,  # Greedy sampling
+            top_p=1.0,
+            top_k=0,
+            num_return_sequences=1,
+            return_tokens=True
+        )[0][0]  # Get the first (and only) completion
+
+        # Create conversation for judging
+        conversation_with_completion = [
+            {"role": "user", "content": conversation[0]["content"]},
+            {"role": "assistant", "content": self.tokenizer.decode(greedy_completion)},
+        ]
+
+        # Get judgment
+        judgement = self.judge([conversation_with_completion])["p_harmful"][0]
+        return judgement
 
     def compute_entropy_loss(self, candidate_ids: Tensor) -> Tensor:
         """Computes the entropy maximization loss using kl_allowed_fwd for candidate token id sequences.
@@ -454,7 +613,7 @@ class GCGReinforceAttack(Attack):
 
         return loss
 
-    def compute_reinforce_loss(self, generations: list[Tensor], advantages: Tensor, candidate_ids: Tensor) -> Tensor:
+    def compute_reinforce_loss(self, generations: list[Tensor], advantages: Tensor, candidate_ids: Tensor, rewards: Tensor = None, categories: list[str] = None) -> Tensor:
         """Computes the REINFORCE loss for candidate token id sequences.
 
         Args:
@@ -467,11 +626,12 @@ class GCGReinforceAttack(Attack):
         """
         N = candidate_ids.size(0)
         B = len(generations)
+        V = self.model.get_input_embeddings().weight.size(0)
 
         # Convert candidate_ids to one_hot and get embeddings
         if candidate_ids.dim() == 2:
             # Can't compute gradients in this scenario
-            candidate_ids_one_hot = F.one_hot(candidate_ids, num_classes=self.tokenizer.vocab_size).to(self.model.dtype)
+            candidate_ids_one_hot = F.one_hot(candidate_ids, num_classes=V).to(self.model.dtype)
         else:
             candidate_ids_one_hot = candidate_ids
         embedding_layer = self.model.get_input_embeddings()
@@ -508,11 +668,22 @@ class GCGReinforceAttack(Attack):
             padding_side="right",
             initial_batch_size=512,
         )
+        if candidate_ids_one_hot.requires_grad:
+            flops_loss = get_flops(self.model, non_gen_embeds.size(0)*non_gen_embeds.size(1), sum(len(gen) for gen in generations), "forward_and_backward")
+        else:
+            flops_loss = get_flops(self.model, non_gen_embeds.size(0)*non_gen_embeds.size(1), sum(len(gen) for gen in generations), "forward")
 
-        token_weights = torch.linspace(self.config.token_position_weight_ratio, 1, self.config.optim_max_new_tokens, device=self.model.device)
-        # token_weights = torch.arange(self.config.optim_max_new_tokens, device=self.model.device)
-        # token_weights = 0.8 ** token_weights
+        if self.config.token_position_weight_type == "linear":
+            token_weights = torch.linspace(self.config.token_position_weight_ratio, 1, self.config.optim_max_new_tokens, device=self.model.device)
+        elif self.config.token_position_weight_type == "exponential":
+            token_weights = torch.arange(self.config.optim_max_new_tokens, device=self.model.device)
+            token_weights = self.config.token_position_weight_ratio ** token_weights
+        else:
+            raise ValueError(f"Invalid token position weight type: {self.config.token_position_weight_type}")
         # Reshape losses back to (B, N) and normalize by sequence length
+        # TODO: try out
+        # clipping max per-token loss
+        # rescaling by ce magnitude
         reinforce_losses = torch.zeros((B, N), device=self.model.device)
 
         for i, gen in enumerate(generations):
@@ -521,39 +692,44 @@ class GCGReinforceAttack(Attack):
             end_idx = start_idx + N
             weights = token_weights[:gen_len].clone()
             weights = weights / weights.sum()
+
+            # batch_losses = torch.stack([(losses_list[idx][-gen_len:]/(losses_list[idx][-gen_len:].detach().abs() + 1e-3) * weights).sum() for idx in range(start_idx, end_idx)])
             batch_losses = torch.stack([(losses_list[idx][-gen_len:] * weights).sum() for idx in range(start_idx, end_idx)])
             reinforce_losses[i, :] = batch_losses
         # Apply advantages and take mean over generations
-        if N == 1:
-            losses_ragged = []
-            losses_reweighted = []
-            for i, (gen, adv, loss) in enumerate(zip(generations, advantages, reinforce_losses)):
+        if N == 1 and rewards is not None:
+            # Define color codes for each category
+            colors = {
+                "samples": "\033[94m",      # Blue
+                "greedy": "\033[92m",       # Green
+                "buffer": "\033[93m",       # Yellow
+                "affirmative": "\033[95m"   # Magenta
+            }
+            reset_color = "\033[0m"
+
+            # Print formatted header
+            print(f"{'Generation':<100} {'Category':<12} {'Advantage':<12} {'Raw Reward':<12} {'Loss':<12}")
+            print("-" * 148)
+
+            for i, (gen, adv, reward, loss) in enumerate(zip(generations, advantages, rewards, reinforce_losses)):
                 gen_len = len(gen)
-                print(self.tokenizer.decode(gen)[:100], adv.item(), loss.item())
-                losses_list[i]
-                losses_ragged.append(losses_list[i][-gen_len:])
-                weights = token_weights[:gen_len].clone()
-                weights = weights / weights.sum()
-                losses_reweighted.append((losses_list[i][-gen_len:] * weights))
+                generation_text = self.tokenizer.decode(gen)[:100]
+                category = categories[i] if categories and i < len(categories) else "unknown"
+                color = colors.get(category, "")
 
-            from matplotlib import pyplot as plt
-            fig, axes = plt.subplots(1, len(losses_ragged), figsize=(5 * len(losses_ragged), 5))
-            if len(losses_ragged) == 1:
-                axes = [axes]
-            for i, (lr, lw) in enumerate(zip(losses_ragged, losses_reweighted)):
-                axes[i].plot(lr.float().cpu().detach().numpy(), "r", label="raw")
-                axes[i].plot(lw.float().cpu().detach().numpy(), "b", label="reweighted")
-                axes[i].legend()
-                axes[i].set_title(f"Generation {i}")
-            plt.tight_layout()
-            plt.savefig(f"losses_reweighted_{int(time.time())}.png")
-            plt.close()
+                # Format values
+                advantage_val = f"{adv.item():.6f}"
+                reward_val = f"{reward.item():.6f}"
+                loss_val = f"{loss.item():.6f}"
+
+                # Print with color
+                print(f"{color}{generation_text:<100} {category:<12} {advantage_val:<12} {reward_val:<12} {loss_val:<12}{reset_color}")
+
         reinforce_losses = (reinforce_losses * advantages.unsqueeze(1)).mean(dim=0)  # (N,)
-
-        return reinforce_losses
+        return reinforce_losses, torch.tensor(flops_loss).expand_as(reinforce_losses) / N
 
     @torch.no_grad()
-    def compute_candidates_loss(self, generations: list[Tensor], advantages: Tensor, candidate_ids: Tensor):
+    def compute_candidates_loss(self, generations: list[Tensor], advantages: Tensor, categories: list[str], candidate_ids: Tensor):
         """Computes the combined REINFORCE and affirmative loss for candidate token id sequences.
 
         Args:
@@ -565,30 +741,100 @@ class GCGReinforceAttack(Attack):
             loss: (N,) tensor
         """
         t0_candidates = time.time()
-        # N = candidate_ids.shape[0]
-        # B = len(generations)
-        # print(f"    Computing loss for {N} candidates x {B} generations")
-
         # Compute REINFORCE loss
         t_reinforce_start = time.time()
-        reinforce_losses = self.compute_reinforce_loss(generations, advantages, candidate_ids)
+        reinforce_losses, flops_loss = self.compute_reinforce_loss(generations, advantages, candidate_ids, categories=categories)
         t_reinforce = time.time() - t_reinforce_start
         print(f"    REINFORCE loss computation: {t_reinforce:.3f}s")
-
-        # Compute entropy maximization loss
-        # t_entropy_start = time.time()
-        # entropy_losses = self.compute_entropy_loss(candidate_ids)
-        # t_entropy = time.time() - t_entropy_start
-        # print(f"    Entropy loss computation: {t_entropy:.3f}s")
-
-        # Combine losses
-        # print(reinforce_losses, affirmative_losses, entropy_losses)
         losses = reinforce_losses
-        # losses = entropy_losses
+        # Compute entropy maximization loss
+        if self.config.entropy_losses_weight != 0:
+            t_entropy_start = time.time()
+            entropy_losses = self.compute_entropy_loss(candidate_ids)
+            t_entropy = time.time() - t_entropy_start
+            reinforce_losses_avg = reinforce_losses.mean()
+            entropy_losses_avg = entropy_losses.mean()
+            print(f"    Entropy loss computation: {t_entropy:.3f}s")
+            print(reinforce_losses_avg.item() / entropy_losses_avg.item())
+            entropy_losses_norm = entropy_losses * (reinforce_losses_avg / entropy_losses_avg)
+            losses = losses + entropy_losses_norm * self.config.entropy_losses_weight
 
         t_total_candidates = time.time() - t0_candidates
         print(f"    Total candidates loss: {t_total_candidates:.3f}s")
-        return losses
+        return losses, flops_loss
+
+    def _get_elite_completions(self) -> list[Tensor]:
+        """Returns the top completions from the elite buffer."""
+        if not self.elite_buffer:
+            return []
+
+        # Sort by reward (descending) and take top completions
+        sorted_buffer = sorted(self.elite_buffer, key=lambda x: x[1], reverse=True)
+        elite_completions = [completion for completion, _ in sorted_buffer[:self.config.elite_buffer_size]]
+        return elite_completions
+
+    def _update_elite_buffer(self, completions: list[Tensor], rewards: Tensor):
+        """Updates the elite buffer with new completions and rewards."""
+        # Determine how many completions are new (excluding affirmative, greedy, and elite buffer samples)
+        n_new = self.config.optim_num_return_sequences + ("greedy" in self.config.loss_include_categories)
+
+        # Add new completions to buffer
+        new_completions = completions[:n_new]
+        new_rewards = rewards[:n_new]
+
+        for completion, reward in zip(new_completions, new_rewards):
+            self.elite_buffer.append((completion.clone(), reward.item()))
+
+        # Keep only the top k completions
+        self.elite_buffer.sort(key=lambda x: x[1], reverse=True)
+        self.elite_buffer = self.elite_buffer[:self.config.elite_buffer_size]
+
+    def _tokenize_conversation(self, conversation: Conversation) -> list[str]:
+        try:
+            attack_conversation: Conversation = [
+                {
+                    "role": "user",
+                    "content": conversation[0]["content"] + self.config.optim_str_init,
+                },
+                {"role": "assistant", "content": conversation[1]["content"]},
+            ]
+            (
+                pre_ids,
+                attack_prefix_ids,
+                prompt_ids,
+                attack_suffix_ids,
+                post_ids,
+                target_ids,
+            ) = prepare_conversation(self.tokenizer, conversation, attack_conversation)[0]
+        except TokenMergeError:
+            attack_conversation: Conversation = [
+                {
+                    "role": "user",
+                    "content": conversation[0]["content"]
+                    + " "
+                    + self.config.optim_str_init,
+                },
+                {"role": "assistant", "content": conversation[1]["content"]},
+            ]
+            (
+                pre_ids,
+                attack_prefix_ids,
+                prompt_ids,
+                attack_suffix_ids,
+                post_ids,
+                target_ids,
+            ) = prepare_conversation(self.tokenizer, conversation, attack_conversation)[0]
+        device = self.model.device
+
+        pre_ids = pre_ids.to(device)
+        attack_prefix_ids = attack_prefix_ids.to(device)
+        assert attack_prefix_ids.size(0) == 0, "Attack prefix ids should be empty in the current implementation"
+        prompt_ids = prompt_ids.to(device)
+        pre_prompt_ids = torch.cat([pre_ids, attack_prefix_ids, prompt_ids], dim=0).unsqueeze(0)
+        attack_suffix_ids = attack_suffix_ids.to(device).unsqueeze(0)
+        post_ids = post_ids.to(device).unsqueeze(0)
+        target_ids = target_ids.to(device).unsqueeze(0)
+        return pre_prompt_ids, attack_suffix_ids, post_ids, target_ids
 
 
 def _sample_ids_from_grad(

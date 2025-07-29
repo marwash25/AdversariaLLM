@@ -228,6 +228,7 @@ def generate_ragged(
                     inputs_embeds=padded_embeddings[:, :next_token_idx],
                     attention_mask=attention_mask[:, :next_token_idx],
                     position_ids=position_ids[:, :next_token_idx],
+                    logits_to_keep=1,
                 )
                 logits = outputs.logits[:, -1].clone()
                 logits = token_filter.step(prev_tokens, logits)
@@ -277,6 +278,7 @@ def generate_ragged(
                         inputs_embeds=padded_embeddings[:, : next_token_idx.min() - 1],
                         past_key_values=past_key_values,
                         use_cache=True,
+                        logits_to_keep=1,  # we dont really need any logits, but 0 would return all
                     )
                 # Caching with right padding is a bit tricky:
                 # Consider this set of prompts:
@@ -305,6 +307,7 @@ def generate_ragged(
                         cache_position=cache_position,
                         past_key_values=past_key_values,
                         use_cache=True,
+                        logits_to_keep=1,
                     ).logits[:, 0].clone()  # (B, vocab_size)
 
                     logits_out = torch.empty((B, logits.size(1)), dtype=model.dtype, device=model.device)
@@ -488,5 +491,16 @@ def get_losses_batched(
 
     if initial_batch_size is None:
         initial_batch_size = len(embedding_list)
-    losses = with_max_batchsize(get_losses_func, embedding_list, targets, initial_batch_size=initial_batch_size, verbose=verbose)
-    return losses
+
+    # Shorter sequences will come first to maximize batch size
+    sorted_indexed_inputs = sorted(list(enumerate(embedding_list)), key=lambda x: x[1].size(0))
+    sorted_input_list = [item for _, item in sorted_indexed_inputs]
+    original_indices = [index for index, _ in sorted_indexed_inputs]
+    sorted_targets = [targets[i] for i in original_indices]
+    losses = with_max_batchsize(get_losses_func, sorted_input_list, sorted_targets, initial_batch_size=initial_batch_size, verbose=verbose)
+    # Reorder losses to match original order
+    # Unsort the outputs to match the original input order
+    outputs = [None] * len(embedding_list)
+    for i, original_index in enumerate(original_indices):
+        outputs[original_index] = losses[i]
+    return outputs

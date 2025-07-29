@@ -1,10 +1,5 @@
 _default:
-  generation_config:
-    temperature: 0.0
-    top_p: 1.0
-    top_k: 0
-    max_new_tokens: 256
-    num_return_sequences: 1
+  generation_config: ${generation_config}
   seed: 0
 
 actor:
@@ -172,28 +167,6 @@ gcg_refusal:
   token_selection: default
   max_new_target_tokens: 64
   grow_target: False
-gcg_judge:
-  name: gcg_judge
-  type: discrete
-  version: 0.0.1
-  placement: suffix
-  max_new_tokens: ${attacks._default.generation_config.max_new_tokens}
-  seed: ${attacks._default.seed}
-  num_steps: 250
-  batch_size: 512
-  optim_str_init: "x x x x x x x x x x x x x x x x x x x x" # all tested tokenizers convert this to exactly 20 tokens
-  search_width: 512
-  topk: 256
-  n_replace: 1
-  buffer_size: 0
-  use_constrained_gradient: False
-  early_stop: False
-  use_prefix_cache: True
-  allow_non_ascii: False
-  allow_special: False
-  filter_ids: True
-  verbosity: WARNING
-  token_selection: default
 gcg_reinforce:
   name: gcg_reinforce
   type: discrete
@@ -201,8 +174,8 @@ gcg_reinforce:
   placement: suffix
   generation_config: ${attacks._default.generation_config}
   seed: ${attacks._default.seed}
-  num_steps: 500
-  optim_str_init: "! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !" # initialization for REINFORCE
+  num_steps: 250
+  optim_str_init: "x x x x x x x x x x x x x x x x x x x x" # initialization for REINFORCE
   search_width: 512
   topk: 256
   n_replace: 1
@@ -213,15 +186,22 @@ gcg_reinforce:
   filter_ids: True
   verbosity: WARNING
   token_selection: default
-  judge_model_id: "strong_reject"
-  optim_num_return_sequences: 1
-  optim_max_new_tokens: 256
+  judge_model_id: harmbench
+  optim_max_new_tokens: 128
   optim_temperature: 0.7
   optim_top_p: 1.0
-  optim_top_k: 0
+  optim_top_k: 256
   reward_baseline: 0.1
+  token_position_weight_type: "linear"  # "linear" or "exponential"
   token_position_weight_ratio: 5.0
-  include_y_affirmative: True
+  loss_include_categories: ["samples", "greedy", "affirmative"]  # can be from "samples", "greedy", "buffer", "affirmative"
+  selection_include_categories: ["greedy", "affirmative"]  # can be from "samples", "greedy", "buffer", "affirmative"
+  optim_num_return_sequences: 2
+  elite_buffer_size: 1  # 0 to disable buffer
+  exploit_greedy: True
+  optim_num_return_sequences_for_grad: 0  # 0 turns off
+  harmful_threshold: 0.5
+  entropy_losses_weight: 0.0
 human_jailbreaks:
   name: human_jailbreaks
   type: discrete
@@ -347,30 +327,3 @@ random_search:
   candidates_per_generation: 8
   optim_str_init: "x x x x x x x x x x x x x x x x x x x x" # all tested tokenizers convert this to exactly 20 tokens
   generation_config: ${attacks._default.generation_config}
-reinforce:
-  name: reinforce
-  type: discrete
-  version: 0.0.1
-  generation_config: ${attacks._default.generation_config}
-  seed: ${attacks._default.seed}
-  num_steps: 100
-  batch_size: 512
-  optim_str_init: "x x x x x x x x x x x x x x x x x x x x" # all tested tokenizers convert this to exactly 20 tokens
-  search_width: 512
-  topk: 256
-  n_replace: 1
-  buffer_size: 0
-  judge_model: strong_reject
-  loss: ce
-  use_constrained_gradient: False
-  mellowmax_alpha: 1.0
-  early_stop: False
-  use_prefix_cache: True
-  allow_non_ascii: False
-  allow_special: False
-  filter_ids: True
-  verbosity: WARNING
-  token_selection: default
-  grow_target: False
-  grad_smoothing: 1
-  grad_momentum: 0.0   # 0.5 works quite well

@@ -193,14 +193,14 @@ class BonAttack(Attack):
         t_start_loss = time.time()
         # We need targets shifted by one position for standard next-token prediction loss
         shifted_target_tensors_list = [t.roll(-1, 0) for t in full_token_tensors_list]
-
+        logging.info(f"Calculating losses...")
         # Calculate loss for the full sequences
         with torch.no_grad():
             all_losses_per_token = get_losses_batched(
                 model,
                 targets=shifted_target_tensors_list,
                 token_list=full_token_tensors_list,
-                initial_batch_size=B,
+                initial_batch_size=max(B, 128),
             )
 
         # Extract average loss *only* over the target tokens for each instance
@@ -221,8 +221,9 @@ class BonAttack(Attack):
 
         t_end_loss = time.time()
         loss_time_total = t_end_loss - t_start_loss
-
+        logging.info(f"Loss calculation time: {loss_time_total:.2f}s")
         # --- 3. Generate Completions ---
+        logging.info(f"Generating completions...")
         t_start_gen = time.time()
         completions = generate_ragged_batched(
             model,
@@ -233,11 +234,12 @@ class BonAttack(Attack):
             top_p=self.config.generation_config.top_p,
             top_k=self.config.generation_config.top_k,
             num_return_sequences=self.config.generation_config.num_return_sequences,
-            initial_batch_size=max(B, self.config.num_steps, 512),
+            initial_batch_size=max(B, self.config.num_steps, 1024),
+            verbose=True,
         )
         t_end_gen = time.time()
         gen_time_total = t_end_gen - t_start_gen
-
+        logging.info(f"Generation time: {gen_time_total:.2f}s, per instance: {gen_time_total/B:.2f}s, per sequence: {gen_time_total/B/self.config.num_steps:.2f}s")
         t1 = time.time()
         # --- 4. Assemble Results ---
         runs = []

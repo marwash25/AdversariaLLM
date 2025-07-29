@@ -6,7 +6,6 @@ from torch import Tensor
 import transformers
 from beartype import beartype
 from beartype.typing import Literal, Optional, Generic, TypeVar
-from omegaconf import DictConfig
 
 from ..dataset import PromptDataset
 from ..types import Conversation
@@ -88,7 +87,7 @@ class AttackResult:
 AttRes = TypeVar("AttRes", bound=AttackResult)
 
 class Attack(Generic[AttRes]):
-    def __init__(self, config: DictConfig):
+    def __init__(self, config):
         self.config = config
         transformers.set_seed(config.seed)
 
