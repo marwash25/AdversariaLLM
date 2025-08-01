@@ -253,7 +253,7 @@ class PGDAttack(Attack):
             with torch.no_grad():
                 grad = self._modify_gradient(grad, attack_masks_batch, disallowed_ids)
                 perturbed_embeddings_or_one_hot = self._perform_optimizer_step(
-                    optimizer,perturbed_embeddings_or_one_hot, original_embeddings, grad, attack_masks_batch, step
+                    optimizer, perturbed_embeddings_or_one_hot, original_embeddings, grad, attack_masks_batch, step
                 )
 
             model.zero_grad()
@@ -651,7 +651,6 @@ class PGDAttack(Attack):
         values.clamp_min_(0)
         values.div_(values.norm(dim=-1, keepdim=True, p=p))
         return values
-
 
     @staticmethod
     def _select_embeddings_for_generation(embeddings: torch.Tensor, target_mask: torch.Tensor) -> torch.Tensor:

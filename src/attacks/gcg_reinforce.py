@@ -80,8 +80,7 @@ class GCGReinforceConfig:
     optim_num_return_sequences: int = 2
     elite_buffer_size: int = 1
     optim_num_return_sequences_for_grad: int = 0
-    exploit_greedy: bool = False
-    harmful_threshold: float = 0.5
+    harmful_threshold: float = 0.5  # for exploit_greedy
     entropy_losses_weight: float = 0.0
 
 
@@ -91,7 +90,7 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
         self.tokenizer = None  # Will be set in run()
         self.model = None
         self.elite_buffer = []  # List of (generation, reward) tuples
-        self.previous_greedy_reward = None  # Track previous greedy reward for exploit_greedy
+        self.previous_greedy_reward = 0.0  # Track previous greedy reward for exploit_greedy
         self.previous_optim_ids = None  # Track previous optim_ids for exploit_greedy
         self.previous_rewards = None  # Track previous rewards for exploit_greedy
         self.previous_generations = None  # Track previous generations for exploit_greedy
@@ -157,16 +156,14 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
         flops = []
         optim_strings = []
         losses = []
-        entropies = []
         for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
-            current_reward, loss, time_for_step, optim_ids, flops_for_step, entropy = (
+            current_reward, loss, time_for_step, optim_ids, flops_for_step = (
                 self._single_step(conversation, optim_ids)
             )
             rewards.append(current_reward.mean().item())
             losses.append(loss)
             times.append(time_for_step)
             optim_strings.append(self.tokenizer.batch_decode(optim_ids)[0])
-            entropies.append(entropy)
 
             if i == 0:
                 flops.append(flops_for_step)
@@ -177,8 +174,7 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
                     "Mean Reward": current_reward.mean().item(),
                     "Max Reward": current_reward.max().item(),
                     "Loss": loss,
-                    "Entropy": entropy,
-                    "Best Attack": optim_strings[-1][:80],
+                    "Best Attack": optim_strings[-1][:80].replace('\n', '\\n'),
                 }
             )
         token_list = []
@@ -244,20 +240,19 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
         t0a = time.time()
 
         t_rewards_start = time.time()
-        rewards, generations, flops_loss, categories = self.compute_candidate_rewards(conversation, optim_ids)
+        rewards, generations, categories, flops_loss = self.compute_candidate_rewards(conversation, optim_ids)
         t_rewards = time.time() - t_rewards_start
         print(f"  Compute rewards: {t_rewards:.2f}s")
 
         # Once the greedy generation has become harmful, we only accept new optim_ids if
         # the greedy generation remains harmful.
-        if "greedy" in self.config.loss_include_categories and self.config.exploit_greedy:
-            if self.previous_greedy_reward is not None and self.previous_greedy_reward > self.config.harmful_threshold:
-                if self._get_greedy_reward(rewards) <= self.config.harmful_threshold:
-                    print(f"  Exploit greedy: Rejected new optim_ids (greedy_reward={self._get_greedy_reward(rewards):.3f} <= {self.config.harmful_threshold})")
-                    optim_ids = self.previous_optim_ids
-                    rewards = self.previous_rewards
-                    generations = self.previous_generations
-                    categories = self.previous_categories
+        if "greedy" in self.config.loss_include_categories and self.previous_greedy_reward > self.config.harmful_threshold:
+            if self._get_greedy_reward(rewards) <= self.config.harmful_threshold:
+                print(f"  Exploit greedy: Rejected new optim_ids (greedy_reward={self._get_greedy_reward(rewards):.3f} <= {self.config.harmful_threshold}, but self.previous_greedy_reward={self.previous_greedy_reward:.3f})")
+                optim_ids = self.previous_optim_ids
+                rewards = self.previous_rewards
+                generations = self.previous_generations
+                categories = self.previous_categories
 
         t_grad_start = time.time()
         advantages = self.compute_advantages(rewards)  # (num_gens,)
@@ -266,8 +261,9 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
         loss_for_grad, flops_loss = self.compute_reinforce_loss(generations, advantages, optim_ids_one_hot, rewards, categories)
 
         grad = torch.autograd.grad([loss_for_grad], [optim_ids_one_hot])[0].squeeze(0)
-        t_grad = time.time() - t_grad_start
-        print(f"  Compute gradients: {t_grad:.2f}s")
+
+        t_grad = time.time()
+        print(f"  Compute gradients: {t_grad - t_grad_start:.2f}s")
 
         if grad.isinf().all() or grad.isnan().all():
             candidate_ids, candidate_ids_pos = _random_overall(
@@ -285,6 +281,8 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
                 n_replace=self.config.n_replace,
                 not_allowed_ids=self.not_allowed_ids,
             )
+        t_sample_ids = time.time()
+        print(f"  Sample ids: {t_sample_ids - t_grad:.2f}s")
 
         with torch.no_grad():
             # Sample candidate token sequences
@@ -300,34 +298,51 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
                 )
                 candidate_ids = candidate_ids[idx] # (B, T)
                 candidate_ids_pos = candidate_ids_pos[idx] # (B, T)
-            keep_idx = []
-            for cat in self.config.selection_include_categories:
-                keep_idx.extend([i for i, c in enumerate(categories) if c == cat])
+            t_filter_ids = time.time()
+            print(f"  Filter ids: {t_filter_ids - t_sample_ids:.2f}s")
 
-            compute_loss_fn = partial(self.compute_candidates_loss, [generations[i] for i in keep_idx], advantages[keep_idx], [categories[i] for i in keep_idx])
+            keep_idx = [i for i, c in enumerate(categories) if c in self.config.selection_include_categories]
+            gens_for_selection = [generations[i] for i in keep_idx]
+            advantages_for_selection = advantages[keep_idx]
+            categories_for_selection = [categories[i] for i in keep_idx]
+            print("For selection:\n--------------------------------")
+            self._print_info(
+                gens_for_selection,
+                advantages_for_selection,
+                rewards[keep_idx],
+                categories_for_selection
+            )
+
+            compute_loss_fn = partial(
+                self.compute_candidates_loss,
+                gens_for_selection,
+                advantages_for_selection,
+                categories_for_selection
+            )
+
             loss_for_candidates, flops_loss = with_max_batchsize(compute_loss_fn, candidate_ids)
+            t_compute_loss = time.time()
+            print(f"  Compute loss: {t_compute_loss - t_filter_ids:.2f}s")
 
             optim_ids = candidate_ids[loss_for_candidates.argmin()].unsqueeze(0)
             current_loss = loss_for_candidates[loss_for_candidates.argmin()].item()
             flops_for_step = flops_loss.sum().long().item()
             # Update the buffer based on the loss
 
-        # Compute entropy of first predicted token
-        entropy = self.compute_first_token_entropy(optim_ids)
         self.previous_optim_ids = optim_ids
         self.previous_rewards = rewards
         self.previous_generations = generations
         self.previous_categories = categories
         self.previous_greedy_reward = self._get_greedy_reward(rewards)
 
-        return rewards, current_loss, time.time() - t0a, optim_ids, flops_for_step, entropy
+        return rewards, current_loss, time.time() - t0a, optim_ids, flops_for_step
 
     @torch.no_grad()
     def compute_candidate_rewards(
         self,
         conversation: Conversation,
         attack_suffix_ids: Tensor,
-    ) -> Tensor:
+    ) -> tuple[Tensor, list[Tensor], list[str], int]:
         """Computes the GCG reward on all candidate token id sequences.
 
         Args:
@@ -339,6 +354,12 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
         Returns:
             reward : Tensor, shape = (B,)
                 the GCG reward on all candidate sequences
+            completions : list[Tensor], each tensor is shape (T)
+                the completions for all candidate sequences
+            categories : list[str]
+                Categories corresponding to each candidate sequence
+            flops : int
+                Estimate of FLOPS used for all computations in this function
         """
         flops = 0
 
@@ -392,7 +413,7 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
             n_output_tokens = len(greedy_completion)
             flops += get_flops(self.model, n_input_tokens, n_output_tokens, "forward")
 
-        if "buffer" in self.config.loss_include_categories and self.config.elite_buffer_size > 0 and len(self.elite_buffer) > 0:
+        if "buffer" in self.config.loss_include_categories and self.config.elite_buffer_size > 0:
             elite_completions = self._get_elite_completions()
             completions.extend(elite_completions)
             categories.extend(["buffer"] * len(elite_completions))
@@ -448,12 +469,7 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
         gc.collect()
         torch.cuda.empty_cache()
 
-        return (
-            rewards,
-            completions,
-            flops,
-            categories,
-        )
+        return rewards, completions, categories, flops
 
     def compute_advantages(self, rewards):
         """Computes the reinforce advantages for this set of generations with their rewards.
@@ -698,35 +714,38 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
             reinforce_losses[i, :] = batch_losses
         # Apply advantages and take mean over generations
         if N == 1 and rewards is not None:
-            # Define color codes for each category
-            colors = {
-                "samples": "\033[94m",      # Blue
-                "greedy": "\033[92m",       # Green
-                "buffer": "\033[93m",       # Yellow
-                "affirmative": "\033[95m"   # Magenta
-            }
-            reset_color = "\033[0m"
-
-            # Print formatted header
-            print(f"{'Generation':<100} {'Category':<12} {'Advantage':<12} {'Raw Reward':<12} {'Loss':<12}")
-            print("-" * 148)
-
-            for i, (gen, adv, reward, loss) in enumerate(zip(generations, advantages, rewards, reinforce_losses)):
-                gen_len = len(gen)
-                generation_text = self.tokenizer.decode(gen)[:100]
-                category = categories[i] if categories and i < len(categories) else "unknown"
-                color = colors.get(category, "")
-
-                # Format values
-                advantage_val = f"{adv.item():.6f}"
-                reward_val = f"{reward.item():.6f}"
-                loss_val = f"{loss.item():.6f}"
-
-                # Print with color
-                print(f"{color}{generation_text:<100} {category:<12} {advantage_val:<12} {reward_val:<12} {loss_val:<12}{reset_color}")
-
+            self._print_info(generations, advantages, rewards, categories, reinforce_losses)
         reinforce_losses = (reinforce_losses * advantages.unsqueeze(1)).mean(dim=0)  # (N,)
         return reinforce_losses, torch.tensor(flops_loss).expand_as(reinforce_losses) / N
+
+    def _print_info(self, generations, advantages, rewards, categories, reinforce_losses=None):
+        if reinforce_losses is None:
+            reinforce_losses = torch.full_like(advantages, fill_value=float("nan"))
+        # Define color codes for each category
+        colors = {
+            "samples": "\033[94m",      # Blue
+            "greedy": "\033[92m",       # Green
+            "buffer": "\033[93m",       # Yellow
+            "affirmative": "\033[95m"   # Magenta
+        }
+        reset_color = "\033[0m"
+
+        # Print formatted header
+        print(f"{'Generation':<100} {'Category':<12} {'Advantage':<12} {'Raw Reward':<12} {'Loss':<12}")
+        print("-" * 148)
+
+        for i, (gen, adv, reward, loss) in enumerate(zip(generations, advantages, rewards, reinforce_losses)):
+            generation_text = self.tokenizer.decode(gen)[:100].replace('\n', '\\n')
+            category = categories[i]
+            color = colors.get(category, "")
+
+            # Format values
+            advantage_val = f"{adv.item():.6f}"
+            reward_val = f"{reward.item():.6f}"
+            loss_val = f"{loss.item():.6f}"
+
+            # Print with color
+            print(f"{color}{generation_text:<100} {category:<12} {advantage_val:<12} {reward_val:<12} {loss_val:<12}{reset_color}")
 
     @torch.no_grad()
     def compute_candidates_loss(self, generations: list[Tensor], advantages: Tensor, categories: list[str], candidate_ids: Tensor):
@@ -770,7 +789,7 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
 
         # Sort by reward (descending) and take top completions
         sorted_buffer = sorted(self.elite_buffer, key=lambda x: x[1], reverse=True)
-        elite_completions = [completion for completion, _ in sorted_buffer[:self.config.elite_buffer_size]]
+        elite_completions = [completion for completion, reward in sorted_buffer[:self.config.elite_buffer_size] if reward > self.config.harmful_threshold]
         return elite_completions
 
     def _update_elite_buffer(self, completions: list[Tensor], rewards: Tensor):

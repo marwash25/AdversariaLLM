@@ -301,7 +301,6 @@ def generate_ragged(
                     active_embeddings = padded_embeddings[~finished, cur_idx - 1 : cur_idx].clone()
                     assert active_embeddings.size(1) == 1
                     cache_position = torch.arange(cur_idx - 1, cur_idx, device=model.device)
-
                     logits = model(
                         inputs_embeds=active_embeddings,
                         cache_position=cache_position,
@@ -327,15 +326,16 @@ def generate_ragged(
 
                     if finished_at_this_step.any():
                         still_active = (~finished & ~finished_at_this_step)[~finished]
-                        for j in range(len(past_key_values.key_cache)):
-                            past_key_values.key_cache[j] = past_key_values.key_cache[j][still_active].clone()
-                            past_key_values.value_cache[j] = past_key_values.value_cache[j][still_active].clone()
 
                         finished |= finished_at_this_step
                         if finished.all():
                             if i < max_new_tokens - 1:
                                 logging.info(f"Early exit after {i}/{max_new_tokens} tokens.")
                             break
+
+                        for j in range(len(past_key_values.key_cache)):
+                            past_key_values.key_cache[j] = past_key_values.key_cache[j][still_active].clone()
+                            past_key_values.value_cache[j] = past_key_values.value_cache[j][still_active].clone()
 
                     next_token_idx[next_token_idx == cur_idx] += 1
                     lengths[generating] += 1
