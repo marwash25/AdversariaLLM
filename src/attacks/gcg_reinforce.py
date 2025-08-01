@@ -95,6 +95,8 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
         self.previous_rewards = None  # Track previous rewards for exploit_greedy
         self.previous_generations = None  # Track previous generations for exploit_greedy
         self.previous_categories = None  # Track previous categories for exploit_greedy
+        self.reward_cache = {}  # Cache of rewards for each completion
+
         self.logger = logging.getLogger("gcg_reinforce")
         if not self.logger.hasHandlers():
             handler = logging.StreamHandler()
@@ -254,6 +256,12 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
                 generations = self.previous_generations
                 categories = self.previous_categories
 
+        self.previous_optim_ids = optim_ids
+        self.previous_rewards = rewards
+        self.previous_generations = generations
+        self.previous_categories = categories
+        self.previous_greedy_reward = self._get_greedy_reward(rewards)
+
         t_grad_start = time.time()
         advantages = self.compute_advantages(rewards)  # (num_gens,)
 
@@ -329,11 +337,6 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
             flops_for_step = flops_loss.sum().long().item()
             # Update the buffer based on the loss
 
-        self.previous_optim_ids = optim_ids
-        self.previous_rewards = rewards
-        self.previous_generations = generations
-        self.previous_categories = categories
-        self.previous_greedy_reward = self._get_greedy_reward(rewards)
 
         return rewards, current_loss, time.time() - t0a, optim_ids, flops_for_step
 
@@ -429,7 +432,14 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
             ] for c in self.tokenizer.batch_decode(completions)
         ]
 
-        judgements = self.judge(conversation_with_completions)["p_harmful"]
+        to_judge = [c for c in conversation_with_completions if c[1]["content"] not in self.reward_cache]
+        # Compute judgements for the entire conversation
+        judgements = self.judge(to_judge)["p_harmful"]
+        for c, j in zip(to_judge, judgements):
+            self.reward_cache[c[1]["content"]] = j
+
+        rewards = torch.tensor([self.reward_cache[c[1]["content"]] for c in conversation_with_completions]).to(self.model.device)
+
         if self.config.judge_model_id == "strong_reject":
             inputs = [
                 self.judge.tokenizer(self.judge.SR_CLS_PROMPT.format(behavior=c[0]["content"], response=c[1]["content"])).input_ids
@@ -451,7 +461,6 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
             flops += get_flops(self.judge.classifier, n_input_tokens, n_output_tokens, "forward")
         else:
             logging.warning(f"We do not compute flops for the judge `{self.config.judge_model_id}` right now")
-        rewards = torch.tensor(judgements).to(self.model.device)
 
         if "affirmative" in self.config.loss_include_categories:
             rewards[-1] = max(rewards[-1], 0.5)
@@ -675,7 +684,6 @@ class GCGReinforceAttack(Attack[GCGReinforceConfig]):
 
             embedding_list.extend([e for e in full_embeds])
             targets.extend([t for t in tgt])
-
         # Get losses using get_losses_batched
         losses_list = get_losses_batched(
             model=self.model,

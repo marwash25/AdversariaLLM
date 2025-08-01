@@ -398,7 +398,7 @@ def get_losses_batched(
         model: A pretrained model.
         targets: A list of 1D tensors containing the target tokens for each prompt. Should already be shifted by one position w.r.t to the embeddings/tokens.
         embedding_list: list[torch.Tensor], optional
-            A list of embeddings for each prompt. Should not be padded and can be of different lengths.
+            A list of 2D tensors of embeddings for each prompt. Should not be padded and can be of different lengths.
         token_list: list[torch.Tensor], optional
             A list of tokens for each prompt. Should not be padded and can be of different lengths.
         padding_side: The side to pad the embeddings on.
@@ -502,5 +502,5 @@ def get_losses_batched(
     # Unsort the outputs to match the original input order
     outputs = [None] * len(embedding_list)
     for i, original_index in enumerate(original_indices):
-        outputs[original_index] = losses[i]
+        outputs[original_index] = losses[i] # (T,)
     return outputs
