@@ -45,7 +45,14 @@ def load_model_and_tokenizer(
     """
     gc.collect()
     torch.cuda.empty_cache()
-    if "float" not in model_params.dtype:
+    if model_params.dtype is None:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_params.id,
+            trust_remote_code=model_params.trust_remote_code,
+            low_cpu_mem_usage=True,
+            device_map="auto",
+        ).eval()
+    elif "float" not in model_params.dtype:
         if model_params.dtype == "int4":
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,

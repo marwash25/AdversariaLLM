@@ -105,7 +105,7 @@ def main(cfg: DictConfig) -> None:
         # Create judge config
         judge_cfg = OmegaConf.create({
             "classifier": judge,
-            "suffixes": [date_time_string.split('/')[-1]],  # Use the timestamp from this run
+            "suffixes": [date_time_string.split('/')[-1]],  # Use the timestamp from this run to make sure we only judge this run
             "filter_by": None
         })
         free_vram()
