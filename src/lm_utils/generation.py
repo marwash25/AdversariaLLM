@@ -271,8 +271,11 @@ def generate_ragged(
                         device=model.device,
                         dtype=model.dtype,
                     )
-                    past_key_values.key_cache = [p.to(model.device) for p in past_key_values.key_cache]
-                    past_key_values.value_cache = [p.to(model.device) for p in past_key_values.value_cache]
+                    # we need to iterate like this because key_cache and value_cache
+                    # dont have a setter method
+                    for i in range(len(past_key_values.key_cache)):
+                        past_key_values.key_cache[i] = past_key_values.key_cache[i].to(model.device)
+                        past_key_values.value_cache[i] = past_key_values.value_cache[i].to(model.device)
                 if next_token_idx.min() > 1:
                     model(
                         inputs_embeds=padded_embeddings[:, : next_token_idx.min() - 1],
