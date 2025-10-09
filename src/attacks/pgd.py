@@ -17,12 +17,13 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import trange
-from transformers import AutoModelForCausalLM, PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, PreTrainedModel, PreTrainedTokenizerBase
 
 from .attack import (Attack, AttackResult, AttackStepResult, GenerationConfig,
                      SingleAttackRunResult)
 from ..lm_utils import (TokenMergeError, generate_ragged_batched, get_disallowed_ids,
                           prepare_conversation, with_max_batchsize)
+from ..types import Conversation
 
 
 @dataclass
@@ -64,13 +65,14 @@ class PGDAttack(Attack):
         super().__init__(config)
         self.zero_init_attack = False  # Consider making this a config option if needed
 
-    def run(self, model: torch.nn.Module, tokenizer, dataset) -> AttackResult:
+    def run(self, model: PreTrainedModel, tokenizer, dataset) -> AttackResult:
         self._initialize_embedding_scale(model)
         original_model = self._maybe_load_original_model()
 
         x, attack_masks, target_masks, conversations = self._prepare_dataset(dataset, tokenizer)
         logging.info(f"Prepared {len(conversations)} conversations for attack")
 
+        assert isinstance(tokenizer.pad_token_id, int), "pad_token_id must be an integer"
         attention_mask = (x != tokenizer.pad_token_id).long()
         y = x.clone()
         y[:, :-1] = x[:, 1:]
@@ -87,14 +89,17 @@ class PGDAttack(Attack):
         )
         return AttackResult(runs=runs)
 
-    def _initialize_embedding_scale(self, model: torch.nn.Module):
+    def _initialize_embedding_scale(self, model: PreTrainedModel):
         # we compute and store the embedding scale for the projection and the lr
         # important: we do not store them back in the config because the config will later
         # be saved to disk. Future runs should be able to use the config to avoid duplications.
         if self.config.embedding_scale is None:
             embeddings = model.get_input_embeddings().weight
+            assert isinstance(embeddings, torch.Tensor), "embeddings are expected to be a tensor"
             if hasattr(model.get_input_embeddings(), "embed_scale"):  # For gemma
-                embeddings = embeddings * model.get_input_embeddings().embed_scale.to(embeddings)
+                embed_scale = model.get_input_embeddings().embed_scale
+                assert isinstance(embed_scale, torch.Tensor), "embed_scale are expected to be a tensor"
+                embeddings = embeddings * embed_scale.to(embeddings)
             if self.config.projection == "l2":
                 self.embedding_scale = embeddings.norm(dim=-1).mean().item()
             elif self.config.projection == "l1":
@@ -106,7 +111,9 @@ class PGDAttack(Attack):
             self.embedding_scale = 1.0
         self.lr = self.embedding_scale * self.config.alpha
         if self.config.normalize_gradient:
-            self.lr /= model.get_input_embeddings().weight.size(-1) ** 0.5
+            embeddings = model.get_input_embeddings().weight
+            assert isinstance(embeddings, torch.Tensor), "embeddings are expected to be a tensor"
+            self.lr /= embeddings.size(-1) ** 0.5
         logging.info(f"Embedding scale set to {self.embedding_scale} based on projection={self.config.projection}")
 
     def _initialize_optimizer(self, params):
@@ -116,18 +123,18 @@ class PGDAttack(Attack):
         else:
             return torch.optim.Adam(params, lr=self.lr, **self.config.optimizer_config)
 
-    def _maybe_load_original_model(self) -> Optional[torch.nn.Module]:
+    def _maybe_load_original_model(self) -> Optional[PreTrainedModel]:
         if self.config.original_model:
             logging.info(f"Loading {self.config.original_model} for logit/feature tying")
             return AutoModelForCausalLM.from_pretrained(
                 self.config.original_model,
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
                 device_map="auto"
             ).eval()
         return None
 
-    def _prepare_dataset(self, dataset, tokenizer) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], List[Dict]]:
+    def _prepare_dataset(self, dataset, tokenizer) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[Conversation]]:
         all_tokens = []
         all_attack_masks = []
         all_target_masks = []
@@ -153,7 +160,7 @@ class PGDAttack(Attack):
         all_attack_masks = pad_sequence(all_attack_masks, batch_first=True)
         return all_tokens, all_attack_masks, all_target_masks, all_conversations
 
-    def _prepare_single_conversation(self, conversation, tokenizer, optim_str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[Dict]]:
+    def _prepare_single_conversation(self, conversation, tokenizer, optim_str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Conversation]:
         attack_conversation = [
             {"role": "user", "content": conversation[0]["content"] + optim_str},
             {"role": "assistant", "content": conversation[1]["content"]}
@@ -179,12 +186,12 @@ class PGDAttack(Attack):
 
     def attack_batch(
         self,
-        model: torch.nn.Module,
-        tokenizer: PreTrainedTokenizer,
-        original_model: Optional[torch.nn.Module],
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizerBase,
+        original_model: Optional[PreTrainedModel],
         x_batch: torch.Tensor,
         y_batch: torch.Tensor,
-        original_conversations_batch: List[Dict],
+        original_conversations_batch: List[Conversation],
         attention_mask_batch: torch.Tensor,
         attack_masks_batch: torch.Tensor,
         target_masks_batch: torch.Tensor
@@ -210,6 +217,8 @@ class PGDAttack(Attack):
             )
         elif self.config.attack_space == "embedding":
             perturbed_embeddings_or_one_hot = original_embeddings.detach().clone()
+        else:
+            raise ValueError(f"Unknown attack space {self.config.attack_space}")
 
         if self.zero_init_attack:
             perturbed_embeddings_or_one_hot[attack_masks_batch] = 0
@@ -353,10 +362,12 @@ class PGDAttack(Attack):
         loss = loss.sum(dim=1) / (mask.sum(dim=1).float() + 1e-6)  # (B,)
         return loss
 
-    def _calculate_entropy_allowed_loss(self,
-                                logits: torch.Tensor,
-                                mask:   torch.Tensor,
-                                tokenizer=None) -> torch.Tensor:
+    def _calculate_entropy_allowed_loss(
+        self,
+        logits: torch.Tensor,
+        mask: torch.Tensor,
+        tokenizer: PreTrainedTokenizerBase
+    ) -> torch.Tensor:
         """
         KL divergence loss to encourage uniform distribution over allowed tokens
         on the first token position.
@@ -437,7 +448,7 @@ class PGDAttack(Attack):
             parts = prepare_conversation(tokenizer, conversation_benign)[0]
             pre_toks, atk_pre, prompt_toks, atk_suf, post_toks, _ = parts  # Ignoring target tokens for input prep
 
-            benign_input_ids = torch.cat([pre_toks, atk_pre, prompt_toks, atk_suf, post_toks]).unsqueeze(0).to(device)
+            benign_input_ids = [torch.cat([pre_toks, atk_pre, prompt_toks, atk_suf, post_toks]).to(device)]
             target_tokens_benign = generate_ragged_batched(model, tokenizer, benign_input_ids, max_new_tokens=64, return_tokens=True)[0][0]
 
             all_parts_ids = (pre_toks, atk_pre, prompt_toks, atk_suf, post_toks, target_tokens_benign)

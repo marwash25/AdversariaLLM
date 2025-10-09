@@ -77,7 +77,7 @@ def load_model_and_tokenizer(
         if "gemma-3" in model_params.id:
             model = AutoModelForCausalLM.from_pretrained(
                 model_params.id,
-                torch_dtype=getattr(torch, model_params.dtype),
+                dtype=getattr(torch, model_params.dtype),
                 trust_remote_code=model_params.trust_remote_code,
                 low_cpu_mem_usage=True,
                 attn_implementation="eager",
@@ -86,7 +86,7 @@ def load_model_and_tokenizer(
         else:
             model = AutoModelForCausalLM.from_pretrained(
                 model_params.id,
-                torch_dtype=getattr(torch, model_params.dtype),
+                dtype=getattr(torch, model_params.dtype),
                 trust_remote_code=model_params.trust_remote_code,
                 low_cpu_mem_usage=True,
                 device_map="auto",

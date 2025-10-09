@@ -92,7 +92,7 @@ class Attack(Generic[AttRes]):
         transformers.set_seed(config.seed)
 
     @classmethod
-    def from_name(cls, name: str) -> "Attack":
+    def from_name(cls, name: str) -> type["Attack"]:
         match name:
             case "actor":
                 from .actor import ActorAttack
@@ -161,7 +161,7 @@ class Attack(Generic[AttRes]):
     @abstractmethod
     def run(
         self,
-        model: transformers.AutoModelForCausalLM,
+        model: transformers.PreTrainedModel,
         tokenizer: transformers.PreTrainedTokenizerBase,
         dataset: PromptDataset,
     ) -> AttRes:

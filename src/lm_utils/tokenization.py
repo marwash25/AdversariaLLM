@@ -134,7 +134,7 @@ def prepare_conversation(
     tokenizer: PreTrainedTokenizerBase,
     conversation: Conversation,
     conversation_opt: Conversation | None = None,
-) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+) -> list[tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor]]:
     """For many attacks, we need to figure out how exactly to tokenize the input.
     Since only some models add a space or various control tokens, we have to figure
     out the exact format. We want to make sure that the first generated token is
@@ -169,9 +169,9 @@ def prepare_conversation(
 
     def get_common_prefix_len(tokens: list[torch.Tensor]) -> int:
         max_length = max(t.size(0) for t in tokens)
-        tokens = [F.pad(t, (0, max_length - t.size(0)), value=-1) for t in tokens]
-        tokens = torch.stack(tokens, dim=0)
-        common_tokens = torch.all(tokens == tokens[:1, :], dim=0)
+        padded_tokens = [F.pad(t, (0, max_length - t.size(0)), value=-1) for t in tokens]
+        stacked_tokens = torch.stack(padded_tokens, dim=0)
+        common_tokens = torch.all(stacked_tokens == stacked_tokens[:1, :], dim=0)
         common_prefix_len = 0
         while common_prefix_len < common_tokens.size(0) and common_tokens[common_prefix_len]:
             common_prefix_len += 1
@@ -179,9 +179,9 @@ def prepare_conversation(
 
     def get_common_suffix_len(tokens: list[torch.Tensor]) -> int:
         max_length = max(t.size(0) for t in tokens)
-        tokens = [F.pad(t, (max_length - t.size(0), 0), value=-1) for t in tokens]
-        tokens = torch.stack(tokens, dim=0)
-        common_tokens = torch.all(tokens == tokens[:1, :], dim=0)
+        padded_tokens = [F.pad(t, (max_length - t.size(0), 0), value=-1) for t in tokens]
+        stacked_tokens = torch.stack(padded_tokens, dim=0)
+        common_tokens = torch.all(stacked_tokens == stacked_tokens[:1, :], dim=0)
         common_suffix_len = 0
         while common_suffix_len < common_tokens.size(0) and common_tokens[common_tokens.size(0) - common_suffix_len - 1]:
             common_suffix_len += 1
@@ -394,7 +394,7 @@ def get_pre_post_suffix_tokens(tokenizer, num_messages):
 def filter_suffix(
     tokenizer: PreTrainedTokenizerBase,
     clean_conversation: Conversation,
-    ids: list[list[torch.Tensor | None, torch.Tensor | None]]
+    ids: list[list[torch.Tensor | None]]
 ) -> list[int]:
     """
     Filters out sequences of token ids that are not invariant under decode-encode round trip.
@@ -445,6 +445,7 @@ def filter_suffix(
         decoded_tokens.append((prefix_decoded, suffix_decoded))
 
     retain_idx = []
+    recon_ids = None
     for i in range(search_width):
         conversation = []
         for j in range(n_turns):
@@ -473,6 +474,6 @@ def filter_suffix(
             "\n->\n"
             f"{decoded_tokens[-1]}"
             "\n->\n"
-            f"{recon_ids[-1][1], recon_ids[-1][3]}"
+            f"{(recon_ids[-1][1], recon_ids[-1][3]) if recon_ids is not None else 'No tokenizations worked'}"
         )
     return retain_idx

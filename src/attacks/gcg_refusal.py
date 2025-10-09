@@ -77,7 +77,7 @@ class GCGRefusalAttack(Attack):
 
         # if model.name_or_path == "GraySwanAI/Llama-3-8B-Instruct-RR":
         #     from transformers import AutoModelForCausalLM, AutoTokenizer
-        #     target_model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3.1-8B-Instruct", torch_dtype=torch.bfloat16, device_map="auto")
+        #     target_model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3.1-8B-Instruct", dtype=torch.bfloat16, device_map="auto")
         #     target_tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3.1-8B-Instruct")
         #     fwd_pre_hooks, fwd_hooks = [], []
         # else:
@@ -1360,6 +1360,6 @@ def toxify(model, tokenizer, batch_size=16, from_cache=True):
 
 if __name__ == "__main__":
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    model = AutoModelForCausalLM.from_pretrained("GraySwanAI/Llama-3-8B-Instruct-RR", torch_dtype=torch.bfloat16, device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained("GraySwanAI/Llama-3-8B-Instruct-RR", dtype=torch.bfloat16, device_map="auto")
     tokenizer = AutoTokenizer.from_pretrained("GraySwanAI/Llama-3-8B-Instruct-RR")
     toxify(model, tokenizer, batch_size=16, from_cache=False)
