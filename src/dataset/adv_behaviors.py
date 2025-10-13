@@ -1,3 +1,12 @@
+"""
+@article{mazeika2024harmbench,
+  title={Harmbench: A standardized evaluation framework for automated red teaming and robust refusal},
+  author={Mazeika, Mantas and Phan, Long and Yin, Xuwang and Zou, Andy and Wang, Zifan and Mu, Norman and Sakhaee, Elham and Li, Nathaniel and Basart, Steven and Li, Bo and others},
+  journal={arXiv preprint arXiv:2402.04249},
+  year={2024}
+}
+"""
+
 import logging
 import os
 from dataclasses import dataclass

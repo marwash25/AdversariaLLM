@@ -1,4 +1,12 @@
-"""Implementation of a one-hot-input space continuous attack with discretization.
+"""
+Implementation of a one-hot-input space continuous attack with discretization.
+
+@article{geisler2024attacking,
+  title={Attacking Large Language Models with Projected Gradient Descent},
+  author={Geisler, Simon and Wollschl{\"a}ger, Tom and Abdalla, MHI and Gasteiger, Johannes and G{\"u}nnemann, Stephan},
+  journal={arXiv preprint arXiv:2402.09154},
+  year={2024}
+}
 
 Also implements a discretization attack based on Geisler et al. (2024).
 """

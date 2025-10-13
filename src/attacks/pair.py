@@ -1,4 +1,12 @@
-"""Single-file implementation of the PAIR attack (https://jailbreaking-llms.github.io/).
+"""
+Single-file implementation of the PAIR attack.
+
+@article{chao2023jailbreaking,
+  title={Jailbreaking Black Box Large Language Models in Twenty Queries},
+  author={Chao, Patrick and Robey, Alexander and Dobriban, Edgar and Hassani, Hamed and Pappas, George J and Wong, Eric},
+  journal={arXiv preprint arXiv:2310.08419},
+  year={2023}
+}
 
 Due to memory limits, we do not use a judge model and just return a score of 1 for all completions.
 """

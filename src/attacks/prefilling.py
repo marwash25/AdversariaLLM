@@ -8,6 +8,7 @@ import transformers
 
 from .attack import (Attack, AttackResult, AttackStepResult, GenerationConfig,
                      SingleAttackRunResult)
+from ..dataset import PromptDataset
 from ..lm_utils import generate_ragged_batched, prepare_conversation
 
 
@@ -30,7 +31,7 @@ class PrefillingAttack(Attack):
         self,
         model: transformers.AutoModelForCausalLM,
         tokenizer: transformers.AutoTokenizer,
-        dataset: torch.utils.data.Dataset,
+        dataset: PromptDataset,
     ) -> AttackResult:
         t_start = time.time()
         token_list = []

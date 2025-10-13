@@ -1,3 +1,13 @@
+"""
+@article{souly2024strongreject,
+  title={A strongreject for empty jailbreaks},
+  author={Souly, Alexandra and Lu, Qingyuan and Bowen, Dillon and Trinh, Tu and Hsieh, Elvis and Pandey, Sana and Abbeel, Pieter and Svegliato, Justin and Emmons, Scott and Watkins, Olivia and others},
+  journal={Advances in Neural Information Processing Systems},
+  volume={37},
+  pages={125416--125440},
+  year={2024}
+}
+"""
 import os
 from dataclasses import dataclass
 from typing import Literal

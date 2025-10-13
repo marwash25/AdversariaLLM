@@ -160,7 +160,29 @@ Contributions welcome!
 
 ## 🙏 Acknowledgments
 
+Please be sure to cite the underlying work if build on it.
+
+Datasets
+- [Alpaca](https://github.com/tatsu-lab/stanford_alpaca)
+- [JailbreakBench](https://github.com/JailbreakBench/jailbreakbench)
+- [HarmBench](https://github.com/centerforaisafety/HarmBench) for reference attacks & data
+- [ORBench](https://arxiv.org/abs/2405.20947)
+- [RefusalDirection](https://proceedings.neurips.cc/paper_files/paper/2024/hash/f545448535dfde4f9786555403ab7c49-Abstract-Conference.html)
+- [StrongREJECT](https://github.com/dsbowen/strong_reject)
+- [XSTest](https://arxiv.org/abs/2308.01263)
+
+Attacks
+- [ActorBreaker](https://arxiv.org/abs/2410.10700)
+- [AmpleGCG](https://arxiv.org/abs/2404.07921)
+- [AutoDAN](https://arxiv.org/abs/2310.04451)
+- [BEAST](https://arxiv.org/abs/2402.15570)
+- [Best-of-N Jailbreaking](https://arxiv.org/abs/2412.03556)
+- [GCG](https://arxiv.org/abs/2307.15043)
+- [GCG (REINFORCE)](https://arxiv.org/abs/2502.17254)
+- [PAIR](https://arxiv.org/abs/2310.08419)
+- [PGD (embedding space)](https://arxiv.org/abs/2402.09063)
+- [PGD (discrete relaxation)](https://arxiv.org/abs/2402.09154)
+- [Human Jailbreaks](https://github.com/centerforaisafety/HarmBench/blob/main/baselines/human_jailbreaks/jailbreaks.py)
+
+Other
 - [JudgeZoo](https://github.com/LLM-QC/judgezoo) for judge implementations
-- [JailbreakBench](https://github.com/JailbreakBench/jailbreakbench) for baseline datasets
-- [HarmBench](https://github.com/centerforaisafety/HarmBench) for reference attacks &  data
-- [Hydra](https://hydra.cc/) for configuration management

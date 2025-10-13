@@ -1,7 +1,14 @@
-"""Implementation of a embedding-space continuous attack.
+"""
+Implementation of an embedding-space continuous attack inspired by Soft Prompt Threats.
 
-We use https://arxiv.org/abs/2402.09063 as a reference for the embedding-space attack.
-This attack optimizes the embeddings directly. In addition, we also support an "one-hot" attack
+@article{schwinn2024soft,
+  title={Soft Prompt Threats: Attacking Safety Alignment and Unlearning in Open-Source LLMs through the Embedding Space},
+  author={Schwinn, Leo and Dobre, David and Xhonneux, Sophie and Gidel, Gauthier and G{\"u}nnemann, Stephan},
+  journal={arXiv preprint arXiv:2402.09063},
+  year={2024}
+}
+
+This attack optimizes the embeddings directly. In addition, we also support a "one-hot" attack
 where we optimize the continuously relaxed one-hot encoded attack tokens.
 This is quite different from the embedding-space attack, and the attack is less strong.
 """

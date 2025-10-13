@@ -1,3 +1,14 @@
+"""
+@article{arditi2024refusal,
+  title={Refusal in language models is mediated by a single direction},
+  author={Arditi, Andy and Obeso, Oscar and Syed, Aaquib and Paleka, Daniel and Panickssery, Nina and Gurnee, Wes and Nanda, Neel},
+  journal={Advances in Neural Information Processing Systems},
+  volume={37},
+  pages={136037--136083},
+  year={2024}
+}
+"""
+
 import json
 import os
 from dataclasses import dataclass

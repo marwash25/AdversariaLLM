@@ -74,7 +74,7 @@ def run_attacks(all_run_configs: list[RunConfig], cfg: DictConfig, date_time_str
             last_attack = run_config.attack
 
         attack: Attack[AttackResult] = Attack.from_name(run_config.attack)(run_config.attack_params)
-        results = attack.run(model, tokenizer, dataset)
+        results = attack.run(model, tokenizer, dataset)  # type: ignore
 
         log_attack(run_config, results, cfg, date_time_string)
 

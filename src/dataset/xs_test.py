@@ -1,5 +1,13 @@
+"""
+@article{rottger2023xstest,
+  title={Xstest: A test suite for identifying exaggerated safety behaviours in large language models},
+  author={R{\"o}ttger, Paul and Kirk, Hannah Rose and Vidgen, Bertie and Attanasio, Giuseppe and Bianchi, Federico and Hovy, Dirk},
+  journal={arXiv preprint arXiv:2308.01263},
+  year={2023}
+}
+"""
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Sequence
 
 from datasets import load_dataset
 

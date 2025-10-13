@@ -1,3 +1,14 @@
+"""
+@article{chao2024jailbreakbench,
+  title={Jailbreakbench: An open robustness benchmark for jailbreaking large language models},
+  author={Chao, Patrick and Debenedetti, Edoardo and Robey, Alexander and Andriushchenko, Maksym and Croce, Francesco and Sehwag, Vikash and Dobriban, Edgar and Flammarion, Nicolas and Pappas, George J and Tramer, Florian and others},
+  journal={Advances in Neural Information Processing Systems},
+  volume={37},
+  pages={55005--55029},
+  year={2024}
+}
+"""
+
 from dataclasses import dataclass
 
 import jailbreakbench as jbb

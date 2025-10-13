@@ -1,5 +1,12 @@
-"""Single-file implementation of human-designed jailbreaks from
-https://github.com/centerforaisafety/HarmBench/blob/main/baselines/human_jailbreaks/jailbreaks.py
+"""
+Single-file implementation of human-designed jailbreaks from HarmBench.
+
+@misc{harmbench2023jailbreaks,
+  title={HarmBench Human Jailbreak Baselines},
+  author={{Center for AI Safety}},
+  howpublished={\url{https://github.com/centerforaisafety/HarmBench/blob/main/baselines/human_jailbreaks/jailbreaks.py}},
+  year={2023}
+}
 """
 from dataclasses import dataclass, field
 import logging

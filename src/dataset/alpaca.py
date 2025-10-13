@@ -1,3 +1,15 @@
+"""
+@article{taori2023alpaca,
+  title={Alpaca: A strong, replicable instruction-following model},
+  author={Taori, Rohan and Gulrajani, Ishaan and Zhang, Tianyi and Dubois, Yann and Li, Xuechen and Guestrin, Carlos and Liang, Percy and Hashimoto, Tatsunori B},
+  journal={Stanford Center for Research on Foundation Models. https://crfm. stanford. edu/2023/03/13/alpaca. html},
+  volume={3},
+  number={6},
+  pages={7},
+  year={2023}
+}
+"""
+
 from dataclasses import dataclass
 
 from datasets import load_dataset
