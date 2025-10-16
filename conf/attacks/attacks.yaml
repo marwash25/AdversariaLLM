@@ -8,30 +8,51 @@ actor:
   placement: multi-turn
   seed: ${attacks._default.seed}
   generation_config: ${attacks._default.generation_config}
-  version: 0.0.6
+  version: 0.1.0
   attack_model:
-    temperature: 0.0
-    use_api: false
-    api_model_name: null # gpt-4o
-    id: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated
-    tokenizer_id: meta-llama/Meta-Llama-3.1-8B-Instruct
-    short_name: Llama
-    developer_name: mlabonne
+    generation_config:
+      temperature: 0.0
+      top_p: 1.0
+      top_k: 0
+      max_new_tokens: 2048
+      num_return_sequences: 1
+    id: google/gemma-3-12b-it
+    tokenizer_id: google/gemma-3-12b-it
+    short_name: Gemma
+    developer_name: Google
     compile: False
     dtype: bfloat16
-    chat_template: llama-3-instruct
+    chat_template: null
     trust_remote_code: True
     use_api: false
     api_model_name: null # gpt-4o
-    target_model_holder: Meta
-    id: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated
-    tokenizer_id: meta-llama/Meta-Llama-3.1-8B-Instruct
-    short_name: Llama
-    developer_name: mlabonne
+  judge_model:
+    generation_config:
+      temperature: 0.0
+      top_p: 1.0
+      top_k: 0
+      max_new_tokens: 512
+      num_return_sequences: 1
+    id: google/gemma-3-12b-it
+    tokenizer_id: google/gemma-3-12b-it
+    short_name: Gemma
+    developer_name: Google
     compile: False
     dtype: bfloat16
-    chat_template: llama-3-instruct
+    chat_template: null
     trust_remote_code: True
+    use_api: false
+    api_model_name: null # gpt-4o
+  free_gen_repetition_filter:
+    repeat_set_size_max: 5
+    max_repeats: 10
+    penalty_duration: 2048
+    force_eos: True
+  json_repetition_filter:
+    repeat_set_size_max: 5
+    max_repeats: 10
+    penalty_duration: 2048
+    force_eos: False
   actor_num: 3
   early_stop: true
   dynamic_modify: true
