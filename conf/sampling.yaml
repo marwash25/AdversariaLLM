@@ -14,6 +14,7 @@ hydra:
 
 name: testing
 save_dir: ${root_dir}/outputs/
+use_database: false  # Set to true to enable MongoDB
 
 # What generation config to use for sampling
 generation_config:

@@ -103,7 +103,12 @@ def main(cfg: DictConfig) -> None:
     filter_by = eval_list_expressions_in_dict(filter_by)
     print(filter_by)
     # get all paths
-    paths = get_filtered_and_grouped_paths(filter_by, None)[("all", )]
+    paths = get_filtered_and_grouped_paths(
+        filter_by, 
+        None, 
+        use_database=cfg.get("use_database", False),
+        save_dir=cfg.save_dir
+    )[("all", )]
     if not paths:
         logging.info("No paths found, exiting")
         return
@@ -137,7 +142,7 @@ def main(cfg: DictConfig) -> None:
                 attack_params=OmegaConf.structured(attack_run["config"]["attack_params"]),
             )
 
-            run_config = filter_config(run_config, -1)
+            run_config = filter_config(run_config, -1, use_database=cfg.get("use_database", False))
             if run_config is None:
                 continue
             model_params = run_config.model_params
@@ -228,28 +233,30 @@ def main(cfg: DictConfig) -> None:
             json.dump(attack_run, open(log_file, "w"), indent=2, cls=CompactJSONEncoder)
             logging.info(f"Saved to {log_file}")
 
-            db = get_mongodb_connection()
-            collection = db.runs
+            # Only update database if enabled
+            if cfg.get("use_database", False):
+                db = get_mongodb_connection()
+                collection = db.runs
 
-            # Find all entries that match the original log_file path
-            matching_entries = list(collection.find({"log_file": path}))
+                # Find all entries that match the original log_file path
+                matching_entries = list(collection.find({"log_file": path}))
 
-            # Create new entries with updated log_file and generation_config
-            new_entries = []
-            for entry in matching_entries:
-                new_entry = entry.copy()
-                # Remove the _id field so MongoDB will generate a new one
-                if "_id" in new_entry:
-                    del new_entry["_id"]
-                # Update the log_file to the new path
-                new_entry["log_file"] = log_file
-                # Update the generation_config in the config to match the new one used
-                new_entry["config"]["attack_params"]["generation_config"] = new_gen_config
-                new_entries.append(new_entry)
+                # Create new entries with updated log_file and generation_config
+                new_entries = []
+                for entry in matching_entries:
+                    new_entry = entry.copy()
+                    # Remove the _id field so MongoDB will generate a new one
+                    if "_id" in new_entry:
+                        del new_entry["_id"]
+                    # Update the log_file to the new path
+                    new_entry["log_file"] = log_file
+                    # Update the generation_config in the config to match the new one used
+                    new_entry["config"]["attack_params"]["generation_config"] = new_gen_config
+                    new_entries.append(new_entry)
 
-            # Insert the new entries if any were found
-            if new_entries:
-                collection.insert_many(new_entries)
+                # Insert the new entries if any were found
+                if new_entries:
+                    collection.insert_many(new_entries)
         except Exception as e:
             logging.error(f"Error in {path}. Original exception: {e}")
             raise Exception(f"Error in {path}. Original exception: {e}") from e

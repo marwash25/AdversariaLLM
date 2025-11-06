@@ -2,6 +2,7 @@ import os
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # determinism
 import copy
+import glob
 import json
 import logging
 import sys
@@ -20,13 +21,16 @@ torch.use_deterministic_algorithms(True, warn_only=True)  # determinism
 torch.backends.cuda.matmul.allow_tf32 = True
 
 
-def collect_run_paths(suffixes: list[str]|str, classifier: str, filter_by: dict|None) -> list[str]:
+def collect_run_paths(suffixes: list[str]|str, classifier: str, filter_by: dict|None, use_database: bool = False, save_dir: str = "outputs") -> list[str]:
     """
     Collect paths to run files that have not been scored by the specified classifier.
 
     Args:
         suffixes: List of suffixes that must be in the path
         classifier: Name of the classifier to check in scored_by
+        filter_by: Optional filter criteria
+        use_database: Whether to use database for finding runs
+        save_dir: Directory to search for run.json files when use_database=False
 
     Returns:
         List of paths to run files
@@ -34,25 +38,66 @@ def collect_run_paths(suffixes: list[str]|str, classifier: str, filter_by: dict|
 
     if not isinstance(suffixes, (list, ListConfig)):
         suffixes = [str(suffixes)]
-    delete_orphaned_runs()
-    db = get_mongodb_connection()
-    collection = db.runs
+    
+    use_db = use_database
+    
+    if use_db:
+        delete_orphaned_runs()
+        db = get_mongodb_connection()
+        collection = db.runs
 
-    # Use MongoDB's find() method to get all documents
-    all_results = list(collection.find())
-    paths = []
-    for item in all_results:
-        log_file = item["log_file"]
-        date_time_string = log_file.split("/")[-3]
-        if classifier in item["scored_by"]:
-            continue
-        if any(date_time_string.endswith(suffix) for suffix in suffixes):
-            paths.append(log_file)
-    # remove duplicates
-    paths = list(set(paths))
-    if filter_by:
-        filtered_paths = set(get_filtered_and_grouped_paths(OmegaConf.to_container(filter_by, resolve=True))[("all",)])
-        paths = [p for p in paths if p in filtered_paths]
+        # Use MongoDB's find() method to get all documents
+        all_results = list(collection.find())
+        paths = []
+        for item in all_results:
+            log_file = item["log_file"]
+            date_time_string = log_file.split("/")[-3]
+            if classifier in item["scored_by"]:
+                continue
+            if any(date_time_string.endswith(suffix) for suffix in suffixes):
+                paths.append(log_file)
+        # remove duplicates
+        paths = list(set(paths))
+        if filter_by:
+            filtered_paths = set(get_filtered_and_grouped_paths(OmegaConf.to_container(filter_by, resolve=True), use_database=True)[("all",)])
+            paths = [p for p in paths if p in filtered_paths]
+    else:
+        # Scan JSON files instead
+        save_dir_abs = os.path.abspath(save_dir)
+        all_run_files = glob.glob(f"{save_dir_abs}/**/run.json", recursive=True)
+        paths = []
+        for log_file in all_run_files:
+            log_file_abs = os.path.abspath(log_file)
+            date_time_string = log_file.split("/")[-3]
+            if any(date_time_string.endswith(suffix) for suffix in suffixes):
+                # Check if already scored by reading the JSON file
+                try:
+                    with open(log_file_abs, "r") as f:
+                        run_data = json.load(f)
+                    # Check if this classifier has already scored this run
+                    already_scored = False
+                    for subrun in run_data.get("runs", []):
+                        for step in subrun.get("steps", []):
+                            if "scores" in step and classifier in step["scores"]:
+                                already_scored = True
+                                break
+                        if already_scored:
+                            break
+                    if not already_scored:
+                        paths.append(log_file_abs)
+                except (json.JSONDecodeError, FileNotFoundError):
+                    # Skip corrupted files
+                    continue
+        
+        # Apply filter_by if specified
+        if filter_by:
+            filtered_paths = set(get_filtered_and_grouped_paths(
+                OmegaConf.to_container(filter_by, resolve=True), 
+                use_database=False, 
+                save_dir=save_dir
+            )[("all",)])
+            paths = [p for p in paths if p in filtered_paths]
+    
     return sorted(paths, reverse=True)
 
 
@@ -64,7 +109,7 @@ def run_judges(cfg: DictConfig) -> None:
     logging.info("-------------------")
     logging.info(cfg)
 
-    paths = collect_run_paths(cfg.suffixes, cfg.classifier, cfg.filter_by)
+    paths = collect_run_paths(cfg.suffixes, cfg.classifier, cfg.filter_by, use_database=cfg.get("use_database", False), save_dir=cfg.get("save_dir", "outputs"))
     if not paths:
         logging.info("No unjudged paths found")
         return
@@ -108,9 +153,11 @@ def run_judges(cfg: DictConfig) -> None:
                         i += n_completions
                         n += n_completions
                 json.dump(attack_run, open(path, "w"), indent=2, cls=CompactJSONEncoder)
-                db = get_mongodb_connection()
-                collection = db.runs
-                collection.update_many({"log_file": path}, {"$addToSet": {"scored_by": cfg.classifier}})
+                # Only update database if enabled
+                if cfg.get("use_database", False):
+                    db = get_mongodb_connection()
+                    collection = db.runs
+                    collection.update_many({"log_file": path}, {"$addToSet": {"scored_by": cfg.classifier}})
             except Exception as e:
                 print(path, str(e))
                 os.remove(path + ".lock")

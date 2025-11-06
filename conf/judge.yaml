@@ -16,3 +16,10 @@ suffixes: ["0","1","2","3","4","5","6","7","8","9"]
 classifier: "harmbench" # or llama_guard_3_8b
 n_tokens: null
 n_chars: null
+use_database: false  # Set to true to enable MongoDB
+filter_by: null
+# filter_by: 
+#   model: meta-llama/Meta-Llama-3.1-8B-Instruct
+#   attack: gcg
+#   attack_params:
+#     num_steps: 250

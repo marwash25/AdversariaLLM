@@ -40,7 +40,7 @@ def offload_tensors(run_config, result: AttackResult, embed_dir: str):
                 step.model_input_embeddings = embed_path
 
 
-def log_attack(run_config, result: AttackResult, cfg: DictConfig, date_time_string: str):
+def log_attack(run_config, result: AttackResult, cfg: DictConfig, date_time_string: str = None, log_file_path: str = None):
     """Logs the attack results to a JSON file and MongoDB."""
     save_dir = cfg.save_dir
     embed_dir = cfg.embed_dir
@@ -59,15 +59,23 @@ def log_attack(run_config, result: AttackResult, cfg: DictConfig, date_time_stri
         offload_tensors(subrun_config, subrun_result, embed_dir)
 
         log_message.update(asdict(subrun_result))
-        # Find the first available run_i.json file
-        i = 0
-        log_dir = os.path.join(save_dir, date_time_string)
-        while os.path.exists(os.path.join(log_dir, str(i), f"run.json")):
-            i += 1
-        log_file = os.path.join(log_dir, str(i), f"run.json")
+        if log_file_path is None:
+            # Find the first available run_i.json file
+            i = 0
+            log_dir = os.path.join(save_dir, date_time_string)
+            while os.path.exists(os.path.join(log_dir, str(i), f"run.json")):
+                i += 1
+            log_file = os.path.join(log_dir, str(i), f"run.json")
+        else:
+            log_file = log_file_path
 
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
         with open(log_file, "w") as f:
             json.dump(log_message, f, indent=2, cls=CompactJSONEncoder)
         logging.info(f"Attack logged to {log_file}")
-        log_config_to_db(subrun_config, subrun_result, log_file)
+        
+        # Only log to database if enabled
+        if cfg.get("use_database", False):
+            log_config_to_db(subrun_config, subrun_result, log_file)
+        else:
+            logging.debug("Database logging disabled (use_database=false)")

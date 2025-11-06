@@ -303,7 +303,8 @@ class GCGAttack(Attack):
             embedding_layer(ids) for ids in (pre_prompt_ids, post_ids, target_ids)
         ]
         # Compute the KV Cache for tokens that appear before the optimized tokens
-        if self.config.use_prefix_cache and "gemma" not in model.name_or_path:
+        # Disable prefix cache for models that use DynamicCache (Llama 3.2, etc.)
+        if self.config.use_prefix_cache and "gemma" not in model.name_or_path and "llama-3.2" not in model.name_or_path.lower():
             with torch.no_grad():
                 self.prefix_cache = DynamicCache()
                 output = model(inputs_embeds=pre_prompt_embeds, past_key_values=self.prefix_cache, use_cache=True)

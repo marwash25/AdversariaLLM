@@ -21,10 +21,7 @@ class RunConfig:
     attack_params: dict
 
 
-def filter_config(run_config: RunConfig, dset_len: int, overwrite: bool = False) -> RunConfig | None:
-    db = get_mongodb_connection()
-    collection = db.runs
-
+def filter_config(run_config: RunConfig, dset_len: int, overwrite: bool = False, use_database: bool = False) -> RunConfig | None:
     OmegaConf.resolve(run_config.attack_params)
     OmegaConf.resolve(run_config.dataset_params)
     OmegaConf.resolve(run_config.model_params)
@@ -37,14 +34,21 @@ def filter_config(run_config: RunConfig, dset_len: int, overwrite: bool = False)
     else:
         idx = original_idx
 
-    filtered_idx = []
-    for i in idx:
-        run_config.dataset_params.idx = i
-        config_data = OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)
-        if not overwrite and collection.find_one({"config": config_data}):
-            print(f"Skipping {run_config.model} {run_config.dataset} {run_config.attack} idx={i} because it already exists at {collection.find_one({'config': config_data})['log_file']}")
-            continue
-        filtered_idx.append(i)
+    # Skip database checks if database is disabled
+    if not use_database:
+        # Without database, we can't check for existing runs, so return all indices
+        filtered_idx = idx
+    else:
+        db = get_mongodb_connection()
+        collection = db.runs
+        filtered_idx = []
+        for i in idx:
+            run_config.dataset_params.idx = i
+            config_data = OmegaConf.to_container(OmegaConf.structured(run_config), resolve=True)
+            if not overwrite and collection.find_one({"config": config_data}):
+                print(f"Skipping {run_config.model} {run_config.dataset} {run_config.attack} idx={i} because it already exists at {collection.find_one({'config': config_data})['log_file']}")
+                continue
+            filtered_idx.append(i)
 
     if not filtered_idx:
         return None

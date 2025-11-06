@@ -48,13 +48,13 @@ def collect_configs(cfg: DictConfig) -> list[RunConfig]:
                     dataset_params,
                     attack_params,
                 )
-                run_config = filter_config(run_config, dset_len, overwrite=cfg.overwrite)
+                run_config = filter_config(run_config, dset_len, overwrite=cfg.overwrite, use_database=cfg.get("use_database", False))
                 if run_config is not None:
                     all_run_configs.append(run_config)
     return all_run_configs
 
 
-def run_attacks(all_run_configs: list[RunConfig], cfg: DictConfig, date_time_string: str) -> None:
+def run_attacks(all_run_configs: list[RunConfig], cfg: DictConfig, log_file_path: str) -> None:
     last_model = None
     last_dataset = None
     last_attack = None
@@ -76,7 +76,7 @@ def run_attacks(all_run_configs: list[RunConfig], cfg: DictConfig, date_time_str
         attack: Attack[AttackResult] = Attack.from_name(run_config.attack)(run_config.attack_params)
         results = attack.run(model, tokenizer, dataset)  # type: ignore
 
-        log_attack(run_config, results, cfg, date_time_string)
+        log_attack(run_config, results, cfg, log_file_path)
 
 
 @hydra.main(config_path="./conf", config_name="config", version_base="1.3")
@@ -84,8 +84,10 @@ def run_attacks(all_run_configs: list[RunConfig], cfg: DictConfig, date_time_str
 def main(cfg: DictConfig) -> None:
     os.makedirs(cfg.save_dir, exist_ok=True)
     date_time_string = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
+    log_file_path = getattr(cfg, "log_file_path", None)
     logging.info("-------------------")
     logging.info(f"Commencing run at `{date_time_string}`")
+    logging.info(f"Saving to: {log_file_path if log_file_path is not None else f'default location ({cfg.save_dir}/{date_time_string}/run.json)'}")
     logging.info("-------------------")
 
     # 1. Parse/Collect configs for the judge and the attacks
@@ -97,15 +99,16 @@ def main(cfg: DictConfig) -> None:
     all_run_configs = collect_configs(cfg)
 
     # 2. Run the attacks
-    run_attacks(all_run_configs, cfg, date_time_string)
+    run_attacks(all_run_configs, cfg, log_file_path)
     # 3. Run the judges
     if judges_to_run is None:
         return
     for judge in judges_to_run:
         # Create judge config
+        # TODO: not verified yet
         judge_cfg = OmegaConf.create({
             "classifier": judge,
-            "suffixes": [date_time_string.split('/')[-1]],  # Use the timestamp from this run to make sure we only judge this run
+            "suffixes": [log_file_path.split('/')[-1]],  # Use the timestamp from this run to make sure we only judge this run
             "filter_by": None
         })
         free_vram()

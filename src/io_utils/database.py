@@ -7,6 +7,7 @@ database operations for attack result management and analysis.
 
 import os
 import glob
+import json
 from functools import lru_cache
 from typing import Iterable
 
@@ -143,6 +144,39 @@ def check_match(doc_fragment, filter_fragment):
 
 
 @lru_cache
+def get_all_runs_from_files(save_dir: str = "outputs") -> list[dict]:
+    """
+    Retrieves all runs by scanning JSON files when database is disabled.
+    
+    Args:
+        save_dir: Directory to search for run.json files
+        
+    Returns:
+        List of run dictionaries with 'config' and 'log_file' keys
+    """
+    # Convert to absolute path for consistency
+    save_dir = os.path.abspath(save_dir)
+    all_run_files = glob.glob(f"{save_dir}/**/run.json", recursive=True)
+    all_results = []
+    
+    for log_file in all_run_files:
+        try:
+            with open(log_file, "r") as f:
+                run_data = json.load(f)
+                # Extract config and log_file to match MongoDB structure
+                all_results.append({
+                    "config": run_data.get("config", {}),
+                    "log_file": os.path.abspath(log_file),
+                    "scored_by": []  # Can't track this without DB
+                })
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            # Skip corrupted or missing files
+            continue
+    
+    return all_results
+
+
+@lru_cache
 def get_all_runs() -> list[dict]:
     """
     Retrieves all runs from the database.
@@ -152,29 +186,38 @@ def get_all_runs() -> list[dict]:
     return list(collection.find())
 
 
-def get_filtered_and_grouped_paths(filter_by: dict, group_by: Iterable[str]|None = None, force_reload: bool = True) -> dict[tuple[str], list[str]]:
+def get_filtered_and_grouped_paths(filter_by: dict, group_by: Iterable[str]|None = None, force_reload: bool = True, use_database: bool = True, save_dir: str = "outputs") -> dict[tuple[str], list[str]]:
     """
     Retrieves log paths from MongoDB filtered by criteria and grouped according to group_by.
+    Falls back to scanning JSON files if database is disabled.
 
     Args:
         filter_by (dict): Filtering criteria. Can contain nested dictionaries.
         group_by (list or tuple): List/tuple of keys to group by from the 'config' field.
         force_reload (bool), default True: If True, reload the cached runs. Setting to False is useful for speeding up repeated calls without adding new runs.
+        use_database (bool), default True: If False, scan JSON files instead of using database.
+        save_dir (str), default "outputs": Directory to search for run.json files when use_database=False.
 
     Returns:
         dict: A dictionary where keys are group identifiers (tuples of strings)
               and values are lists of log paths.
     """
-    # Connect to MongoDB
-    if force_reload:
-        get_all_runs.cache_clear()
-    all_results = get_all_runs()
+    # Use file-based approach if database is disabled
+    if not use_database:
+        if force_reload:
+            get_all_runs_from_files.cache_clear()
+        all_results = get_all_runs_from_files(save_dir)
+    else:
+        # Connect to MongoDB
+        if force_reload:
+            get_all_runs.cache_clear()
+        all_results = get_all_runs()
 
     # Filter in Python using the check_match helper for complex nested conditions
     if filter_by:
         filtered_results = [
             doc for doc in all_results
-            if check_match(doc['config'], filter_by)
+            if check_match(doc.get('config', {}), filter_by)
         ]
     else:
         filtered_results = all_results

@@ -13,3 +13,4 @@ viz
 wandb
 paths.yaml
 embeddings/
+*.egg-info/
