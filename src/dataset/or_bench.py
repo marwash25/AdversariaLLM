@@ -12,15 +12,12 @@ from datasets import load_dataset
 
 from src.types import Conversation
 
-from .prompt_dataset import PromptDataset
+from .prompt_dataset import BaseDataConfig, PromptDataset
 
 
 @dataclass
-class ORBenchConfig:
+class ORBenchConfig(BaseDataConfig):
     name: str = "or_bench"
-    seed: int = 0
-    idx: list[int] | int | str | None = None
-    shuffle: bool = True
 
 
 @PromptDataset.register("or_bench")

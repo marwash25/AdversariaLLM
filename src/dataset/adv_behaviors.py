@@ -15,18 +15,15 @@ import pandas as pd
 
 from src.types import Conversation
 
-from .prompt_dataset import PromptDataset
+from .prompt_dataset import BaseDataConfig, PromptDataset
 
 
 @dataclass
-class AdvBehaviorsConfig:
+class AdvBehaviorsConfig(BaseDataConfig):
     name: str = "adv_behaviors"
     messages_path: str = "./data/behavior_datasets/harmbench_behaviors_text_all.csv"
     targets_path: str = "./data/optimizer_targets/harmbench_targets_text.json"
     categories: tuple[str, ...] = ('chemical_biological', 'illegal', 'misinformation_disinformation', 'harmful', 'harassment_bullying', 'cybercrime_intrusion')
-    seed: int = 0
-    idx: list[int] | int | str | None = None
-    shuffle: bool = True
 
 
 @PromptDataset.register("adv_behaviors")

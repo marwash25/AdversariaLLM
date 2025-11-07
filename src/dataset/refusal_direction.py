@@ -16,19 +16,16 @@ from typing import Literal
 
 from src.types import Conversation
 
-from .prompt_dataset import PromptDataset
+from .prompt_dataset import BaseDataConfig, PromptDataset
 
 
 @dataclass
-class RefusalDirectionDataConfig:
+class RefusalDirectionDataConfig(BaseDataConfig):
     name: str = "refusal_direction_data"
     path: str = "./data/refusal_direction/"
     split: str = "train"
     type: Literal["harmful", "harmless"] = "harmful"
-    seed: int = 0
-    idx: list[int] | int | str | None = None
     n_samples: int = 100
-    shuffle: bool = True
 
 
 @PromptDataset.register("refusal_direction_data")

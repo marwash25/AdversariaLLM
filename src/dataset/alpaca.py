@@ -16,15 +16,12 @@ from datasets import load_dataset
 
 from src.types import Conversation
 
-from .prompt_dataset import PromptDataset
+from .prompt_dataset import BaseDataConfig, PromptDataset
 
 
 @dataclass
-class AlpacaConfig:
+class AlpacaConfig(BaseDataConfig):
     name: str = "alpaca"
-    seed: int = 0
-    idx: list[int] | int | str | None = None
-    shuffle: bool = True
 
 
 @PromptDataset.register("alpaca")

@@ -8,6 +8,7 @@ and tokenizers with various optimizations and model-specific configurations.
 import gc
 from functools import lru_cache
 from pathlib import Path
+import logging
 
 import torch
 from omegaconf import DictConfig
@@ -19,8 +20,45 @@ from transformers import (
     PreTrainedTokenizerBase,
 )
 from transformers.utils.logging import disable_progress_bar
+from peft import PeftConfig, AutoPeftModelForCausalLM, get_peft_model, PeftModel
 
 disable_progress_bar()  # disable progress bar for model loading
+
+
+def _load_merge_peft(model_name, peft_name, manual_untie_embeddings=False, dtype=None):
+    config = PeftConfig.from_pretrained(peft_name)
+    if manual_untie_embeddings:
+        # Load base model with untied embeddings to avoid conflicts
+        ref_model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=dtype, tie_word_embeddings=False, device_map="auto"
+        ).eval()
+
+        # Manually tie the embeddings for the base model
+        ref_model.lm_head.weight.data = ref_model.model.embed_tokens.weight.data.clone()
+
+        # Load PEFT config and apply to base model
+        model_lora = get_peft_model(ref_model, config)
+
+        # Load PEFT weights WITHOUT forcing tie_word_embeddings=True
+        model = model_lora.from_pretrained(ref_model, peft_name, is_trainable=False)  # Removed tie_word_embeddings=True
+
+        # Check if LoRA has broken the tie (expected behavior)
+        embeddings_tied = torch.equal(model.model.lm_head.weight.data, model.model.model.embed_tokens.weight.data)
+
+        if embeddings_tied:
+            logging.warning(
+                "Embeddings are still tied after LoRA loading - this might indicate LoRA is not modifying both layers"
+            )
+        else:
+            logging.info("LoRA has successfully broken the tie between embeddings and lm_head (as expected)")
+
+        # Merge and unload - this will preserve the LoRA modifications
+        model = model.merge_and_unload()
+        return model
+
+    model = AutoPeftModelForCausalLM.from_pretrained(peft_name, torch_dtype=dtype, device_map="auto").eval()
+    model = model.merge_and_unload(safe_merge=True)
+    return model
 
 
 def load_model_and_tokenizer(
@@ -48,7 +86,17 @@ def load_model_and_tokenizer(
 
     gc.collect()
     torch.cuda.empty_cache()
-    if model_params.dtype is None:
+
+    if "lora_cfg" in model_params.keys() and getattr(model_params.lora_cfg, "merge_lora", False):
+        if "gemma-3" in model_params.id:
+            raise NotImplementedError("Gemma 3 models with LoRA are not supported")
+        model = _load_merge_peft(
+                model_params.lora_cfg.base_name,
+                model_params.id,
+                manual_untie_embeddings=getattr(model_params.lora_cfg, "manual_untie_embeddings", False),
+                dtype=getattr(torch, model_params.dtype)
+            ).eval()
+    elif model_params.dtype is None:
         model = AutoModelForCausalLM.from_pretrained(
             model_params.id,
             trust_remote_code=model_params.trust_remote_code,
@@ -138,17 +186,13 @@ def load_model_and_tokenizer(
         case path if "gemma-2" in path:
             tokenizer.model_max_length = 8192
         case path if "gemma-3" in path:
-            tokenizer.model_max_length = (
-                32768  # true ctx is 128k but we dont have that much memory
-            )
+            tokenizer.model_max_length = 32768  # true ctx is 128k but we dont have that much memory
         case path if "zephyr" in path:
             tokenizer.model_max_length = 32768
         case path if "openai/gpt-oss" in path:
             tokenizer.model_max_length = 128000
     if tokenizer.model_max_length > 262144:
-        raise ValueError(
-            f"Model max length {tokenizer.model_max_length} is probably too large."
-        )
+        raise ValueError(f"Model max length {tokenizer.model_max_length} is probably too large.")
 
     if model_params.chat_template is not None:
         tokenizer.chat_template = load_chat_template(model_params.chat_template)
@@ -171,9 +215,7 @@ def load_chat_template(template_name: str) -> str:
     """
     # Get project root by going up from current file
     project_root = Path(__file__).parent.parent.parent
-    template_path = (
-        project_root / "chat_templates" / "chat_templates" / f"{template_name}.jinja"
-    )
+    template_path = project_root / "chat_templates" / "chat_templates" / f"{template_name}.jinja"
     return template_path.read_text().replace("    ", "").replace("\n", "")
 
 

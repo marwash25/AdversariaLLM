@@ -43,6 +43,9 @@ from .memory import free_vram
 # Configuration utilities
 from .config import RunConfig, filter_config
 
+# SLURM utilities
+from .slurm_utils import setup_hf_cache_on_slurm_tmpdir
+
 __all__ = [
     # Model loading
     'load_model_and_tokenizer',
@@ -76,4 +79,7 @@ __all__ = [
     # Configuration
     'RunConfig',
     'filter_config',
+    
+    # SLURM utilities
+    'setup_hf_cache_on_slurm_tmpdir',
 ]

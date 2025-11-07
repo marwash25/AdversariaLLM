@@ -5,27 +5,38 @@ adv_behaviors:
   categories: ['chemical_biological', 'illegal', 'misinformation_disinformation', 'harmful', 'harassment_bullying', 'cybercrime_intrusion'] #,'copyright']
   seed: 0
   idx: null
+  batch: null
   shuffle: true
 alpaca:
   name: alpaca
   seed: 0
   idx: null
+  batch: null
   shuffle: true
 jbb_behaviors:
   name: jbb_behaviors
   seed: 0
   idx: null
+  batch: null
   shuffle: true
 or_bench:
   name: or_bench
   seed: 0
   idx: null
+  batch: null
   shuffle: true
 xs_test:
   name: xs_test
   seed: 0
   idx: null
+  batch: null
   shuffle: true
+rf_test:
+  name: rf_test
+  seed: 0
+  idx: null
+  batch: null
+  path: ${root_dir}/data/harmful-harmless-eval/
 refusal_direction_data:
   name: refusal_direction_data
   path: ${root_dir}/data/refusal_direction/
@@ -33,6 +44,7 @@ refusal_direction_data:
   type: harmful
   seed: 0
   idx: null
+  batch: null
   shuffle: true
 strong_reject:
   name: strong_reject
@@ -40,6 +52,7 @@ strong_reject:
   split: train
   seed: 0
   idx: null
+  batch: null
   shuffle: true
   version: "full"
   categories: ["Disinformation and deception", "Hate, harassment and discrimination", "Illegal goods and services", "Non-violent crimes", "Sexual content", "Violence"]

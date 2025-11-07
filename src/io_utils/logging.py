@@ -32,7 +32,9 @@ def offload_tensors(run_config, result: AttackResult, embed_dir: str):
     for i, run in enumerate(result.runs):
         for j, step in enumerate(run.steps):
             if step.model_input_embeddings is not None:
-                run_hash = hashlib.sha256(f"{str(run_config)} {run.original_prompt} {step.model_completions}, {step.step}".encode()).hexdigest()
+                run_hash = hashlib.sha256(
+                    f"{str(run_config)} {run.original_prompt} {step.model_completions}, {step.step}".encode()
+                ).hexdigest()
                 filename = f"{run_hash}.safetensors"
                 embed_path = os.path.join(embed_dir, filename)
                 safetensors.torch.save_file({"embeddings": step.model_input_embeddings}, embed_path)
@@ -40,42 +42,49 @@ def offload_tensors(run_config, result: AttackResult, embed_dir: str):
                 step.model_input_embeddings = embed_path
 
 
-def log_attack(run_config, result: AttackResult, cfg: DictConfig, date_time_string: str = None, log_file_path: str = None):
+def log_attack(run_config, result: AttackResult, cfg: DictConfig, date_time_string: str, save_format: str = "default"):
     """Logs the attack results to a JSON file and MongoDB."""
     save_dir = cfg.save_dir
     embed_dir = cfg.embed_dir
+    log_files = []
     for idx, run in enumerate(result.runs):
         subrun_config = copy.deepcopy(run_config)
-        subrun_config.dataset_params["idx"] = [run_config.dataset_params["idx"][idx]]
+        idx = [run_config.dataset_params["idx"][idx]]  # why is this a list
+        subrun_config.dataset_params["idx"] = idx
         subrun_result = AttackResult(runs=[run])
 
         # Create a structured log message as a JSON object
         OmegaConf.resolve(subrun_config.attack_params)
         OmegaConf.resolve(subrun_config.dataset_params)
         OmegaConf.resolve(subrun_config.model_params)
-        log_message = {
-            "config": OmegaConf.to_container(OmegaConf.structured(subrun_config), resolve=True)
-        }
+        log_message = {"config": OmegaConf.to_container(OmegaConf.structured(subrun_config), resolve=True)}
         offload_tensors(subrun_config, subrun_result, embed_dir)
 
         log_message.update(asdict(subrun_result))
-        if log_file_path is None:
+        if save_format == "default":
             # Find the first available run_i.json file
             i = 0
             log_dir = os.path.join(save_dir, date_time_string)
             while os.path.exists(os.path.join(log_dir, str(i), f"run.json")):
                 i += 1
             log_file = os.path.join(log_dir, str(i), f"run.json")
+
+        elif save_format == "noDB":
+            date_string, time_string = date_time_string.split("/")
+            log_dir = save_dir
+            log_file = os.path.join(log_dir, f"run-{idx[0]}__{date_string}__{time_string}.json")
+
         else:
-            log_file = log_file_path
+            raise ValueError(f"Invalid save format: {save_format}")
 
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
         with open(log_file, "w") as f:
             json.dump(log_message, f, indent=2, cls=CompactJSONEncoder)
         logging.info(f"Attack logged to {log_file}")
-        
+        log_files.append(log_file)
         # Only log to database if enabled
         if cfg.get("use_database", False):
             log_config_to_db(subrun_config, subrun_result, log_file)
         else:
             logging.debug("Database logging disabled (use_database=false)")
+    return log_files

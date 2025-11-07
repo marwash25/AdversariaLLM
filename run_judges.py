@@ -15,13 +15,24 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from tqdm import tqdm
 
 from src.errors import print_exceptions
-from src.io_utils import CompactJSONEncoder, get_mongodb_connection, delete_orphaned_runs, get_filtered_and_grouped_paths
+from src.io_utils import (
+    CompactJSONEncoder,
+    get_mongodb_connection,
+    delete_orphaned_runs,
+    get_filtered_and_grouped_paths,
+)
 
 torch.use_deterministic_algorithms(True, warn_only=True)  # determinism
 torch.backends.cuda.matmul.allow_tf32 = True
 
 
-def collect_run_paths(suffixes: list[str]|str, classifier: str, filter_by: dict|None, use_database: bool = False, save_dir: str = "outputs") -> list[str]:
+def collect_run_paths(
+    suffixes: list[str] | str,
+    classifier: str,
+    filter_by: dict | None,
+    use_database: bool = False,
+    save_dir: str = "outputs",
+) -> list[str]:
     """
     Collect paths to run files that have not been scored by the specified classifier.
 
@@ -35,12 +46,11 @@ def collect_run_paths(suffixes: list[str]|str, classifier: str, filter_by: dict|
     Returns:
         List of paths to run files
     """
-
     if not isinstance(suffixes, (list, ListConfig)):
         suffixes = [str(suffixes)]
-    
+
     use_db = use_database
-    
+
     if use_db:
         delete_orphaned_runs()
         db = get_mongodb_connection()
@@ -59,20 +69,22 @@ def collect_run_paths(suffixes: list[str]|str, classifier: str, filter_by: dict|
         # remove duplicates
         paths = list(set(paths))
         if filter_by:
-            filtered_paths = set(get_filtered_and_grouped_paths(OmegaConf.to_container(filter_by, resolve=True), use_database=True)[("all",)])
+            filtered_paths = set(
+                get_filtered_and_grouped_paths(OmegaConf.to_container(filter_by, resolve=True), use_database=True)[
+                    ("all",)
+                ]
+            )
             paths = [p for p in paths if p in filtered_paths]
     else:
         # Scan JSON files instead
-        save_dir_abs = os.path.abspath(save_dir)
-        all_run_files = glob.glob(f"{save_dir_abs}/**/run.json", recursive=True)
+        # save_dir_abs = os.path.abspath(save_dir)
+        all_run_files = glob.glob(f"{save_dir}/**/*.json", recursive=True)
         paths = []
         for log_file in all_run_files:
-            log_file_abs = os.path.abspath(log_file)
-            date_time_string = log_file.split("/")[-3]
-            if any(date_time_string.endswith(suffix) for suffix in suffixes):
+            if any(suffix in log_file for suffix in suffixes):
                 # Check if already scored by reading the JSON file
                 try:
-                    with open(log_file_abs, "r") as f:
+                    with open(log_file, "r") as f:
                         run_data = json.load(f)
                     # Check if this classifier has already scored this run
                     already_scored = False
@@ -84,20 +96,20 @@ def collect_run_paths(suffixes: list[str]|str, classifier: str, filter_by: dict|
                         if already_scored:
                             break
                     if not already_scored:
-                        paths.append(log_file_abs)
+                        paths.append(log_file)
                 except (json.JSONDecodeError, FileNotFoundError):
                     # Skip corrupted files
                     continue
-        
+
         # Apply filter_by if specified
         if filter_by:
-            filtered_paths = set(get_filtered_and_grouped_paths(
-                OmegaConf.to_container(filter_by, resolve=True), 
-                use_database=False, 
-                save_dir=save_dir
-            )[("all",)])
+            filtered_paths = set(
+                get_filtered_and_grouped_paths(
+                    OmegaConf.to_container(filter_by, resolve=True), use_database=False, save_dir=save_dir
+                )[("all",)]
+            )
             paths = [p for p in paths if p in filtered_paths]
-    
+
     return sorted(paths, reverse=True)
 
 
@@ -109,11 +121,18 @@ def run_judges(cfg: DictConfig) -> None:
     logging.info("-------------------")
     logging.info(cfg)
 
-    paths = collect_run_paths(cfg.suffixes, cfg.classifier, cfg.filter_by, use_database=cfg.get("use_database", False), save_dir=cfg.get("save_dir", "outputs"))
+    paths = collect_run_paths(
+        cfg.suffixes,
+        cfg.classifier,
+        cfg.filter_by,
+        use_database=getattr(cfg, "use_database", False),
+        save_dir=getattr(cfg, "save_dir", "outputs"),
+    )
     if not paths:
         logging.info("No unjudged paths found")
         return
-    logging.info(f"Found {len(paths)} paths")
+    logging.info(f"Found {len(paths)} paths:")
+    logging.info("\n".join(paths))
     logging.info("Loading judge...")
     judge = None
     n = 0
@@ -149,7 +168,7 @@ def run_judges(cfg: DictConfig) -> None:
                     i = 0
                     for step in subrun["steps"]:
                         n_completions = len(step["model_completions"])
-                        step["scores"][cfg.classifier] = {k: v[i:i+n_completions] for k, v in results.items()}
+                        step["scores"][cfg.classifier] = {k: v[i : i + n_completions] for k, v in results.items()}
                         i += n_completions
                         n += n_completions
                 json.dump(attack_run, open(path, "w"), indent=2, cls=CompactJSONEncoder)

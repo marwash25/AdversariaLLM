@@ -1,0 +1,60 @@
+defaults:
+  - attacks: attacks
+  - datasets: datasets
+  - models: models
+  - paths
+  # - override hydra/launcher: a100h100.yaml
+  - _self_
+
+hydra:
+  run:
+    dir: ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
+  job:
+    chdir: true
+  sweep:
+    dir: ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
+
+# Top-level generation config for easier overriding
+generation_config:
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 0
+  max_new_tokens: 256
+  num_return_sequences: 1
+
+attacks:
+  gcg:
+    num_steps: 300
+
+datasets:
+  rf_test:
+    batch: 10
+    path: ${oc.env:HOME}/harmful-harmless-eval/
+
+_gcg_models: 
+  - ${models.${model_name}.id}
+  - ${models.${model_name}.tokenizer_id}
+
+_pair_models: 
+  - ${models.${model_name}.id} 
+  - ${models.${model_name}.tokenizer_id} 
+  - lmsys/vicuna-13b-v1.5
+  - cais/HarmBench-Llama-2-13b-cls
+
+slurm_copy_hf_cache: null
+  # models: ${oc.select:_${attack_name}_models,${_gcg_models}}   # automatically select models based on attack_name
+  # datasets: null
+
+name: redflag_debug
+save_dir: ${root_dir}/outputs/${name}/${attack}/results/  # place to store results
+embed_dir: ${root_dir}/outputs/${name}/${attack}/embeddings/  # place to store results
+overwrite: false
+save_format: noDB  # noDB or default; noDB optimized for human readability instead of programatic database use
+use_database: false  # Set to true to enable MongoDB
+
+classifiers: ["strong_reject"]  # anything from judgezoo
+
+# overrides for parallelism
+attack: gcg
+dataset: rf_test
+model: redflag-tokens/llama3-2-rf-v3

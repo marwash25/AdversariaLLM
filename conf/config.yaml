@@ -14,13 +14,26 @@ hydra:
   sweep:
     dir: ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
 
+# automatically select models based on attack_name
+slurm_copy_hf_cache: null
+
 name: testing
-save_dir: ${root_dir}/outputs/  # place to store results
-embed_dir: ${root_dir}/embeddings/  # place to store embeddings for emebdding attacks
+save_dir: ${root_dir}/outputs/${name}/${attack}/results/  # place to store results
+embed_dir: ${root_dir}/outputs/${name}/${attack}/embeddings/  # place to store results
 overwrite: false
+save_format: "noDB"  # noDB or default; noDB optimized for human readability instead of programatic database use
 use_database: false  # Set to true to enable MongoDB
 
 classifiers: ["strong_reject"]  # anything from judgezoo
+
+attacks:
+  gcg:
+    num_steps: 300
+
+datasets:
+  rf_test:
+    batch: 10
+    path: ${oc.env:HOME}/harmful-harmless-eval/
 
 # Top-level generation config for easier overriding
 generation_config:
@@ -31,6 +44,6 @@ generation_config:
   num_return_sequences: 1
 
 # overrides for parallelism
-attack: null
-dataset: adv_behaviors
+attack: gcg
+dataset: rf_test
 model: null

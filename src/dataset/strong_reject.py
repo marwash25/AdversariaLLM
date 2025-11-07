@@ -16,19 +16,16 @@ from datasets import load_dataset
 
 from src.types import Conversation
 
-from .prompt_dataset import PromptDataset
+from .prompt_dataset import BaseDataConfig, PromptDataset
 
 
 @dataclass
-class StrongRejectConfig:
+class StrongRejectConfig(BaseDataConfig):
     name: str = "strong_reject"
     path: str = "./data/strong_reject/"
     split: str = "train"
     categories: tuple[str, ...] = ("Disinformation and deception", "Hate, harassment and discrimination", "Illegal goods and services", "Non-violent crimes", "Sexual content", "Violence")
-    seed: int = 0
     version: Literal["small", "full"] = "full"
-    idx: list[int] | int | str | None = None
-    shuffle: bool = True
 
 
 @PromptDataset.register("strong_reject")

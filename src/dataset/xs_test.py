@@ -12,16 +12,13 @@ from typing import Sequence
 from datasets import load_dataset
 
 from src.types import Conversation
-from .prompt_dataset import PromptDataset
+from .prompt_dataset import BaseDataConfig, PromptDataset
 
 
 @dataclass
-class XSTestConfig:
+class XSTestConfig(BaseDataConfig):
     name: str = "xstest"
-    seed: int = 0
-    idx: list[int] | int | str | None = None
     categories: tuple[str, ...] = ("privacy_fictional", "homonyms", "safe_contexts", "safe_targets", "figurative_language", "privacy_public", "historical_events", "real_group_nons_discr", "definitions", "nons_group_real_discr")
-    shuffle: bool = True
 
 
 @PromptDataset.register("xs_test")

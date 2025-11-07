@@ -15,15 +15,12 @@ import jailbreakbench as jbb
 
 from src.types import Conversation
 
-from .prompt_dataset import PromptDataset
+from .prompt_dataset import BaseDataConfig, PromptDataset
 
 
 @dataclass
-class JBBBehaviorsConfig:
+class JBBBehaviorsConfig(BaseDataConfig):
     name: str = "jbb_behaviors"
-    seed: int = 0
-    idx: list[int] | int | str | None = None
-    shuffle: bool = True
 
 
 @PromptDataset.register("jbb_behaviors")
