@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from src.types import Conversation
+from llm_quick_check.types import Conversation
 
 from .prompt_dataset import BaseDataConfig, PromptDataset
 

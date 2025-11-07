@@ -14,7 +14,7 @@ from typing import Literal
 
 from datasets import load_dataset
 
-from src.types import Conversation
+from llm_quick_check.types import Conversation
 
 from .prompt_dataset import BaseDataConfig, PromptDataset
 

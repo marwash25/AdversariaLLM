@@ -5,9 +5,9 @@ import pytest
 import torch
 from typing import cast, List
 
-from src.io_utils import load_model_and_tokenizer
-from src.lm_utils import generate_ragged_batched, prepare_conversation
-from src.lm_utils.utils import get_stop_token_ids
+from llm_quick_check.io_utils import load_model_and_tokenizer
+from llm_quick_check.lm_utils import generate_ragged_batched, prepare_conversation
+from llm_quick_check.lm_utils.utils import get_stop_token_ids
 
 
 @pytest.fixture

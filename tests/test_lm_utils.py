@@ -4,7 +4,7 @@ import pytest
 import torch
 import transformers
 from transformers import AutoTokenizer
-from src.lm_utils import prepare_conversation
+from llm_quick_check.lm_utils import prepare_conversation
 
 
 @pytest.fixture(autouse=True)

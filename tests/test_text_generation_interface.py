@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from src.lm_utils import APITextGenerator, LocalTextGenerator, GenerationResult
+from llm_quick_check.lm_utils import APITextGenerator, LocalTextGenerator, GenerationResult
 import pytest
 from tests.test_json_schema import _get_model_tok
 

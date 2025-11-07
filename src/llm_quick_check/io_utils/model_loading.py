@@ -214,7 +214,7 @@ def load_chat_template(template_name: str) -> str:
         The chat template as a string.
     """
     # Get project root by going up from current file
-    project_root = Path(__file__).parent.parent.parent
+    project_root = Path(__file__).parent.parent.parent.parent
     template_path = project_root / "chat_templates" / "chat_templates" / f"{template_name}.jinja"
     return template_path.read_text().replace("    ", "").replace("\n", "")
 

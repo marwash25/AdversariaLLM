@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Type
 
 import torch
-from src.types import Conversation
+from llm_quick_check.types import Conversation
 
 
 @dataclass

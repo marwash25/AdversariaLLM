@@ -19,8 +19,8 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from src.lm_utils import generate_ragged, json_filter, validate_json_strings
-from src.lm_utils.filters import _parse_json, _validate_json_string
+from llm_quick_check.lm_utils import generate_ragged, json_filter, validate_json_strings
+from llm_quick_check.lm_utils.filters import _parse_json, _validate_json_string
 
 # ═════════════════════════════════════════════════════════════════════
 #  Project paths
@@ -95,7 +95,7 @@ _model_cache: dict[str, tuple] = {}
 
 def _get_model_tok(model_id: str):
     if model_id not in _model_cache:
-        from src.io_utils import load_model_and_tokenizer
+        from llm_quick_check.io_utils import load_model_and_tokenizer
 
         cfg = OmegaConf.load(MODELS_YAML)[model_id]
         model, tok = load_model_and_tokenizer(cfg)
@@ -149,7 +149,7 @@ def test_parse_json():
     ],
 )
 def test_valid_samples(sample):
-    from src.lm_utils.filters import _parse_json, _validate_json
+    from llm_quick_check.lm_utils.filters import _parse_json, _validate_json
 
     SCHEMA = {
         "type": "object",

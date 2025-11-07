@@ -1,7 +1,7 @@
 from omegaconf import OmegaConf
 
-from src.attacks.actor import ActorAttack
-from src.io_utils import load_model_and_tokenizer
+from llm_quick_check.attacks.actor import ActorAttack
+from llm_quick_check.io_utils import load_model_and_tokenizer
 
 
 def test_harm_extraction():

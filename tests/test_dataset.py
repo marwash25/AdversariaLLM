@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.types import Conversation
+from llm_quick_check.types import Conversation
 
 
 def _is_conversation(instance: Conversation) -> bool:
@@ -11,7 +11,7 @@ def _is_conversation(instance: Conversation) -> bool:
 
 
 def test_adv_behaviors_dataset():
-    from src.dataset import AdvBehaviorsConfig, AdvBehaviorsDataset
+    from llm_quick_check.dataset import AdvBehaviorsConfig, AdvBehaviorsDataset
 
     config = AdvBehaviorsConfig(
         name="adv_behaviors",
@@ -30,7 +30,7 @@ def test_adv_behaviors_dataset():
         assert _is_conversation(conv)
 
 def test_alpaca_dataset():
-    from src.dataset import AlpacaConfig, AlpacaDataset
+    from llm_quick_check.dataset import AlpacaConfig, AlpacaDataset
 
     config = AlpacaConfig(
         name="alpaca",
@@ -46,7 +46,7 @@ def test_alpaca_dataset():
 
 
 def test_jbb_behaviors_dataset():
-    from src.dataset import JBBBehaviorsConfig, JBBBehaviorsDataset
+    from llm_quick_check.dataset import JBBBehaviorsConfig, JBBBehaviorsDataset
 
     config = JBBBehaviorsConfig(
         name="jbb_behaviors",
@@ -62,7 +62,7 @@ def test_jbb_behaviors_dataset():
 
 
 def test_or_bench_dataset():
-    from src.dataset import ORBenchConfig, ORBenchDataset
+    from llm_quick_check.dataset import ORBenchConfig, ORBenchDataset
 
     config = ORBenchConfig(name="or_bench", shuffle=False)
     dataset = ORBenchDataset(config)
@@ -74,7 +74,7 @@ def test_or_bench_dataset():
 
 
 def test_refusal_direction_dataset():
-    from src.dataset import RefusalDirectionDataConfig, RefusalDirectionDataDataset
+    from llm_quick_check.dataset import RefusalDirectionDataConfig, RefusalDirectionDataDataset
 
     config = RefusalDirectionDataConfig(
         name="refusal_direction_data",
@@ -93,7 +93,7 @@ def test_refusal_direction_dataset():
 
 
 def test_strong_reject_dataset():
-    from src.dataset import StrongRejectConfig, StrongRejectDataset
+    from llm_quick_check.dataset import StrongRejectConfig, StrongRejectDataset
 
     config = StrongRejectConfig(
         name="strong_reject",
@@ -127,7 +127,7 @@ def test_strong_reject_dataset():
 
 
 def test_xstest_dataset():
-    from src.dataset import XSTestConfig, XSTestDataset
+    from llm_quick_check.dataset import XSTestConfig, XSTestDataset
 
     config = XSTestConfig(
         name="xstest",
