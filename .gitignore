@@ -15,3 +15,7 @@ paths.yaml
 embeddings/
 *.egg-info/
 .vscode/
+.env
+pyproject.toml
+uv.lock
+.python-version

@@ -1,0 +1,56 @@
+defaults:
+  - attacks: attacks
+  - datasets: datasets
+  - models: models
+  - paths
+  # - override hydra/launcher: a100h100.yaml
+  - _self_
+
+hydra:
+  run:
+    dir: ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
+  job:
+    chdir: true
+  sweep:
+    dir: ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
+
+# automatically select models based on attack_name
+slurm_copy_hf_cache: null
+
+name: testing
+save_dir: ${root_dir}/outputs/${name}/${attack}/results/  # place to store results
+embed_dir: ${root_dir}/outputs/${name}/${attack}/embeddings/  # place to store results
+overwrite: false
+save_format: "noDB"  # noDB or default; noDB optimized for human readability instead of programatic database use
+use_database: false  # Set to true to enable MongoDB
+
+classifiers: ["strong_reject"]  # anything from judgezoo
+
+attacks:
+  gcg:
+    num_steps: 300
+
+datasets:
+  rf_test:
+    batch: 10
+    path: ${oc.env:HOME}/harmful-harmless-eval/
+
+# Top-level generation config for easier overriding
+generation_config:
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 0
+  max_new_tokens: 256
+  num_return_sequences: 1
+
+# overrides for parallelism
+# attack: gcg
+# dataset: rf_test
+# model: null
+
+# arguments for basic attack from readme
+attack: gcg
+dataset: adv_behaviors
+datasets.adv_behaviors.idx: range(0,2)
+model: meta-llama/Llama-3.2-1B-Instruct # microsoft/Phi-3-mini-4k-instruct
+hydra.launcher.timeout_min: 240
