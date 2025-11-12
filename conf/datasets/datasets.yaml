@@ -1,7 +1,7 @@
 adv_behaviors:
   name: adv_behaviors
-  messages_path: ${root_dir}/data/behavior_datasets/harmbench_behaviors_text_all.csv
-  targets_path: ${root_dir}/data/optimizer_targets/harmbench_targets_text.json
+  messages_path: ${data_dir}/behavior_datasets/harmbench_behaviors_text_all.csv
+  targets_path: ${data_dir}/optimizer_targets/harmbench_targets_text.json
   categories: ['chemical_biological', 'illegal', 'misinformation_disinformation', 'harmful', 'harassment_bullying', 'cybercrime_intrusion'] #,'copyright']
   seed: 0
   idx: null
@@ -36,10 +36,10 @@ rf_test:
   seed: 0
   idx: null
   batch: null
-  path: ${root_dir}/data/harmful-harmless-eval/
+  path: ${data_dir}/harmful-harmless-eval/
 refusal_direction_data:
   name: refusal_direction_data
-  path: ${root_dir}/data/refusal_direction/
+  path: ${data_dir}/refusal_direction/
   split: train
   type: harmful
   seed: 0
@@ -48,7 +48,7 @@ refusal_direction_data:
   shuffle: true
 strong_reject:
   name: strong_reject
-  path: ${root_dir}/data/strong_reject/
+  path: ${data_dir}/strong_reject/
   split: train
   seed: 0
   idx: null

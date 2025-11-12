@@ -32,12 +32,12 @@ datasets:
     path: ${oc.env:HOME}/harmful-harmless-eval/
 
 _gcg_models: 
-  - ${models.${model_name}.id}
-  - ${models.${model_name}.tokenizer_id}
+  - ${models.${model}.id}
+  - ${models.${model}.tokenizer_id}
 
 _pair_models: 
-  - ${models.${model_name}.id} 
-  - ${models.${model_name}.tokenizer_id} 
+  - ${models.${model}.id} 
+  - ${models.${model}.tokenizer_id} 
   - lmsys/vicuna-13b-v1.5
   - cais/HarmBench-Llama-2-13b-cls
 

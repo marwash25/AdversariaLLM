@@ -133,5 +133,28 @@ def run_attacks_main(cfg: DictConfig) -> None:
         # Run the judge
         run_judges(judge_cfg)
 
+
+def run_attacks_main_with_default_cfg(cfg: DictConfig | dict, config_dir: str, config_name: str) -> None:
+    from hydra import compose, initialize_config_dir
+    from hydra.core.global_hydra import GlobalHydra
+
+    GlobalHydra.instance().clear()
+
+    with initialize_config_dir(config_dir=config_dir, version_base="1.3"):
+        default_cfg = compose(config_name=config_name)
+
+    if isinstance(cfg, DictConfig):
+        cfg_override = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
+    else:
+        cfg_override = OmegaConf.create(cfg)
+
+    OmegaConf.set_struct(default_cfg, False)
+    merged_cfg = OmegaConf.merge(default_cfg, cfg_override)
+    OmegaConf.set_struct(merged_cfg, True)
+
+    print(OmegaConf.to_yaml(merged_cfg))
+    run_attacks_main(merged_cfg)
+
+
 if __name__ == "__main__":
     run_attacks_main()
