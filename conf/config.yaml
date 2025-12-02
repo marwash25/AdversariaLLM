@@ -14,6 +14,14 @@ hydra:
   sweep:
     dir: ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
 
+# Top-level generation config for easier overriding
+generation_config:
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 0
+  max_new_tokens: 256
+  num_return_sequences: 1
+
 # automatically select models based on attack_name
 slurm_copy_hf_cache: null
 
@@ -34,14 +42,6 @@ datasets:
   rf_test:
     batch: 10
     path: ${oc.env:HOME}/harmful-harmless-eval/
-
-# Top-level generation config for easier overriding
-generation_config:
-  temperature: 0.0
-  top_p: 1.0
-  top_k: 0
-  max_new_tokens: 256
-  num_return_sequences: 1
 
 # overrides for parallelism
 attack: gcg

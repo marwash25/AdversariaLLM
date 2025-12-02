@@ -25,6 +25,7 @@ Extensively tested against a variety of models, including:
 The implementation is inspired by nanoGCG, but fixes several issues in nanoGCG,
 mostly related to tokenization.
 """
+
 import gc
 import logging
 import math
@@ -42,12 +43,17 @@ from torch import Tensor
 from tqdm import trange
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizerBase
 
-from .attack import (Attack, AttackResult, AttackStepResult, GenerationConfig,
-                     SingleAttackRunResult)
+from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
 from ..dataset import PromptDataset
-from ..lm_utils import (TokenMergeError, filter_suffix, generate_ragged_batched,
-                        get_disallowed_ids, get_flops, prepare_conversation,
-                        with_max_batchsize)
+from ..lm_utils import (
+    TokenMergeError,
+    filter_suffix,
+    generate_ragged_batched,
+    get_disallowed_ids,
+    get_flops,
+    prepare_conversation,
+    with_max_batchsize,
+)
 
 
 @dataclass
@@ -64,7 +70,7 @@ class GCGConfig:
     topk: int = 256
     n_replace: int = 1
     buffer_size: int = 0
-    loss: Literal["mellowmax", "cw", "ce"] = "ce"
+    loss: Literal["mellowmax", "cw", "ce", "ce_min_tokens"] = "ce"
     use_constrained_gradient: bool = False
     mellowmax_alpha: float = 1.0
     early_stop: bool = False
@@ -77,9 +83,20 @@ class GCGConfig:
     grow_target: bool = False
     grad_smoothing: int = 1  # 1 = no smoothing, 2 = smooth over 2 tokens, etc.
     grad_momentum: float = 0.0  # momentum over steps
+    min_tokens: tuple[int, ...] = field(default_factory=tuple)
+    min_tokens_alpha: float = 0.0
 
 
-def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, disallowed_ids: Tensor, mellowmax_alpha: float = 1.0, tokenizer: Optional[PreTrainedTokenizerBase] = None) -> Tensor:
+def compute_loss(
+    shift_logits: Tensor,
+    shift_labels: Tensor,
+    loss_type: str,
+    disallowed_ids: Tensor,
+    mellowmax_alpha: float = 1.0,
+    tokenizer: Optional[PreTrainedTokenizerBase] = None,
+    min_tokens_ids: Optional[Tensor] = None,
+    min_tokens_alpha: float = 0.0,
+) -> Tensor:
     """Computes the loss based on the specified loss type.
 
     Args:
@@ -103,17 +120,18 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, dis
         )
         loss = loss.view(shift_logits.shape[0], -1).mean(dim=-1)
     elif loss_type == "mellowmax":
-        label_logits = torch.gather(
-            shift_logits, -1, shift_labels.unsqueeze(-1)
-        ).squeeze(-1)
+        label_logits = torch.gather(shift_logits, -1, shift_labels.unsqueeze(-1)).squeeze(-1)
 
         def mellowmax(t: Tensor, alpha=1.0, dim=-1):
             return (
-                1.0 / alpha * (
+                1.0
+                / alpha
+                * (
                     torch.logsumexp(alpha * t, dim=dim)
                     - torch.log(torch.tensor(t.shape[-1], dtype=t.dtype, device=t.device))
                 )
             )
+
         loss = mellowmax(-label_logits, alpha=mellowmax_alpha, dim=-1)
     elif loss_type == "cw":
         # Get logits for target tokens
@@ -138,7 +156,7 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, dis
         log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
         probs = torch.exp(log_probs)
         B, T, D = probs.shape
-        mask = torch.zeros((1,1,D), device=probs.device, dtype=torch.bool)
+        mask = torch.zeros((1, 1, D), device=probs.device, dtype=torch.bool)
         mask[0, 0, disallowed_ids] = True
         disallowed_probs = probs[mask.expand(B, T, -1)]
         disallowed_loss = disallowed_probs.mean(dim=-1)
@@ -156,7 +174,7 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, dis
         entropy = -(probs * log_probs).sum(dim=-1)  # (B, T)
         # We want to maximize entropy, so we negate it to make it a loss to minimize
         D = shift_logits.size(-1)
-        loss = -entropy[:, 0] + math.log(D) # (B, T) -> (B,)
+        loss = -entropy[:, 0] + math.log(D)  # (B, T) -> (B,)
     elif loss_type == "entropy_first_token_high_then_low":
         log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
         probs = torch.exp(log_probs)
@@ -178,23 +196,25 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, dis
         max_logits = shift_logits.max(dim=-1).values
         loss = max_logits.mean(dim=-1)
     elif loss_type == "smallmax_first_token":
-        max_logits = shift_logits.max(dim=-1).values # (B, T, D) -> (B, T)
-        loss = max_logits[:, 0] # (B, T) -> (B,)
+        max_logits = shift_logits.max(dim=-1).values  # (B, T, D) -> (B, T)
+        loss = max_logits[:, 0]  # (B, T) -> (B,)
     elif loss_type == "smallmax_prob":
         probs = torch.nn.functional.softmax(shift_logits, dim=-1)
         max_logits = probs.max(dim=-1).values
         loss = max_logits.mean(dim=-1)
     elif loss_type == "smallmax_prob_first_token":
-        probs = torch.nn.functional.softmax(shift_logits[:, 0, :], dim=-1) # (B, T, D) -> (B, D)
-        loss = probs.max(dim=-1).values # (B, D) -> (B,)
+        probs = torch.nn.functional.softmax(shift_logits[:, 0, :], dim=-1)  # (B, T, D) -> (B, D)
+        loss = probs.max(dim=-1).values  # (B, D) -> (B,)
     elif loss_type == "kl_allowed":
         log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
         B, T, D = log_probs.shape
         N_valid = D - len(disallowed_ids)
         tgt_dist = torch.full((1, 1, D), device=log_probs.device, fill_value=1 / N_valid)
         tgt_dist[0, 0, disallowed_ids] = 0
-        loss = torch.nn.functional.kl_div(log_probs, tgt_dist.expand(B, T, -1), reduction="none").sum(dim=-1) # (B, T, D) -> (B, T)
-        loss = loss[:, 0] # (B, T) -> (B,)
+        loss = torch.nn.functional.kl_div(log_probs, tgt_dist.expand(B, T, -1), reduction="none").sum(
+            dim=-1
+        )  # (B, T, D) -> (B, T)
+        loss = loss[:, 0]  # (B, T) -> (B,)
     elif loss_type == "kl_allowed_fwd":
         log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)[:, 0]  # (B, T, D) -> (B, D)
         B, V = log_probs.shape
@@ -203,11 +223,7 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, dis
         tgt_dist[0, disallowed_ids] = 0
         model_probs = log_probs.exp()
         log_tgt = torch.log(tgt_dist + 1e-30)
-        loss = torch.nn.functional.kl_div(
-            log_tgt.expand(B, -1),
-            model_probs,
-            reduction="none"
-        )                                 # (B, D)
+        loss = torch.nn.functional.kl_div(log_tgt.expand(B, -1), model_probs, reduction="none")  # (B, D)
         loss = loss.sum(dim=-1)  # (B, D) -> (B,)
     elif loss_type == "kl_allowed_fwd_ascii_only":
         assert tokenizer is not None, "tokenizer is required for kl_allowed_fwd_ascii_only loss"
@@ -231,13 +247,31 @@ def compute_loss(shift_logits: Tensor, shift_labels: Tensor, loss_type: str, dis
         tgt_dist = torch.full((1, 1, D), device=log_probs.device, fill_value=1 / N_valid)
         tgt_dist[0, 0, new_disallowed_ids] = 0
         model_probs = log_probs.exp()
-        log_tgt = torch.log(tgt_dist + 1e-30) # tiny ε avoids log(0) → -inf-nan
-        loss = torch.nn.functional.kl_div(
-            log_tgt.expand(B, T, -1),
-            model_probs,
-            reduction="none"
-        )                                 # (B, T, D)
+        log_tgt = torch.log(tgt_dist + 1e-30)  # tiny ε avoids log(0) → -inf-nan
+        loss = torch.nn.functional.kl_div(log_tgt.expand(B, T, -1), model_probs, reduction="none")  # (B, T, D)
         loss = loss.sum(dim=-1)[:, 0]  # (B, T, D) -> (B,)
+    elif loss_type == "ce_min_tokens":
+        loss = torch.nn.functional.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            reduction="none",
+        )
+        loss = loss.view(shift_logits.shape[0], -1).mean(dim=-1)
+        if (
+            min_tokens_ids is not None
+            and min_tokens_ids.numel() > 0
+            and min_tokens_alpha > 0
+        ):
+            log_probs = torch.nn.functional.log_softmax(shift_logits.float(), dim=-1)
+            # Ensure min_tokens_ids is on the correct device and within vocab range
+            min_tokens_ids_device = min_tokens_ids.to(shift_logits.device)
+            vocab_size = shift_logits.size(-1)
+            min_tokens_ids_device = min_tokens_ids_device[min_tokens_ids_device < vocab_size]
+            if min_tokens_ids_device.numel() > 0:
+                penalty_probs = log_probs.exp().index_select(-1, min_tokens_ids_device)
+                penalty = penalty_probs.sum(dim=-1).mean(dim=-1)
+                loss = loss + min_tokens_alpha * penalty
+            loss = loss + min_tokens_alpha * penalty
     else:
         raise NotImplementedError(f"Loss function {loss_type} not implemented")
 
@@ -249,6 +283,7 @@ class GCGAttack(Attack):
         super().__init__(config)
         self.tokenizer = None  # Will be set in run()
         self.logger = logging.getLogger("nanogcg")
+        self.min_tokens_ids: Optional[Tensor] = None
         if not self.logger.hasHandlers():
             handler = logging.StreamHandler()
             formatter = logging.Formatter(
@@ -261,7 +296,10 @@ class GCGAttack(Attack):
 
     def run(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, dataset: PromptDataset) -> AttackResult:
         self.tokenizer = tokenizer  # Store tokenizer as instance variable
-        self.not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
+        self.not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(
+            model.device
+        )
+        self.min_tokens_ids = self._prepare_min_tokens(tokenizer, model.device)
         # need to have this filter here for models like gemma-3 which add extra tokens that do not have embeddings
         # we cannot filter the ids inside the get_disallowed_ids function because we need
         # the embedding layer weights to see the correct sizes
@@ -269,6 +307,10 @@ class GCGAttack(Attack):
         assert isinstance(embeddings, torch.Tensor), "embeddings are expected to be a tensor"
         num_embeddings = embeddings.size(0)
         self.not_allowed_ids = self.not_allowed_ids[self.not_allowed_ids < num_embeddings]
+        if self.min_tokens_ids is not None:
+            self.min_tokens_ids = self.min_tokens_ids[self.min_tokens_ids < num_embeddings]
+            if self.min_tokens_ids.numel() == 0:
+                self.min_tokens_ids = None
         runs = []
         for conversation in dataset:
             runs.append(self._attack_single_conversation(model, tokenizer, conversation))
@@ -281,13 +323,17 @@ class GCGAttack(Attack):
                 {"role": "user", "content": conversation[0]["content"] + self.config.optim_str_init},
                 {"role": "assistant", "content": conversation[1]["content"]},
             ]
-            pre_ids, attack_prefix_ids, prompt_ids, attack_suffix_ids, post_ids, target_ids = prepare_conversation(tokenizer, conversation, attack_conversation)[0]
+            pre_ids, attack_prefix_ids, prompt_ids, attack_suffix_ids, post_ids, target_ids = prepare_conversation(
+                tokenizer, conversation, attack_conversation
+            )[0]
         except TokenMergeError:
             attack_conversation = [
                 {"role": "user", "content": conversation[0]["content"] + " " + self.config.optim_str_init},
                 {"role": "assistant", "content": conversation[1]["content"]},
             ]
-            pre_ids, attack_prefix_ids, prompt_ids, attack_suffix_ids, post_ids, target_ids = prepare_conversation(tokenizer, conversation, attack_conversation)[0]
+            pre_ids, attack_prefix_ids, prompt_ids, attack_suffix_ids, post_ids, target_ids = prepare_conversation(
+                tokenizer, conversation, attack_conversation
+            )[0]
 
         pre_ids = pre_ids.unsqueeze(0).to(model.device)
         # attack_prefix_ids = attack_prefix_ids.unsqueeze(0).to(model.device)
@@ -304,12 +350,16 @@ class GCGAttack(Attack):
         ]
         # Compute the KV Cache for tokens that appear before the optimized tokens
         # Disable prefix cache for models that use DynamicCache (Llama 3.2, etc.)
-        if self.config.use_prefix_cache and "gemma" not in model.name_or_path and "llama-3.2" not in model.name_or_path.lower():
+        if (
+            self.config.use_prefix_cache
+            and "gemma" not in model.name_or_path
+            and "llama-3.2" not in model.name_or_path.lower()
+        ):
             with torch.no_grad():
                 self.prefix_cache = DynamicCache()
                 output = model(inputs_embeds=pre_prompt_embeds, past_key_values=self.prefix_cache, use_cache=True)
                 self.prefix_cache = output.past_key_values
-            flops_prefill = get_flops(model, pre_prompt_embeds.shape[0]*pre_prompt_embeds.shape[1], 0, "forward")
+            flops_prefill = get_flops(model, pre_prompt_embeds.shape[0] * pre_prompt_embeds.shape[1], 0, "forward")
         else:
             self.prefix_cache = None
             flops_prefill = 0
@@ -335,7 +385,8 @@ class GCGAttack(Attack):
             self.target_embeds,
             self.target_ids,
             self.not_allowed_ids,
-            self.tokenizer
+            self.tokenizer,
+            self.min_tokens_ids,
         )
         losses = []
         times = []
@@ -345,7 +396,9 @@ class GCGAttack(Attack):
         current_loss = buffer.get_lowest_loss()
 
         for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
-            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(model, tokenizer, conversation, token_selection, buffer, optim_ids)
+            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(
+                model, tokenizer, conversation, token_selection, buffer, optim_ids
+            )
             losses.append(current_loss)
             times.append(time_for_step)
             optim_strings.append(optim_str)
@@ -420,8 +473,8 @@ class GCGAttack(Attack):
         t0a = time.time()
 
         # Setup target for token selection
-        token_selection.target_ids = self.target_ids[:, :self.target_length]
-        token_selection.target_embeds = self.target_embeds[:, :self.target_length]
+        token_selection.target_ids = self.target_ids[:, : self.target_length]
+        token_selection.target_embeds = self.target_embeds[:, : self.target_length]
 
         # Compute the token gradient
         sampled_ids, sampled_ids_pos, grad, flops_select = token_selection(
@@ -460,7 +513,7 @@ class GCGAttack(Attack):
             if self.config.grow_target and acc[loss.argmin()]:
                 self.target_length += 1
             # Update the buffer based on the loss
-            flops_for_step = (flops_select + flops_loss)
+            flops_for_step = flops_select + flops_loss
             if buffer.size == 0 or current_loss < buffer.get_highest_loss():
                 buffer.add(current_loss, optim_ids)
 
@@ -516,31 +569,56 @@ class GCGAttack(Attack):
                 [
                     model.get_input_embeddings()(attack_ids),
                     self.post_embeds.repeat(B, 1, 1),
-                    self.target_embeds[:, :self.target_length].repeat(B, 1, 1),
+                    self.target_embeds[:, : self.target_length].repeat(B, 1, 1),
                 ],
                 dim=1,
             )
-            for i, kc in enumerate(self.prefix_cache.key_cache):
-                self.prefix_cache.key_cache[i] = kc[:1, :, :T].expand(B, -1, -1, -1)
-            for i, vc in enumerate(self.prefix_cache.value_cache):
-                self.prefix_cache.value_cache[i] = vc[:1, :, :T].expand(B, -1, -1, -1)
+            # Handle both old cache API (key_cache/value_cache) and new DynamicCache API (layers)
+            if hasattr(self.prefix_cache, 'layers'):
+                # DynamicCache API (transformers >= 4.55)
+                for i in range(len(self.prefix_cache.layers)):
+                    kc = self.prefix_cache.layers[i].keys
+                    vc = self.prefix_cache.layers[i].values
+                    # Directly set the expanded cache (not using update() which concatenates)
+                    self.prefix_cache.layers[i].keys = kc[:1, :, :T].expand(B, -1, -1, -1)
+                    self.prefix_cache.layers[i].values = vc[:1, :, :T].expand(B, -1, -1, -1)
+            else:
+                # Old cache API (transformers < 4.55)
+                for i, kc in enumerate(self.prefix_cache.key_cache):
+                    self.prefix_cache.key_cache[i] = kc[:1, :, :T].expand(B, -1, -1, -1)
+                for i, vc in enumerate(self.prefix_cache.value_cache):
+                    self.prefix_cache.value_cache[i] = vc[:1, :, :T].expand(B, -1, -1, -1)
             outputs = model(
                 inputs_embeds=input_embeds,
                 past_key_values=self.prefix_cache,
                 use_cache=True,
             )
-            for i, kc in enumerate(self.prefix_cache.key_cache):
-                self.prefix_cache.key_cache[i] = kc[:1]
-            for i, vc in enumerate(self.prefix_cache.value_cache):
-                self.prefix_cache.value_cache[i] = vc[:1]
-            self.prefix_cache.crop(T)
+            # Reset cache back to batch size 1 after forward pass
+            if hasattr(self.prefix_cache, 'layers'):
+                # DynamicCache API - directly set back to batch size 1
+                for i in range(len(self.prefix_cache.layers)):
+                    kc = self.prefix_cache.layers[i].keys
+                    vc = self.prefix_cache.layers[i].values
+                    self.prefix_cache.layers[i].keys = kc[:1]
+                    self.prefix_cache.layers[i].values = vc[:1]
+                # Crop to original length T
+                for i in range(len(self.prefix_cache.layers)):
+                    self.prefix_cache.layers[i].crop(T)
+            else:
+                # Old cache API
+                for i, kc in enumerate(self.prefix_cache.key_cache):
+                    self.prefix_cache.key_cache[i] = kc[:1]
+                for i, vc in enumerate(self.prefix_cache.value_cache):
+                    self.prefix_cache.value_cache[i] = vc[:1]
+                if hasattr(self.prefix_cache, 'crop'):
+                    self.prefix_cache.crop(T)
         else:
             input_embeds = torch.cat(
                 [
                     self.pre_prompt_embeds.repeat(B, 1, 1),
                     model.get_input_embeddings()(attack_ids),
                     self.post_embeds.repeat(B, 1, 1),
-                    self.target_embeds[:, :self.target_length].repeat(B, 1, 1),
+                    self.target_embeds[:, : self.target_length].repeat(B, 1, 1),
                 ],
                 dim=1,
             )
@@ -548,11 +626,20 @@ class GCGAttack(Attack):
         flops = get_flops(model, input_embeds.shape[1], 0, "forward")
 
         logits = outputs.logits
-        tmp = logits.size(1) - self.target_ids[:, :self.target_length].size(1)
+        tmp = logits.size(1) - self.target_ids[:, : self.target_length].size(1)
         shift_logits = logits[..., tmp - 1 : -1, :].contiguous()
-        shift_labels = self.target_ids[:, :self.target_length].repeat(B, 1)
+        shift_labels = self.target_ids[:, : self.target_length].repeat(B, 1)
 
-        loss = compute_loss(shift_logits, shift_labels, self.config.loss, self.not_allowed_ids, self.config.mellowmax_alpha, self.tokenizer)  # (B,)
+        loss = compute_loss(
+            shift_logits,
+            shift_labels,
+            self.config.loss,
+            self.not_allowed_ids,
+            self.config.mellowmax_alpha,
+            self.tokenizer,
+            self.min_tokens_ids,
+            self.config.min_tokens_alpha,
+        )  # (B,)
 
         acc: torch.BoolTensor = (shift_logits.argmax(-1) == shift_labels).all(-1)  # (B, T) -> (B,)
 
@@ -565,6 +652,16 @@ class GCGAttack(Attack):
         torch.cuda.empty_cache()
 
         return loss, acc, torch.tensor(flops).expand_as(loss)
+
+    def _prepare_min_tokens(self, tokenizer: PreTrainedTokenizerBase, device: torch.device) -> Optional[Tensor]:
+        tokens = getattr(self.config, "min_tokens", tuple())
+        if not tokens:
+            return None
+        token_ids = [int(token) for token in tokens]
+        if not token_ids:
+            return None
+        unique_ids = sorted(set(token_ids))
+        return torch.tensor(unique_ids, device=device, dtype=torch.long)
 
 
 class AttackBuffer:
@@ -595,7 +692,18 @@ class AttackBuffer:
 
 
 class SubstitutionSelectionStrategy:
-    def __init__(self, config: GCGConfig, prefix_cache: list[tuple[Tensor, Tensor]], pre_prompt_embeds: Tensor, post_embeds: Tensor, target_embeds: Tensor, target_ids: Tensor, not_allowed_ids: Tensor, tokenizer: PreTrainedTokenizerBase):
+    def __init__(
+        self,
+        config: GCGConfig,
+        prefix_cache: list[tuple[Tensor, Tensor]],
+        pre_prompt_embeds: Tensor,
+        post_embeds: Tensor,
+        target_embeds: Tensor,
+        target_ids: Tensor,
+        not_allowed_ids: Tensor,
+        tokenizer: PreTrainedTokenizerBase,
+        min_tokens_ids: Optional[Tensor],
+    ):
         self.config = config
         self.strategy = config.token_selection
         self.prefix_cache = prefix_cache
@@ -605,6 +713,7 @@ class SubstitutionSelectionStrategy:
         self.target_ids = target_ids
         self.not_allowed_ids = not_allowed_ids
         self.tokenizer = tokenizer
+        self.min_tokens_ids = min_tokens_ids
         self.grad_buffer = None
 
     def __call__(
@@ -702,8 +811,9 @@ class SubstitutionSelectionStrategy:
                 grad_ids_batch = ids.clone().unsqueeze(0).repeat(current_batch_size, 1)  # (batch_size, n_optim_ids)
 
                 random_positions = torch.randint(0, grad_ids_batch.shape[1], (current_batch_size, 1), device=ids.device)
-                random_indices = torch.tensor([random.choice(allowed_ids) for _ in range(current_batch_size)],
-                                             device=ids.device).unsqueeze(1)
+                random_indices = torch.tensor(
+                    [random.choice(allowed_ids) for _ in range(current_batch_size)], device=ids.device
+                ).unsqueeze(1)
                 grad_ids_batch.scatter_(1, random_positions, random_indices)
                 batch_grads, flops_grad = self.compute_token_gradient(grad_ids_batch, model)
                 batch_grads = batch_grads.detach()
@@ -728,17 +838,11 @@ class SubstitutionSelectionStrategy:
         sampled_ids_pos = torch.randint(
             0, n_optim_tokens, (search_width, n_replace), device=grad.device
         )  # (search_width, n_replace)
-        sampled_topk_idx = torch.randint(
-            0, topk, (search_width, n_replace, 1), device=grad.device
-        )
+        sampled_topk_idx = torch.randint(0, topk, (search_width, n_replace, 1), device=grad.device)
 
-        sampled_ids_val = (
-            topk_ids[sampled_ids_pos].gather(2, sampled_topk_idx).squeeze(2)
-        )  # (search_width, n_replace)
+        sampled_ids_val = topk_ids[sampled_ids_pos].gather(2, sampled_topk_idx).squeeze(2)  # (search_width, n_replace)
 
-        new_ids = original_ids.scatter_(
-            1, sampled_ids_pos, sampled_ids_val
-        )  # (search_width, n_optim_ids)
+        new_ids = original_ids.scatter_(1, sampled_ids_pos, sampled_ids_val)  # (search_width, n_optim_ids)
 
         return new_ids, sampled_ids_pos, grad, flops
 
@@ -781,7 +885,9 @@ class SubstitutionSelectionStrategy:
         # Sample positions and token indices
         sampled_ids_pos = torch.randint(0, n_optim_tokens, (search_width, 1), device=ids.device)
         valid_token_indices = torch.nonzero(valid_tokens).squeeze()
-        sampled_topk_idx = valid_token_indices[torch.randint(0, valid_token_indices.size(0), (search_width, 1), device=ids.device)]
+        sampled_topk_idx = valid_token_indices[
+            torch.randint(0, valid_token_indices.size(0), (search_width, 1), device=ids.device)
+        ]
 
         # Create new sequences with substitutions
         new_ids = original_ids.scatter_(1, sampled_ids_pos, sampled_topk_idx)
@@ -827,8 +933,8 @@ class SubstitutionSelectionStrategy:
         V = model.get_input_embeddings().weight.size(0)
         samples_per_position = search_width // N
 
-        positions = torch.arange(N, device=ids.device) # (N,)
-        original_ids = ids.repeat(search_width, 1) # (search_width, N)
+        positions = torch.arange(N, device=ids.device)  # (N,)
+        original_ids = ids.repeat(search_width, 1)  # (search_width, N)
 
         # Get valid ids for each position (all except not_allowed_ids)
         valid_ids = torch.ones((N, V), dtype=torch.bool, device=ids.device)
@@ -836,16 +942,20 @@ class SubstitutionSelectionStrategy:
             valid_ids[:, self.not_allowed_ids.to(ids.device)] = False
 
         # Sample indices for each position in parallel
-        sampled_ids = torch.empty((N, samples_per_position), dtype=torch.long, device=ids.device) # (N, samples_per_position)
-        rand_perm = torch.argsort(torch.rand_like(valid_ids.float()), dim=1) # (N, V)
-        valid_perm = torch.masked_select(rand_perm, valid_ids).reshape(N, -1) # (N, samples_per_position)
+        sampled_ids = torch.empty(
+            (N, samples_per_position), dtype=torch.long, device=ids.device
+        )  # (N, samples_per_position)
+        rand_perm = torch.argsort(torch.rand_like(valid_ids.float()), dim=1)  # (N, V)
+        valid_perm = torch.masked_select(rand_perm, valid_ids).reshape(N, -1)  # (N, samples_per_position)
         sampled_ids = valid_perm[:, :samples_per_position]
 
         # Reshape to (total_samples, 1) format
         sampled_topk_idx = sampled_ids.reshape(-1)
         sampled_ids_pos = positions.repeat_interleave(samples_per_position)
-        original_ids = original_ids[:samples_per_position * N] # (search_width * N,)
-        new_ids = original_ids.scatter_(1, sampled_ids_pos.unsqueeze(1), sampled_topk_idx.unsqueeze(1)) # (search_width * N,) -> (search_width, N)
+        original_ids = original_ids[: samples_per_position * N]  # (search_width * N,)
+        new_ids = original_ids.scatter_(
+            1, sampled_ids_pos.unsqueeze(1), sampled_topk_idx.unsqueeze(1)
+        )  # (search_width * N,) -> (search_width, N)
         return new_ids, sampled_ids_pos, None, 0
 
     def _lowest_gradient_magnitude(
@@ -885,26 +995,21 @@ class SubstitutionSelectionStrategy:
         # We have 32768 * 20 = 655360 substitutions to evaluate
         # Here we crop this down with the smallest gradient heuristic to topk * 20
         topk_ids = (
-            grad.abs()
-            .view(-1)
-            .topk(topk * n_optim_ids, largest=False, sorted=False)
-            .indices
+            grad.abs().view(-1).topk(topk * n_optim_ids, largest=False, sorted=False).indices
         )  # (n_optim_ids, topk)
         topk_ids = torch.randperm(grad.view(-1).shape[0], device=topk_ids.device)[
             : topk * n_optim_ids
         ]  # (n_optim_ids, topk)
 
         # We then crop again randomly to search_width candidates
-        topk_ids = topk_ids[
-            torch.randperm(topk_ids.size(0), device=topk_ids.device)[:search_width]
-        ].unsqueeze(1)  # (search_width, 1)
+        topk_ids = topk_ids[torch.randperm(topk_ids.size(0), device=topk_ids.device)[:search_width]].unsqueeze(
+            1
+        )  # (search_width, 1)
 
         sampled_ids_pos = topk_ids // grad.size(1)
         sampled_topk_idx = topk_ids % grad.size(1)
 
-        new_ids = original_ids.scatter_(
-            1, sampled_ids_pos, sampled_topk_idx
-        )  # (search_width, n_optim_ids)
+        new_ids = original_ids.scatter_(1, sampled_ids_pos, sampled_topk_idx)  # (search_width, n_optim_ids)
 
         return new_ids, sampled_ids_pos, None, flops_grad
 
@@ -940,9 +1045,7 @@ class SubstitutionSelectionStrategy:
         embedding_weight = cast(Tensor, embedding_layer.weight)
         # (1, num_optim_tokens, vocab_size) @ (vocab_size, embed_dim) -> (1, num_optim_tokens, embed_dim)
         if self.config.use_constrained_gradient:
-            optim_embeds = (
-                optim_ids_onehot / optim_ids_onehot.sum(dim=-1, keepdim=True)
-            ) @ embedding_weight
+            optim_embeds = (optim_ids_onehot / optim_ids_onehot.sum(dim=-1, keepdim=True)) @ embedding_weight
         else:
             optim_embeds = optim_ids_onehot @ embedding_weight
         if hasattr(embedding_layer, "embed_scale"):  # For gemma
@@ -954,20 +1057,45 @@ class SubstitutionSelectionStrategy:
             input_embeds = torch.cat(
                 [optim_embeds, self.post_embeds.repeat(B, 1, 1), self.target_embeds.repeat(B, 1, 1)], dim=1
             )
-            for i, kc in enumerate(self.prefix_cache.key_cache):
-                self.prefix_cache.key_cache[i] = kc[:1, :, :T].expand(B, -1, -1, -1)
-            for i, vc in enumerate(self.prefix_cache.value_cache):
-                self.prefix_cache.value_cache[i] = vc[:1, :, :T].expand(B, -1, -1, -1)
+            # Handle both old cache API and new DynamicCache API
+            if hasattr(self.prefix_cache, 'layers'):
+                # DynamicCache API (transformers >= 4.55)
+                for i in range(len(self.prefix_cache.layers)):
+                    kc = self.prefix_cache.layers[i].keys
+                    vc = self.prefix_cache.layers[i].values
+                    # Directly set the expanded cache (not using update() which concatenates)
+                    self.prefix_cache.layers[i].keys = kc[:1, :, :T].expand(B, -1, -1, -1)
+                    self.prefix_cache.layers[i].values = vc[:1, :, :T].expand(B, -1, -1, -1)
+            else:
+                # Old cache API (transformers < 4.55)
+                for i, kc in enumerate(self.prefix_cache.key_cache):
+                    self.prefix_cache.key_cache[i] = kc[:1, :, :T].expand(B, -1, -1, -1)
+                for i, vc in enumerate(self.prefix_cache.value_cache):
+                    self.prefix_cache.value_cache[i] = vc[:1, :, :T].expand(B, -1, -1, -1)
             output = model(
                 inputs_embeds=input_embeds,
                 past_key_values=self.prefix_cache,
                 use_cache=True,
             )
-            for i, kc in enumerate(self.prefix_cache.key_cache):
-                self.prefix_cache.key_cache[i] = kc[:1]
-            for i, vc in enumerate(self.prefix_cache.value_cache):
-                self.prefix_cache.value_cache[i] = vc[:1]
-            self.prefix_cache.crop(T)
+            # Reset cache back to batch size 1 after forward pass
+            if hasattr(self.prefix_cache, 'layers'):
+                # DynamicCache API - directly set back to batch size 1
+                for i in range(len(self.prefix_cache.layers)):
+                    kc = self.prefix_cache.layers[i].keys
+                    vc = self.prefix_cache.layers[i].values
+                    self.prefix_cache.layers[i].keys = kc[:1]
+                    self.prefix_cache.layers[i].values = vc[:1]
+                # Crop to original length T
+                for i in range(len(self.prefix_cache.layers)):
+                    self.prefix_cache.layers[i].crop(T)
+            else:
+                # Old cache API
+                for i, kc in enumerate(self.prefix_cache.key_cache):
+                    self.prefix_cache.key_cache[i] = kc[:1]
+                for i, vc in enumerate(self.prefix_cache.value_cache):
+                    self.prefix_cache.value_cache[i] = vc[:1]
+                if hasattr(self.prefix_cache, 'crop'):
+                    self.prefix_cache.crop(T)
         else:
             input_embeds = torch.cat(
                 [
@@ -986,14 +1114,20 @@ class SubstitutionSelectionStrategy:
         shift_logits = logits[..., shift - 1 : -1, :].contiguous()  # (1, num_target_ids, vocab_size)
         shift_labels = self.target_ids.repeat(B, 1)
 
-        loss = compute_loss(shift_logits, shift_labels, self.config.loss, self.not_allowed_ids, self.config.mellowmax_alpha, self.tokenizer)
+        loss = compute_loss(
+            shift_logits,
+            shift_labels,
+            self.config.loss,
+            self.not_allowed_ids,
+            self.config.mellowmax_alpha,
+            self.tokenizer,
+            self.min_tokens_ids,
+            self.config.min_tokens_alpha,
+        )
         loss = loss.mean()
 
         optim_ids_onehot_grad = torch.autograd.grad(
-            outputs=[loss],
-            inputs=[optim_ids_onehot],
-            create_graph=False,
-            retain_graph=False
+            outputs=[loss], inputs=[optim_ids_onehot], create_graph=False, retain_graph=False
         )[0]
-        flops = get_flops(model, input_embeds.shape[0]*input_embeds.shape[1], 0, "forward_and_backward")
+        flops = get_flops(model, input_embeds.shape[0] * input_embeds.shape[1], 0, "forward_and_backward")
         return optim_ids_onehot_grad, flops

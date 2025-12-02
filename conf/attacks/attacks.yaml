@@ -184,7 +184,9 @@ gcg:
   topk: 256
   n_replace: 1
   buffer_size: 0
-  loss: ce
+  loss: ce  # ce_min_tokens
+  min_tokens: null # [128255]
+  min_tokens_alpha: 0.0
   use_constrained_gradient: False
   mellowmax_alpha: 1.0
   early_stop: False

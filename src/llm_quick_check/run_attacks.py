@@ -133,6 +133,8 @@ def run_attacks_main(cfg: DictConfig) -> None:
         # Run the judge
         run_judges(judge_cfg)
 
+    logging.info("Done")
+
 
 def run_attacks_main_with_default_cfg(cfg: DictConfig | dict, config_dir: str, config_name: str) -> None:
     from hydra import compose, initialize_config_dir
