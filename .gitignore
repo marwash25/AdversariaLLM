@@ -19,3 +19,4 @@ embeddings/
 pyproject.toml
 uv.lock
 .python-version
+.specstory
