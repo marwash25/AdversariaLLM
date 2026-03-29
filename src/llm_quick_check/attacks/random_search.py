@@ -93,7 +93,7 @@ class RandomSearchAttack(Attack):
     def _prepare_batch_inputs(self, tokenizer, dataset):
         xs, atk_masks, tgt_masks, originals = [], [], [], []
         for conv in dataset:
-            assert len(conv) == 2, "Random search attack only supports two‑turn conversations"
+            assert len(conv) == 2, "Random search attack only supports single-turn conversations"
             originals.append(conv)
 
             if self.config.placement == "suffix":
