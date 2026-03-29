@@ -159,6 +159,11 @@ class Attack(Generic[AttRes]):
                 from .random_search import RandomSearchAttack
 
                 return RandomSearchAttack
+
+            case "dummy":
+                from .dummy import DummyAttack
+
+                return DummyAttack
             case _:
                 raise ValueError(f"Unknown attack: {name}")
 
