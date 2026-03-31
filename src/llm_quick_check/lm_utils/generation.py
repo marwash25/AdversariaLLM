@@ -535,7 +535,7 @@ def get_losses_batched(
     verbose: bool = False,
 ) -> list[torch.Tensor]:
     """
-    Get per-timestep losses for multiple ragged prompts in a single batch.
+    Get per-timestep losses for multiple ragged prompts (M: i.e., of different lengths) in a single batch.
     No KV-cache for now.
 
     Args:
@@ -550,9 +550,13 @@ def get_losses_batched(
         verbose: Whether to print verbose output.
     Returns:
         A list of losses for each prompt.
+    
+    M: inputs are sorted by length first then padded to the max sequence length in the batch. 
+    Sorting groups sequences with similar length together to minimize padding. 
+    Batch size is dynamically adjusted to maximize batch size while avoiding OOM errors starting from initial_batch_size using with_max_batchsize.
     """
     if (embedding_list is None) == (token_list is None):
-        raise ValueError("Either embedding_list or token_list must be provided.")
+        raise ValueError("Either embedding_list or token_list must be provided.") #M: embedding_list is used for continuous attacks like PGD
     if embedding_list is not None:
         assert all(e.ndim == 2 for e in embedding_list), "Embeddings must be 2D."
         embedding_list = [e.to(model.device) for e in embedding_list]
@@ -567,6 +571,7 @@ def get_losses_batched(
 
     def get_losses_func(embedding_list, targets):
         # We first pad the embeddings to the maximum context length of the model.
+        # M: this is actually padding to the max sequence length in the batch (see pad_sequence docstring)
         B = len(embedding_list)
         if padding_side == "left":
             print("Warning: Padding side 'left' is not recommended for get_batched_losses as it may yield nans.")
