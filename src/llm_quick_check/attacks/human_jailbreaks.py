@@ -1,4 +1,4 @@
-"""
+r"""
 Single-file implementation of human-designed jailbreaks from HarmBench.
 
 @misc{harmbench2023jailbreaks,
@@ -98,7 +98,7 @@ class HumanJailbreaksAttack(Attack):
         shifted_target_tensors_flat = [t.roll(-1, 0) for t in full_token_tensors_list_flat]
 
         B = len(original_conversations)
-        N = len(original_conversations[0])
+        N = len(original_conversations[0]) #M: so always 2 here (see assert above: len(conversation) == 2)
 
         # --- 2. Calculate Losses ---
         t_start_loss = time.time()
