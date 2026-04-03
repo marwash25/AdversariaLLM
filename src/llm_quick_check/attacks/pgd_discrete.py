@@ -43,7 +43,7 @@ class LRSchedulerConfig:
 class PGDDiscreteConfig:
     name: str = "pgd_discrete"
     type: str = "continuous"
-    placement: str = "suffix" # Note: Not explicitly used in provided code structure
+    placement: str = "suffix" # Note: Not explicitly used in provided code structure #M: stale note? placement is used in _prepare_single_conversation
     version: str = ""
     num_steps: int = 100
     generation_config: GenerationConfig = field(default_factory=GenerationConfig)
