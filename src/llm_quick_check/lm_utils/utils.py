@@ -17,6 +17,9 @@ T = TypeVar("T")
 
 
 def get_disallowed_ids(tokenizer: PreTrainedTokenizerBase, allow_non_ascii: bool, allow_special: bool) -> torch.Tensor:
+    # get token ids the attack is not allowed to use: non‑ASCII tokens when that filter is on, 
+    # special tokens when that filter is on, plus BOS/EOS/PAD/UNK always, and Gemma extras.
+
     disallowed_ids = set()
 
     def is_ascii(s):

@@ -90,7 +90,9 @@ class PGDDiscreteAttack(Attack):
         x, attack_masks, target_masks, conversations = self._prepare_dataset(dataset, tokenizer)
         logging.info(f"Prepared {len(conversations)} conversations for attack")
 
+        # build attention_mask: 1 for real tokens, 0 for padding tokens
         attention_mask = (x != tokenizer.pad_token_id).long()
+        # build target tensor y: shift x by one token to the left
         y = x.clone()
         y[:, :-1] = x[:, 1:]
 
@@ -127,7 +129,9 @@ class PGDDiscreteAttack(Attack):
             all_tokens.append(tokens)
             all_attack_masks.append(attack_mask)
             all_target_masks.append(target_mask)
-
+    
+        #M: this pads the whole dataset. Why not just sort here by length and pad inside attack_batch to 
+        #minimize padding as done in get_losses_batched?
         all_tokens = pad_sequence(all_tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
         all_target_masks = pad_sequence(all_target_masks, batch_first=True)
         all_attack_masks = pad_sequence(all_attack_masks, batch_first=True)
@@ -345,6 +349,8 @@ class PGDDiscreteAttack(Attack):
         perturbed_one_hots.add_(noise)
 
     def _calculate_discrete_loss(self, model, discrete_one_hots, emb_matrix, attention_mask, y_batch, target_masks_batch):
+        #M: this is doing the same thing as _calculate_continuous_loss, but takes as input discrete_one_hots instead
+        #perturbed_one_hots (continuous relaxation) and is wrapped with torch.no_grad() since we don't need to compute gradients here.
         with torch.no_grad():
             logits_one_hot = model(
                 inputs_embeds=discrete_one_hots @ emb_matrix,
