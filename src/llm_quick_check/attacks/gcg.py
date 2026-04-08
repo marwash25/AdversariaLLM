@@ -492,6 +492,7 @@ class GCGAttack(Attack):
                 # the entire prompt, not just the attack sequence in an isolated
                 # way. This is because the prompt and attack can affect each
                 # other's tokenization in some cases.
+                # M: drop candidates whose full prompt tokenization would be unreacheable from any input string
                 idx = filter_suffix(
                     tokenizer,
                     conversation,

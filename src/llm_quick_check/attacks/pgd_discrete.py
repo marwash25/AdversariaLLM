@@ -653,7 +653,7 @@ class PGDDiscreteAttack(Attack):
                     time_taken=batch_times[i][step_idx],
                     loss=batch_losses_one_hot[i][step_idx], # Discrete loss
                     continuous_loss=batch_losses[i][step_idx], # Continuous loss
-                    model_input=attack_conversation,
+                    model_input=attack_conversation, # M: but this includes the assistant content, shouldn't it be empty?
                 ))
             runs.append(SingleAttackRunResult(
                 original_prompt=original_conversations_batch[i],
