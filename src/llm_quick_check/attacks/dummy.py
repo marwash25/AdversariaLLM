@@ -36,27 +36,11 @@ class DummyAttack(Attack):
         tokens, attack_masks, target_masks, conversations = self._prepare_dataset(dataset, tokenizer)
         logging.info(f"Prepared {len(conversations)} conversations for attack")
 
-        # --- 2. Optimize attack ---
         runs = []
         for conversation in dataset:
             runs.append(self._attack_single_conversation(model, tokenizer, conversation))     
 
-        # --- 3. Generate Completions --- 
-        t_start_gen = time.time()
-        completions = generate_ragged_batched(
-            model,
-            tokenizer,
-            token_list=prompt_token_tensors_list,  # Generate from the prompt tokens
-            # embedding_list=embedding_list, # Or generate from the prompt embeddings 
-            max_new_tokens=self.config.generation_config.max_new_tokens,
-            temperature=self.config.generation_config.temperature,
-            top_p=self.config.generation_config.top_p,
-            top_k=self.config.generation_config.top_k,
-            num_return_sequences=self.config.generation_config.num_return_sequences,
-            initial_batch_size=len(attack_strings), # change to size of the full dataset if we switch to batched optimization
-        )
-        t_end_gen = time.time()
-        gen_time_total = t_end_gen - t_start_gen
+
 
         # --- 4. Assemble Results ---
            
@@ -74,6 +58,37 @@ class DummyAttack(Attack):
 
     def _attack_single_conversation(self, model, tokenizer, conversation) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
+        
+        # --- 2. Optimize attack ---
+        # TODO: Implement optimization loop here.
+        
+        # --- 3. Generate Completions --- 
+        # get tokens of attack conversations with otimized attack strings and empty assistant content
+        attack_conversations = []
+        for attack in optim_strings:
+            parts= self._prepare_single_conversation(conversation, tokenizer, attack, generation = True)
+            prompt_token_list.append(torch.cat(parts[:5]))
+            attack_conversations.append(attack_conversation)
+
+        t_start_gen = time.time()
+        completions = generate_ragged_batched(
+            model,
+            tokenizer,
+            token_list=prompt_token_list,  # Generate from the prompt tokens
+            # embedding_list=embedding_list, # Or generate from the prompt embeddings 
+            max_new_tokens=self.config.generation_config.max_new_tokens,
+            temperature=self.config.generation_config.temperature,
+            top_p=self.config.generation_config.top_p,
+            top_k=self.config.generation_config.top_k,
+            num_return_sequences=self.config.generation_config.num_return_sequences,
+            initial_batch_size=len(attack_strings), # change to size of the full dataset if we switch to batched optimization
+        )
+        t_end_gen = time.time()
+        gen_time_total = t_end_gen - t_start_gen
+        
+        # --- 4. Assemble Results ---
+        # TODO: Assemble results here.
+        
         run = []
         return run
 
@@ -81,7 +96,6 @@ class DummyAttack(Attack):
     # if we're not doing batched optimization, no point preparing full dataset, can call _prepare_single_conversation
     # inside _attack_single_conversation. For now let's keep this in case we switch to batched optimization.
     def _prepare_dataset(self, dataset, tokenizer) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[Dict]]:
-        #TODO: do we want to keep padding here?
         all_tokens = []
         all_attack_masks = []
         all_target_masks = []
@@ -92,21 +106,37 @@ class DummyAttack(Attack):
 
             all_conversations.append(conversation)
             try:
-                tokens, attack_mask, target_mask = self._prepare_single_conversation(
+                parts = self._prepare_single_conversation(
                     conversation, tokenizer, self.config.optim_str_init
                 )
             except TokenMergeError:
                 logging.warning("TokenMergeError encountered, retrying with added space.")
-                tokens, attack_mask, target_mask = self._prepare_single_conversation(
+                parts = self._prepare_single_conversation(
                     conversation, tokenizer, " " + self.config.optim_str_init
                 )
+                pre_toks, attack_prefix_toks, prompt_toks, attack_suffix_toks, post_toks, target_toks = parts
+
+            tokens = torch.cat(parts)
+
+            # build attack_mask (tokens to optimize) and target_mask (tokens to apply loss to)
+            attack_mask = torch.zeros_like(tokens, dtype=torch.bool)
+            offset = pre_toks.size(0)
+            attack_mask[offset:offset + attack_prefix_toks.size(0)] = True
+            offset += attack_prefix_toks.size(0) + prompt_toks.size(0)
+            attack_mask[offset:offset + attack_suffix_toks.size(0)] = True
+
+            target_mask = torch.zeros_like(tokens, dtype=torch.bool)
+            target_start_idx = len(tokens) - target_toks.size(0)
+            target_mask[target_start_idx:] = True
+            target_mask = target_mask.roll(-1, 0)
+            target_mask[-1] = False
 
             all_tokens.append(tokens)
-            all_attack_masks.append(attack_mask)
-            all_target_masks.append(target_mask)
+            all_attack_masks.append(attack_mask.long())
+            all_target_masks.append(target_mask.long())
 
         # remove padding for now since we're not doing batched optimization. 
-        # TODO: add padding back but not here if we switch to batched optimization.
+        # TODO: add padding back if we switch to batched optimization, but not here inside attack_batch and just sort here
         # all_tokens = pad_sequence(all_tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
         # all_target_masks = pad_sequence(all_target_masks, batch_first=True)
         # all_attack_masks = pad_sequence(all_attack_masks, batch_first=True)
@@ -115,46 +145,39 @@ class DummyAttack(Attack):
  
     
 
-    # copied from PGDDiscreteAttack
-    def _prepare_single_conversation(self, conversation, tokenizer, optim_str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[Dict]]:
-        # insert optimizable string optim_str in user content according to placement, tokenize conversation, then build attack_mask (tokens to optimize) 
-        # and target_mask (tokens to apply loss to)
+    def _prepare_single_conversation(self, conversation, tokenizer, optim_str, generation = False
+    ) -> list[tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor]]:
+        # insert optimizable string optim_str in user content according to placement and get tokens of conversation split into six parts
+        assistant_content = conversation[1]["content"] if not generation else ""
         if self.config.placement == "suffix":
             attack_conversation = [
                 {"role": "user", "content": conversation[0]["content"] + optim_str},
-                {"role": "assistant", "content": conversation[1]["content"]}
+                {"role": "assistant", "content": assistant_content}
             ]
         elif self.config.placement == "prefix":
             attack_conversation = [
                 {"role": "user", "content": optim_str + conversation[0]["content"]},
-                {"role": "assistant", "content": conversation[1]["content"]}
+                {"role": "assistant", "content": assistant_content}
             ]
         elif self.config.placement == "prefix_suffix":
             attack_conversation = [
                 {"role": "user", "content": optim_str + conversation[0]["content"] + optim_str},
-                {"role": "assistant", "content": conversation[1]["content"]}
+                {"role": "assistant", "content": assistant_content}
             ]
-        elif self.config.placement == "prompt": # the whole prompt is optimized
+        elif self.config.placement == "prompt":
             attack_conversation = copy.deepcopy(conversation)
-            conversation = copy.deepcopy(conversation)
-            conversation[0]["content"] = ""
+            if generation: 
+                # matches _reconstruct_attack_conversation in PGDDiscreteAttack 
+                # TODO: not sure why they re-add original prompt, ask authors
+                attack_conversation[0]["content"] = optim_str + attack_conversation[0]["content"]
+                attack_conversation[1]["content"] = ""
+            else:
+                # matches _prepare_single_conversation in PGDDiscreteAttack
+                # initial optim_str is not used here
+                conversation = copy.deepcopy(conversation)
+                conversation[0]["content"] = ""  # the whole prompt is optimized
         else:
             raise ValueError(f"Invalid placement: {self.config.placement}")
         parts = prepare_conversation(tokenizer, conversation, attack_conversation)[0] # assumes single-turn conversation
-        pre_toks, attack_prefix_toks, prompt_toks, attack_suffix_toks, post_toks, target_toks = parts
 
-        tokens = torch.cat(parts)
-
-        attack_mask = torch.zeros_like(tokens, dtype=torch.bool)
-        offset = pre_toks.size(0)
-        attack_mask[offset:offset + attack_prefix_toks.size(0)] = True
-        offset += attack_prefix_toks.size(0) + prompt_toks.size(0)
-        attack_mask[offset:offset + attack_suffix_toks.size(0)] = True
-
-        target_mask = torch.zeros_like(tokens, dtype=torch.bool)
-        target_start_idx = len(tokens) - target_toks.size(0)
-        target_mask[target_start_idx:] = True
-        target_mask = target_mask.roll(-1, 0)
-        target_mask[-1] = False
-
-        return tokens, attack_mask.long(), target_mask.long()
+        return parts 
