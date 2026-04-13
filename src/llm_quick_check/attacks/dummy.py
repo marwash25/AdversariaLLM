@@ -2,6 +2,8 @@
 import copy
 import time
 import logging
+import sys
+from tqdm import trange
 from typing import Dict, List, Tuple
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -40,33 +42,31 @@ class DummyAttack(Attack):
         for conversation in dataset:
             runs.append(self._attack_single_conversation(model, tokenizer, conversation))     
 
-
-
-        # --- 4. Assemble Results ---
            
         return AttackResult(runs=runs)
 
 
-
-    # Things I would need for optimization attack:
-
-    # get_disallowed_ids as done in for example in PGD_discrete, GCG, RandomSearch.
-    # from PGD discrete:
-    # disallowed_ids = get_disallowed_ids(tokenizer, allow_non_ascii=False, allow_special=False)
-    # from GCG:
-    # self.not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
-
     def _attack_single_conversation(self, model, tokenizer, conversation) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
-        
+        logging.info(f"Starting attack for conversation: {conversation}")
+        t_start = time.time()
         # --- 2. Optimize attack ---
         # TODO: Implement optimization loop here.
+        losses = []
+        times = []
+        flops = []
+        optim_strings = []
+        for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
+            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(model, tokenizer, conversation)
+            losses.append(current_loss)
+            times.append(time_for_step)
         
         # --- 3. Generate Completions --- 
         # get tokens of attack conversations with otimized attack strings and empty assistant content
+        prompt_token_list = []
         attack_conversations = []
         for attack in optim_strings:
-            parts= self._prepare_single_conversation(conversation, tokenizer, attack, generation = True)
+            parts, attack_conversation = self._prepare_single_conversation(conversation, tokenizer, attack, generation = True)
             prompt_token_list.append(torch.cat(parts[:5]))
             attack_conversations.append(attack_conversation)
 
@@ -81,16 +81,51 @@ class DummyAttack(Attack):
             top_p=self.config.generation_config.top_p,
             top_k=self.config.generation_config.top_k,
             num_return_sequences=self.config.generation_config.num_return_sequences,
-            initial_batch_size=len(attack_strings), # change to size of the full dataset if we switch to batched optimization
+            initial_batch_size=len(optim_strings), # change to size of the full dataset if we switch to batched optimization
         )
         t_end_gen = time.time()
         gen_time_total = t_end_gen - t_start_gen
-        
+        logging.info(f"Generated {len(completions)}x{self.config.generation_config.num_return_sequences} completions.",
+         f"Generation time: {gen_time_total:.2f}s.")
+
+        t_end = time.time()
+
         # --- 4. Assemble Results ---
-        # TODO: Assemble results here.
-        
-        run = []
-        return run
+        steps_results = []
+        for i in range(self.config.num_steps):
+            step_result = AttackStepResult(
+                step=i,
+                model_completions=completions[i],
+                time_taken=times[i],
+                loss=losses[i],
+                flops=flops[i],
+                model_input=attack_conversations[i],
+                model_input_tokens=prompt_token_list[i].tolist(),
+            )
+            steps_results.append(step_result)
+
+        run_result = SingleAttackRunResult(
+            original_prompt=conversation,
+            steps=steps_results,
+            total_time=t_end - t_start,
+        )
+        return run_result
+
+    def _single_step(self, model, tokenizer, conversation) -> Tuple[float, float, torch.Tensor, str, int]:
+        # TODO: Implement single step of the attack.
+        # TODO: get_disallowed_ids as done in for example in PGD_discrete, GCG, RandomSearch.
+        # from PGD discrete:
+        # disallowed_ids = get_disallowed_ids(tokenizer, allow_non_ascii=False, allow_special=False)
+        # from GCG:
+        # self.not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
+        t_start_step = time.time()
+        current_loss = 0 
+        optim_ids = torch.tensor([]) # take this as input (tokens * attack_mask) but for now leave empty
+        optim_str = self.config.optim_str_init
+        # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
+        time_for_step =  time.time() - t_start_step
+        flops_for_step = 0
+        return current_loss, time_for_step, optim_ids, optim_str, flops_for_step
 
     # copied from PGDDiscreteAttack. Added assert for single-turn conversation and removed padding.
     # if we're not doing batched optimization, no point preparing full dataset, can call _prepare_single_conversation
@@ -106,12 +141,12 @@ class DummyAttack(Attack):
 
             all_conversations.append(conversation)
             try:
-                parts = self._prepare_single_conversation(
+                parts, _ = self._prepare_single_conversation(
                     conversation, tokenizer, self.config.optim_str_init
                 )
             except TokenMergeError:
                 logging.warning("TokenMergeError encountered, retrying with added space.")
-                parts = self._prepare_single_conversation(
+                parts, _ = self._prepare_single_conversation(
                     conversation, tokenizer, " " + self.config.optim_str_init
                 )
                 pre_toks, attack_prefix_toks, prompt_toks, attack_suffix_toks, post_toks, target_toks = parts
