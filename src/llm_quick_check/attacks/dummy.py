@@ -12,6 +12,7 @@ from ..dataset import PromptDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched
+from ..types import Conversation
 
 
 @dataclass
@@ -52,15 +53,23 @@ class DummyAttack(Attack):
         t_start = time.time()
         # --- 2. Optimize attack ---
         # TODO: Implement optimization loop here.
+        # TODO: GCG doesn't store init optim_str and its loss but I think that's good to have. Modify things accordingly 
         losses = []
         times = []
         flops = []
-        optim_strings = []
+        optim_strings = [self.config.optim_str_init]
         for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
             current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(model, tokenizer, conversation)
             losses.append(current_loss)
             times.append(time_for_step)
-        
+            # TODO: add flops for prefill and init to initial step flops as done in GCG if we do prefill/init? 
+            flops.append(flops_for_step) 
+            optim_strings.append(optim_str)
+            pbar.set_postfix({"Loss": current_loss, "Best Attack": optim_str[:80]})
+
+        logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}."
+        f"Optimization time: {time.time() - t_start:.2f}s.")
+
         # --- 3. Generate Completions --- 
         # get tokens of attack conversations with otimized attack strings and empty assistant content
         prompt_token_list = []
@@ -85,7 +94,7 @@ class DummyAttack(Attack):
         )
         t_end_gen = time.time()
         gen_time_total = t_end_gen - t_start_gen
-        logging.info(f"Generated {len(completions)}x{self.config.generation_config.num_return_sequences} completions.",
+        logging.info(f"Generated {len(completions)}x{self.config.generation_config.num_return_sequences} completions. "
          f"Generation time: {gen_time_total:.2f}s.")
 
         t_end = time.time()
@@ -119,7 +128,7 @@ class DummyAttack(Attack):
         # from GCG:
         # self.not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
         t_start_step = time.time()
-        current_loss = 0 
+        current_loss = 0.0
         optim_ids = torch.tensor([]) # take this as input (tokens * attack_mask) but for now leave empty
         optim_str = self.config.optim_str_init
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
@@ -149,8 +158,8 @@ class DummyAttack(Attack):
                 parts, _ = self._prepare_single_conversation(
                     conversation, tokenizer, " " + self.config.optim_str_init
                 )
-                pre_toks, attack_prefix_toks, prompt_toks, attack_suffix_toks, post_toks, target_toks = parts
-
+            
+            pre_toks, attack_prefix_toks, prompt_toks, attack_suffix_toks, post_toks, target_toks = parts
             tokens = torch.cat(parts)
 
             # build attack_mask (tokens to optimize) and target_mask (tokens to apply loss to)
@@ -181,7 +190,7 @@ class DummyAttack(Attack):
     
 
     def _prepare_single_conversation(self, conversation, tokenizer, optim_str, generation = False
-    ) -> list[tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor]]:
+    ) -> Tuple[list[tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor]], Conversation]:
         # insert optimizable string optim_str in user content according to placement and get tokens of conversation split into six parts
         assistant_content = conversation[1]["content"] if not generation else ""
         if self.config.placement == "suffix":
@@ -215,4 +224,4 @@ class DummyAttack(Attack):
             raise ValueError(f"Invalid placement: {self.config.placement}")
         parts = prepare_conversation(tokenizer, conversation, attack_conversation)[0] # assumes single-turn conversation
 
-        return parts 
+        return parts, attack_conversation
