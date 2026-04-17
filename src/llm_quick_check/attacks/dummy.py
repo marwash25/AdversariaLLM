@@ -4,8 +4,9 @@ import time
 import logging
 import sys
 from tqdm import trange
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import torch
+from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass, field
 from ..dataset import PromptDataset
@@ -26,8 +27,81 @@ class DummyConfig:
     generation_config: GenerationConfig = field(default_factory=GenerationConfig)
     seed: int = 0
     placement: str = "suffix"
-    optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x" 
+    optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
+    lm_reg_weight: float = 1.0  # weight on -log p(x|q) when using reg_ce
 
+
+def _masked_cross_entropy(
+    shift_logits: Tensor,
+    shift_labels: Tensor,
+    logit_mask: Tensor,
+) -> Tensor:
+    """Cross-entropy loss on selected tokens.
+
+    Args:
+        shift_logits: logits of shape (batch_size, seq_len - 1, vocab_size)
+        shift_labels: labels of shape (batch_size, seq_len - 1)
+        logits of token i predicts label i (token i+1)
+        logit_mask: mask where to apply loss to of shape (seq_len -1,), shared across the batch
+
+    Returns:
+        loss: Tensor of shape (batch_size,)
+    """
+    batch_size, _, vocab_size = shift_logits.shape  
+    sel_logits = shift_logits[:, logit_mask, :].contiguous()  # (batch_size, num_selected_tokens, vocab_size)
+    sel_labels = shift_labels[:, logit_mask].contiguous()     # (batch_size, num_selected_tokens)
+    flat_loss = torch.nn.functional.cross_entropy(
+        sel_logits.view(-1, vocab_size), #flatten since cross-entropy expects class dimension to be 1
+        sel_labels.view(-1),
+        reduction="none",
+    )
+    loss = flat_loss.view(batch_size, -1).mean(dim=-1)
+    return loss
+
+
+# copied from GCG
+def compute_loss(
+    logits: Tensor,
+    tokens: Tensor,
+    target_mask: Tensor,
+    attack_mask: Optional[Tensor] = None,
+    lm_reg_weight: float = 0.0,
+) -> Tensor:
+    """Computes the cross-entropy loss on target tokens (-log p(y|q,x)) plus language-model regularizer
+    lm_reg_weight * cross-entropy loss on attack tokens (-log p(x|q))
+
+    Args:
+        logits: logits outputs for the full conversation. Tensor of shape (batch_size, seq_len, vocab_size)
+        tokens: token ids for the full conversation. Tensor of shape (batch_size, seq_len)
+        target_mask: bool mask of shape (seq_len,); True on tokens to apply loss to (target tokens shifted by one to the left).
+        #TODO: maybe simpler to not shift target_mask earlier
+        attack_mask: bool mask of shape (seq_len,); True on attack tokens. Optional if lm_reg_weight == 0.0.
+        lm_reg_weight: Multiplier for the language-model regularizer.
+
+    Returns:
+        loss: Tensor of shape (batch_size,)
+
+    """
+    # logits of token i-1 predicts token i
+    shift_logits = logits[:, :-1, :]
+    shift_labels = tokens[:, 1:]
+    tgt_logit_mask= target_mask[:-1]
+
+    loss = _masked_cross_entropy(shift_logits, shift_labels, tgt_logit_mask)
+    if lm_reg_weight > 0.0:
+        assert attack_mask is not None, "attack_mask is required when lm_reg_weight > 0.0"
+        atk_logit_mask = attack_mask[1:] #shift to the left 
+        reg_loss = _masked_cross_entropy(shift_logits, shift_labels, atk_logit_mask)
+        loss += lm_reg_weight * reg_loss
+    
+    return loss
+
+# TODO: implement gradient of Lovasz extension
+# Instead of evaluating loss on chain of attack strings F(x + i) - F(x) sequentially
+# do forward pass with all these "candidates" then compute ce loss on them as done in GCG 
+
+# TODO: Implement reduction to set funtion + normalize F(emptyset) = 0
+    
 class DummyAttack(Attack):
     def __init__(self, config: DummyConfig):
         super().__init__(config)
@@ -53,7 +127,8 @@ class DummyAttack(Attack):
         t_start = time.time()
         # --- 2. Optimize attack ---
         # TODO: Implement optimization loop here.
-        # TODO: GCG doesn't store init optim_str and its loss but I think that's good to have. Modify things accordingly 
+        # TODO: compute loss for initial optim_str. GCG does that in init_buffer 
+        # it doesn't create a AttackStepResult for it but it uses it for initialization of best loss and best optim_ids
         losses = []
         times = []
         flops = []
@@ -162,6 +237,7 @@ class DummyAttack(Attack):
             pre_toks, attack_prefix_toks, prompt_toks, attack_suffix_toks, post_toks, target_toks = parts
             tokens = torch.cat(parts)
 
+            # TODO: do we really need to use masks in our case? maybe better to store ids as in GCG?
             # build attack_mask (tokens to optimize) and target_mask (tokens to apply loss to)
             attack_mask = torch.zeros_like(tokens, dtype=torch.bool)
             offset = pre_toks.size(0)
@@ -172,15 +248,18 @@ class DummyAttack(Attack):
             target_mask = torch.zeros_like(tokens, dtype=torch.bool)
             target_start_idx = len(tokens) - target_toks.size(0)
             target_mask[target_start_idx:] = True
-            target_mask = target_mask.roll(-1, 0)
+            # TODO: maybe better to shift when computing loss and not here for clarity?
+            # unless we need this shifted version elsewhere?
+            target_mask = target_mask.roll(-1, 0) # shift to the left 
             target_mask[-1] = False
 
             all_tokens.append(tokens)
-            all_attack_masks.append(attack_mask.long())
-            all_target_masks.append(target_mask.long())
+            all_attack_masks.append(attack_mask)
+            all_target_masks.append(target_mask)
 
         # remove padding for now since we're not doing batched optimization. 
         # TODO: add padding back if we switch to batched optimization, but not here inside attack_batch and just sort here
+        # we also will need an attention_mask in the forward pass as done in PGD Discrete in that case.
         # all_tokens = pad_sequence(all_tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
         # all_target_masks = pad_sequence(all_target_masks, batch_first=True)
         # all_attack_masks = pad_sequence(all_attack_masks, batch_first=True)
