@@ -28,7 +28,7 @@ class DummyConfig:
     seed: int = 0
     placement: str = "suffix"
     optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
-    lm_reg_weight: float = 1.0  # weight on -log p(x|q) when using reg_ce
+    lm_reg_weight: float = 0.0  # weight on -log p(x|q) when using reg_ce
 
 
 def _masked_cross_entropy(
