@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from ..dataset import PromptDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
-from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched
+from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops
 from ..types import Conversation
 
 
@@ -28,6 +28,7 @@ class DummyConfig:
     seed: int = 0
     placement: str = "suffix"
     optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
+    num_steps: int = 1
     lm_reg_weight: float = 0.0  # weight on -log p(x|q) when using reg_ce
 
 
@@ -59,19 +60,19 @@ def _masked_cross_entropy(
     return loss
 
 
-# copied from GCG
 def compute_loss(
-    logits: Tensor,
+    # logits: Tensor, #keeping this in case want to revert to logits input and do fwd pass elsewhere
+    model: PreTrainedModel,
     tokens: Tensor,
-    target_mask: Tensor,
-    attack_mask: Optional[Tensor] = None,
+    target_mask: torch.BoolTensor,
+    attack_mask: Optional[torch.BoolTensor] = None,
     lm_reg_weight: float = 0.0,
-) -> Tensor:
+) -> Tuple[Tensor, int]:
     """Computes the cross-entropy loss on target tokens (-log p(y|q,x)) plus language-model regularizer
     lm_reg_weight * cross-entropy loss on attack tokens (-log p(x|q))
 
     Args:
-        logits: logits outputs for the full conversation. Tensor of shape (batch_size, seq_len, vocab_size)
+        model: PreTrainedModel
         tokens: token ids for the full conversation. Tensor of shape (batch_size, seq_len)
         target_mask: bool mask of shape (seq_len,); True on tokens to apply loss to (target tokens shifted by one to the left).
         #TODO: maybe simpler to not shift target_mask earlier
@@ -80,8 +81,12 @@ def compute_loss(
 
     Returns:
         loss: Tensor of shape (batch_size,)
+        flops: int, number of flops for the forward pass for the full batch
 
     """
+    # TODO: if we revert to logits inputs, put back description logits: logits outputs for the full conversation. Tensor of shape (batch_size, seq_len, vocab_size)
+    logits = model(tokens).logits
+    flops = get_flops(model, tokens.numel(), 0, "forward") 
     # logits of token i-1 predicts token i
     shift_logits = logits[:, :-1, :]
     shift_labels = tokens[:, 1:]
@@ -94,7 +99,7 @@ def compute_loss(
         reg_loss = _masked_cross_entropy(shift_logits, shift_labels, atk_logit_mask)
         loss += lm_reg_weight * reg_loss
     
-    return loss
+    return loss, flops
 
 # TODO: implement gradient of Lovasz extension
 # Instead of evaluating loss on chain of attack strings F(x + i) - F(x) sequentially
@@ -114,14 +119,14 @@ class DummyAttack(Attack):
         logging.info(f"Prepared {len(conversations)} conversations for attack")
 
         runs = []
-        for conversation in dataset:
-            runs.append(self._attack_single_conversation(model, tokenizer, conversation))     
+        for idx, conversation in enumerate(dataset):
+            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx]))     
 
            
         return AttackResult(runs=runs)
 
 
-    def _attack_single_conversation(self, model, tokenizer, conversation) -> SingleAttackRunResult:
+    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
         logging.info(f"Starting attack for conversation: {conversation}")
         t_start = time.time()
@@ -129,20 +134,26 @@ class DummyAttack(Attack):
         # TODO: Implement optimization loop here.
         # TODO: compute loss for initial optim_str. GCG does that in init_buffer 
         # it doesn't create a AttackStepResult for it but it uses it for initialization of best loss and best optim_ids
+        # so to be consistent with it and other attacks I won't do that either
+        device = model.device
+        tokens = tokens.unsqueeze(0).to(device) 
+        attack_mask = attack_mask.to(device)
+        target_mask = target_mask.to(device)
         losses = []
         times = []
         flops = []
-        optim_strings = [self.config.optim_str_init]
+        optim_strings = [self.config.num_steps] if self.config.num_steps == 0 else []
         for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
-            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(model, tokenizer, conversation)
+            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(model, tokenizer, conversation, tokens, attack_mask, target_mask)
             losses.append(current_loss)
             times.append(time_for_step)
             # TODO: add flops for prefill and init to initial step flops as done in GCG if we do prefill/init? 
             flops.append(flops_for_step) 
             optim_strings.append(optim_str)
-            pbar.set_postfix({"Loss": current_loss, "Best Attack": optim_str[:80]})
+            pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
 
-        logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}."
+        logging.info(f"Optimization loop completed."
+        # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
         f"Optimization time: {time.time() - t_start:.2f}s.")
 
         # --- 3. Generate Completions --- 
@@ -195,7 +206,7 @@ class DummyAttack(Attack):
         )
         return run_result
 
-    def _single_step(self, model, tokenizer, conversation) -> Tuple[float, float, torch.Tensor, str, int]:
+    def _single_step(self, model, tokenizer, conversation, tokens, attack_mask, target_mask) -> Tuple[float, float, torch.Tensor, str, int]:
         # TODO: Implement single step of the attack.
         # TODO: get_disallowed_ids as done in for example in PGD_discrete, GCG, RandomSearch.
         # from PGD discrete:
@@ -203,18 +214,19 @@ class DummyAttack(Attack):
         # from GCG:
         # self.not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
         t_start_step = time.time()
-        current_loss = 0.0
-        optim_ids = torch.tensor([]) # take this as input (tokens * attack_mask) but for now leave empty
         optim_str = self.config.optim_str_init
+        optim_ids = tokens[:, attack_mask]
+        loss, loss_flops = compute_loss(model, tokens, target_mask, attack_mask, self.config.lm_reg_weight)
+        current_loss = loss.item()
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
         time_for_step =  time.time() - t_start_step
-        flops_for_step = 0
+        flops_for_step = loss_flops + 0
         return current_loss, time_for_step, optim_ids, optim_str, flops_for_step
 
     # copied from PGDDiscreteAttack. Added assert for single-turn conversation and removed padding.
     # if we're not doing batched optimization, no point preparing full dataset, can call _prepare_single_conversation
     # inside _attack_single_conversation. For now let's keep this in case we switch to batched optimization.
-    def _prepare_dataset(self, dataset, tokenizer) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[Dict]]:
+    def _prepare_dataset(self, dataset, tokenizer) -> Tuple[List[Tensor], List[Tensor], List[Tensor], List[Conversation]]:
         all_tokens = []
         all_attack_masks = []
         all_target_masks = []
@@ -269,7 +281,7 @@ class DummyAttack(Attack):
     
 
     def _prepare_single_conversation(self, conversation, tokenizer, optim_str, generation = False
-    ) -> Tuple[list[tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor]], Conversation]:
+    ) -> Tuple[tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor], Conversation]:
         # insert optimizable string optim_str in user content according to placement and get tokens of conversation split into six parts
         assistant_content = conversation[1]["content"] if not generation else ""
         if self.config.placement == "suffix":
