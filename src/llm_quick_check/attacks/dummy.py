@@ -4,8 +4,9 @@ import time
 import logging
 import sys
 from tqdm import trange
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable, Any
 import torch
+from math import log2
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass, field
@@ -60,6 +61,7 @@ def _masked_cross_entropy(
     return loss
 
 
+@torch.no_grad()
 def compute_loss(
     # logits: Tensor, #keeping this in case want to revert to logits input and do fwd pass elsewhere
     model: PreTrainedModel,
@@ -106,7 +108,31 @@ def compute_loss(
 # do forward pass with all these "candidates" then compute ce loss on them as done in GCG 
 
 # TODO: Implement reduction to set funtion + normalize F(emptyset) = 0
+def set_function_reduction(F: Callable[[Tensor], Any], k: int, n: int) -> Callable[[Tensor, Tensor], Any]:
+    """Reduction from discrete function F: V^n -> R to set function, where V = {0, 1, ..., k - 1}.
+    F_set: 2^(N x V) -> R, where N = {0, 1, ..., n} using binary representation of subsets:
+    F_set(S) = F(x), where X = J_S is the matrix with 1 at indices in S, 0 elsewhere, 
+    and x is the vector such that x_i is the int with binary representation X[i, :]
+    Least significant bit is at column index 0 (so bit index matches column index).
+    For simplicity, will use rows and cols indices as input to F_set instead of a set of tupples
+    # TODO: modify this if needed
+    """
+    # TODO: for now assume vocab_size is a power of 2
+    assert k == 2 ** int(log2(k)), "k must be a power of 2"
+    n_bits = log2(k)
+    powers = (1 << torch.arange(n_bits)).to(torch.long) # more efficient than 2**torch.arange(n_bits)
     
+    def F_set(rows: Tensor, cols: Tensor) -> Tensor:
+        """Compute F_set(S) for the subset S = {(rows[i], cols[i]) for i in range(rows.size(0))}"""
+        assert rows.size(0) == cols.size(0), "rows and cols must have the same length"
+        x = torch.zeros(n, dtype=torch.long, device=rows.device)
+        x.index_add_(0, rows, powers[cols])
+        return F(x)
+        
+    return F_set
+ 
+
+
 class DummyAttack(Attack):
     def __init__(self, config: DummyConfig):
         super().__init__(config)
