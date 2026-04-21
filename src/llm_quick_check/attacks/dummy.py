@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from ..dataset import PromptDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
-from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops
+from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids
 from ..types import Conversation
 
 
@@ -31,6 +31,8 @@ class DummyConfig:
     optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
     num_steps: int = 1
     lm_reg_weight: float = 0.0  # weight on -log p(x|q) when using reg_ce
+    allow_non_ascii: bool = False
+    allow_special: bool = False
 
 
 def _masked_cross_entropy(
@@ -103,8 +105,18 @@ def compute_loss(
     
     return loss, flops
 
-# TODO: move SubmodularSetFct to separate file
-class SubmodularSetFct:
+def loss_fn(attack_ids: Tensor):
+    """
+    Args: 
+        attack_ids: the attack token ids to evaluate. Tensor of shape (batch_size, n_optim_tokens)
+    """
+    # TODO: do KV caching as done in GCG.
+    # we need to map attack_ids to batch of tokens to provide as input to compute_loss (or move foward pass here)
+
+    return 0
+    
+# TODO: move SubmodularSetFnReduction to separate file
+class SubmodularSetFnReduction:
     """Given a DR-submodular discrete function F: V^n -> R, where V = {0, 1, ..., k - 1} and k = 2^t,
     provides reduction to a submodular set function F_set: 2^([n] x [t]) -> R and its Lovasz extension subgradient computation.
     """
@@ -116,8 +128,11 @@ class SubmodularSetFct:
         self.k = k
         self.n = n
         self.F_set_batch = self.set_function_reduction()
+        # TODO: normalize F(emptyset) = 0
+        
+    def __call__(self, rows: Tensor, cols: Tensor) -> Tensor:
+        return self.F_set_batch(rows, cols)
 
-    # TODO: normalize F(emptyset) = 0
     def set_function_reduction(self) -> Callable[[Tensor, Tensor], Any]:
         """Reduction from F to F_set using binary representation of subsets, i.e.,
         F_set(S) = F(x), where X = J_S is the matrix with 1 at indices in S, 0 elsewhere, 
@@ -126,7 +141,7 @@ class SubmodularSetFct:
         For simplicity, will use rows and cols indices as input to F_set instead of a set of tupples
         # TODO: modify this if needed
         """
-        # TODO: for now assume vocab_size is a power of 2
+        # TODO: test this even if not used so far. For now assume vocab_size is a power of 2
         self.t = int(log2(self.k))
         assert self.k == 2 ** self.t, "k must be a power of 2"
         self.powers = (1 << torch.arange(self.t, dtype=torch.long, device=self.device)) # more efficient than 2**torch.arange(t)
@@ -143,9 +158,6 @@ class SubmodularSetFct:
             return self.F_batch(x)
 
         return F_set_batch
-    
-    def __call__(self, rows: Tensor, cols: Tensor) -> Tensor:
-        return self.F_set(rows, cols)
 
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
         # TODO: adjust docstring 
@@ -191,10 +203,16 @@ class DummyAttack(Attack):
         tokens, attack_masks, target_masks, conversations = self._prepare_dataset(dataset, tokenizer)
         logging.info(f"Prepared {len(conversations)} conversations for attack")
 
+        # get disallowed_ids as done in GCG
+        not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
+        num_embeddings = model.get_input_embeddings().weight.size(0) 
+        # drop disallowed_ids >= num_embeddings; some models like gemma-3 add extra tokens that do not have embeddings
+        self.not_allowed_ids = not_allowed_ids[not_allowed_ids < num_embeddings]
+        self.vocab_size = num_embeddings
+
         runs = []
         for idx, conversation in enumerate(dataset):
             runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx]))     
-
            
         return AttackResult(runs=runs)
 
@@ -281,11 +299,7 @@ class DummyAttack(Attack):
 
     def _single_step(self, model, tokenizer, conversation, tokens, attack_mask, target_mask) -> Tuple[float, float, torch.Tensor, str, int]:
         # TODO: Implement single step of the attack.
-        # TODO: get_disallowed_ids as done in for example in PGD_discrete, GCG, RandomSearch.
-        # from PGD discrete:
-        # disallowed_ids = get_disallowed_ids(tokenizer, allow_non_ascii=False, allow_special=False)
-        # from GCG:
-        # self.not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
+      
         t_start_step = time.time()
         optim_str = self.config.optim_str_init
         optim_ids = tokens[:, attack_mask]
