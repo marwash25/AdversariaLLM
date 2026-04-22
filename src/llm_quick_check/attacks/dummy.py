@@ -67,9 +67,10 @@ def _masked_cross_entropy(
 def compute_loss(
     # logits: Tensor, #keeping this in case want to revert to logits input and do fwd pass elsewhere
     model: PreTrainedModel,
-    tokens: Tensor,
+    attack_ids: Tensor,
+    original_tokens: Tensor,
     target_mask: torch.BoolTensor,
-    attack_mask: Optional[torch.BoolTensor] = None,
+    attack_mask: torch.BoolTensor,
     lm_reg_weight: float = 0.0,
 ) -> Tuple[Tensor, int]:
     """Computes the cross-entropy loss on target tokens (-log p(y|q,x)) plus language-model regularizer
@@ -77,10 +78,11 @@ def compute_loss(
 
     Args:
         model: PreTrainedModel
-        tokens: token ids for the full conversation. Tensor of shape (batch_size, seq_len)
+        attack_ids: the attack token ids to evaluate. Tensor of shape (batch_size, n_optim_tokens)
+        original_tokens: token ids for the full conversation. Tensor of shape (seq_len,)
         target_mask: bool mask of shape (seq_len,); True on tokens to apply loss to (target tokens shifted by one to the left).
         #TODO: maybe simpler to not shift target_mask earlier
-        attack_mask: bool mask of shape (seq_len,); True on attack tokens. Optional if lm_reg_weight == 0.0.
+        attack_mask: bool mask of shape (seq_len,); True on attack tokens. 
         lm_reg_weight: Multiplier for the language-model regularizer.
 
     Returns:
@@ -89,11 +91,16 @@ def compute_loss(
 
     """
     # TODO: if we revert to logits inputs, put back description logits: logits outputs for the full conversation. Tensor of shape (batch_size, seq_len, vocab_size)
-    logits = model(tokens).logits
-    flops = get_flops(model, tokens.numel(), 0, "forward") 
+
+    input_ids = original_tokens.unsqueeze(0).repeat(attack_ids.shape[0], 1) # (batch_size, seq_len)
+    input_ids[:, attack_mask] = attack_ids
+    # TODO: add KV caching as done in GCG.   
+    logits = model(input_ids).logits
+    flops = get_flops(model, input_ids.numel(), 0, "forward") 
+
     # logits of token i-1 predicts token i
     shift_logits = logits[:, :-1, :]
-    shift_labels = tokens[:, 1:]
+    shift_labels = input_ids[:, 1:]
     tgt_logit_mask= target_mask[:-1]
 
     loss = _masked_cross_entropy(shift_logits, shift_labels, tgt_logit_mask)
@@ -105,15 +112,7 @@ def compute_loss(
     
     return loss, flops
 
-def loss_fn(attack_ids: Tensor):
-    """
-    Args: 
-        attack_ids: the attack token ids to evaluate. Tensor of shape (batch_size, n_optim_tokens)
-    """
-    # TODO: do KV caching as done in GCG.
-    # we need to map attack_ids to batch of tokens to provide as input to compute_loss (or move foward pass here)
 
-    return 0
     
 # TODO: move SubmodularSetFnReduction to separate file
 class SubmodularSetFnReduction:
@@ -127,13 +126,13 @@ class SubmodularSetFnReduction:
         self.device = device 
         self.k = k
         self.n = n
-        self.F_set_batch = self.set_function_reduction()
+        self.F_set_batch = self._set_function_reduction()
         # TODO: normalize F(emptyset) = 0
         
     def __call__(self, rows: Tensor, cols: Tensor) -> Tensor:
         return self.F_set_batch(rows, cols)
 
-    def set_function_reduction(self) -> Callable[[Tensor, Tensor], Any]:
+    def _set_function_reduction(self) -> Callable[[Tensor, Tensor], Any]:
         """Reduction from F to F_set using binary representation of subsets, i.e.,
         F_set(S) = F(x), where X = J_S is the matrix with 1 at indices in S, 0 elsewhere, 
         and x is the vector such that each x_i is the int with binary representation X[i, :]
@@ -209,6 +208,7 @@ class DummyAttack(Attack):
         # drop disallowed_ids >= num_embeddings; some models like gemma-3 add extra tokens that do not have embeddings
         self.not_allowed_ids = not_allowed_ids[not_allowed_ids < num_embeddings]
         self.vocab_size = num_embeddings
+        logging.info(f"Number of embeddings: {num_embeddings}, Tokenizer vocab size: {len(tokenizer)}") # to check if they match
 
         runs = []
         for idx, conversation in enumerate(dataset):
@@ -227,9 +227,14 @@ class DummyAttack(Attack):
         # it doesn't create a AttackStepResult for it but it uses it for initialization of best loss and best optim_ids
         # so to be consistent with it and other attacks I won't do that either
         device = model.device
-        tokens = tokens.unsqueeze(0).to(device) 
+        tokens = tokens.to(device) 
         attack_mask = attack_mask.to(device)
         target_mask = target_mask.to(device)
+        
+        # let's first test F_batch on its own
+        F_batch = lambda attack_ids: compute_loss(attack_ids, model, tokens, target_mask, attack_mask, self.config.lm_reg_weight)
+        # F_set_batch = SubmodularSetFnReduction(F_batch, self.vocab_size, tokens.shape[1], device)
+
         losses = []
         times = []
         flops = []
@@ -297,13 +302,17 @@ class DummyAttack(Attack):
         )
         return run_result
 
-    def _single_step(self, model, tokenizer, conversation, tokens, attack_mask, target_mask) -> Tuple[float, float, torch.Tensor, str, int]:
-        # TODO: Implement single step of the attack.
+
+    def _single_step(self, optim_ids: Tensor, F_batch: Callable[[Tensor], Any]) -> Tuple[float, float, torch.Tensor, str, int]:
+        """ Single step of the attack.
+        Args:
+            optim_ids: Current attack token ids. Tensor of shape (n_optim_tokens,)
+            F_batch: Function that computes the loss for a batch of attack token ids.
+        """
       
         t_start_step = time.time()
         optim_str = self.config.optim_str_init
-        optim_ids = tokens[:, attack_mask]
-        loss, loss_flops = compute_loss(model, tokens, target_mask, attack_mask, self.config.lm_reg_weight)
+        loss, loss_flops = F_batch(optim_ids.unsqueeze(0))
         current_loss = loss.item()
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
         time_for_step =  time.time() - t_start_step
