@@ -30,10 +30,10 @@ attacks:
   gcg:
     num_steps: 300
 
-datasets:
-  rf_test:
-    batch: 10
-    path: ${oc.env:HOME}/harmful-harmless-eval/
+# datasets:
+#   rf_test:
+#     batch: 10
+#     path: ${oc.env:HOME}/harmful-harmless-eval/
 
 # Top-level generation config for easier overriding
 generation_config:
@@ -48,11 +48,11 @@ generation_config:
 # dataset: rf_test
 # model: null
 
-# arguments for basic attack from readme
-attack: gcg
+# arguments for basic attack from readme (need to comment out datasets above if using this)
+attack: dummy
 dataset: adv_behaviors
 datasets:
   adv_behaviors:
-    idx: [0,1] # using "range(0,2)" will not work because code only accepts strings that start with "list(range("; see prompt_dataset.py
+    idx: 0 #[0,1] # using "range(0,2)" will not work because code only accepts strings that start with "list(range("; see prompt_dataset.py
 model: meta-llama/Llama-3.2-1B-Instruct # microsoft/Phi-3-mini-4k-instruct
 hydra.launcher.timeout_min: 240
