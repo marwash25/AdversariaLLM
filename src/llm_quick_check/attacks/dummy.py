@@ -119,9 +119,9 @@ class SubmodularSetFnReduction:
     """Given a DR-submodular discrete function F: V^n -> R, where V = {0, 1, ..., k - 1} and k = 2^t,
     provides reduction to a submodular set function F_set: 2^([n] x [t]) -> R and its Lovasz extension subgradient computation.
     """
-    def __init__(self, F_batch: Callable[[Tensor], Any], k: int, n: int, device: torch.device):
+    def __init__(self, F_batch: Callable[[Tensor], [Tensor, int]], k: int, n: int, device: torch.device):
         # F_batch should be a function that takes a batch of inputs in V^n (Tensor of shape (batch_size, n)) 
-        # and evaluates F for each input.
+        # and returns the values of F for each input (Tensor of shape (batch_size,)) and flop count (int).
         self.F_batch = F_batch
         self.device = device 
         self.k = k
@@ -132,7 +132,7 @@ class SubmodularSetFnReduction:
     def __call__(self, rows: Tensor, cols: Tensor) -> Tensor:
         return self.F_set_batch(rows, cols)
 
-    def _set_function_reduction(self) -> Callable[[Tensor, Tensor], Any]:
+    def _set_function_reduction(self) -> Callable[[Tensor, Tensor], [Tensor, int]]:
         """Reduction from F to F_set using binary representation of subsets, i.e.,
         F_set(S) = F(x), where X = J_S is the matrix with 1 at indices in S, 0 elsewhere, 
         and x is the vector such that each x_i is the int with binary representation X[i, :]
@@ -148,8 +148,11 @@ class SubmodularSetFnReduction:
         def F_set_batch(rows: Tensor, cols: Tensor) -> Tensor:
             """Compute F_set(S^i) for the sets S^i = {(rows[i, j], cols[i, j]) for j in range(rows.shape(1))}
             Args:
-                rows: Tensor of shape (batch_size, n)
-                cols: Tensor of shape (batch_size, n)
+                rows: Tensor of shape (batch_size, n x t)
+                cols: Tensor of shape (batch_size, n x t)
+            #TODO: this doesn't check if (row, col) pairs are unique (so true set). Add this check, 
+            # or modify input to be sets of indices in [n x t] which can easily check for uniqueness before 
+            # splitting into rows and cols. For now we don't actualy use this function, so will decide depending on usage.
             """
             assert rows.shape == cols.shape, "rows and cols must have the same shape"
             x = torch.zeros((rows.shape[0], self.n), dtype=torch.long, device=self.device)
@@ -159,18 +162,19 @@ class SubmodularSetFnReduction:
         return F_set_batch
 
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
-        # TODO: adjust docstring 
         """Compute a subgradient of the Lovasz extension of self.F_set using Edmonds' greedy algorithm.
         Args:
             X: Tensor of shape (n, t) in [0,1]^n x t 
             tie_breaker: Tensor of shape (n, t) used to break ties when sorting X.flatten(). If not provided, original order is used.
+        Returns:
+            subgradient: Tensor of shape (n, t)
         """
         # TODO: for now assume x is a 2D tensor, not sure if there's a reason to vectorize it 
         if tie_breaker is None:
             sorted_idx = torch.argsort(X.flatten(), descending=True, stable=True)
         else: 
             sorted_idx = torch.argsort(tie_breaker.flatten(), descending=True, stable=True) 
-            sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], stable=True)]
+            sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], descending=True, stable=True)]
 
         rows, cols = torch.unravel_index(sorted_idx, X.shape)
         # map sets S^i = {(rows[1], cols[1]), ..., (rows[i], cols[i])} to x^i in V^n and stack them in x_chain
@@ -183,9 +187,13 @@ class SubmodularSetFnReduction:
             x_chain[i] = x
         
         # compute F(x^i) for all x^i's
-        Fvalues = self.F_batch(x_chain) # TODO: need to implement F that takes batch of attack indices and computes loss for them
+        Fvalues, _ = self.F_batch(x_chain) # TODO: add flop count handling here
 
-        return Fvalues
+        # compute subgradient g_i = F(x^i) - F(x^{i-1})
+        subgradient = torch.diff(Fvalues, prepend=0)
+        subgradient[sorted_idx] = subgradient
+
+        return subgradient, Fvalues, sorted_idx 
 
 
 
@@ -242,6 +250,7 @@ class DummyAttack(Attack):
         optim_strings: List[str] = [self.config.optim_str_init] if self.config.num_steps == 0 else []
         # Initialize with the token ids of optim_str_init
         optim_ids = tokens[attack_mask].detach().clone()
+
         for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
             current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_batch)
             losses.append(current_loss)
@@ -251,8 +260,10 @@ class DummyAttack(Attack):
             optim_strings.append(optim_str)
             pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
 
-        logging.info(f"Optimization loop completed."
-        f"Optimization time: {time.time() - t_start:.2f}s.")
+        logging.info(
+            "Optimization loop completed. "
+            f"Optimization time: {time.time() - t_start:.2f}s."
+        )
         # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
 
 
