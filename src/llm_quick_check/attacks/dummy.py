@@ -176,10 +176,11 @@ class SubmodularSetFnReduction:
         # map sets S^i = {(rows[1], cols[1]), ..., (rows[i], cols[i])} to x^i in V^n and stack them in x_chain
         # more efficient than calling F_set on S^i's which would compute each x^i separately
         x = torch.zeros(X.shape[0], dtype=torch.long, device=X.device)
-        x_chain = [] # no need to evaluate F(0) since F is normalized #TODO: normalize earlier
-        for i in rows.shape[0]:
-            x[rows[i]] += self.powers[cols[i]] #TODO: maybe we have a class where we store powers to not have to recompute them
-            x_chain.append(x)
+        # no need to evaluate F(0) since F is normalized #TODO: normalize earlier
+        x_chain = torch.empty((rows.shape[0], X.shape[0]), dtype=torch.long, device=X.device) # (n x t, n)
+        for i in range(rows.shape[0]):
+            x[rows[i]] += self.powers[cols[i]]
+            x_chain[i] = x
         
         # compute F(x^i) for all x^i's
         Fvalues = self.F_batch(x_chain) # TODO: need to implement F that takes batch of attack indices and computes loss for them
@@ -232,15 +233,17 @@ class DummyAttack(Attack):
         target_mask = target_mask.to(device)
         
         # let's first test F_batch on its own
-        F_batch = lambda attack_ids: compute_loss(attack_ids, model, tokens, target_mask, attack_mask, self.config.lm_reg_weight)
+        F_batch = lambda attack_ids: compute_loss(model, attack_ids, tokens, target_mask, attack_mask, self.config.lm_reg_weight)
         # F_set_batch = SubmodularSetFnReduction(F_batch, self.vocab_size, tokens.shape[1], device)
 
         losses = []
         times = []
         flops = []
-        optim_strings = [self.config.num_steps] if self.config.num_steps == 0 else []
+        optim_strings: List[str] = [self.config.optim_str_init] if self.config.num_steps == 0 else []
+        # Initialize with the token ids of optim_str_init
+        optim_ids = tokens[attack_mask].detach().clone()
         for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
-            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(model, tokenizer, conversation, tokens, attack_mask, target_mask)
+            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_batch)
             losses.append(current_loss)
             times.append(time_for_step)
             # TODO: add flops for prefill and init to initial step flops as done in GCG if we do prefill/init? 
@@ -249,8 +252,9 @@ class DummyAttack(Attack):
             pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
 
         logging.info(f"Optimization loop completed."
-        # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
         f"Optimization time: {time.time() - t_start:.2f}s.")
+        # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
+
 
         # --- 3. Generate Completions --- 
         # get tokens of attack conversations with otimized attack strings and empty assistant content
