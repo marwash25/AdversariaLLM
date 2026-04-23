@@ -24,9 +24,25 @@ class EneSubmodularSetFnReduction:
         self.k = k
         self.n = n
         self.m = int(log2(self.k))
+        self.weights = self.get_weights()
 
-        
+    
+    def get_weights(self) -> Tensor:
+        p = 0 # should have number of non-zero bits from 0 to m-1 in k-1
+        self.t = self.m + p + 1
+        weights = torch.zeros(self.t, dtype=torch.long, device=self.device)
+        return weights
 
+    def int2set(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:
+        rows_list = []
+        cols_list = []
+        return rows_list, cols_list
+
+    def bitset2int(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tensor:
+        x = torch.zeros((len(rows_list), self.n), dtype=torch.long, device=self.device)
+        return x
+
+    
 
 # The following reduction only works if k is a power of 2. If not, we can use k' = ceil(log2(k)) and cut off any integer >= k. 
 # The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
