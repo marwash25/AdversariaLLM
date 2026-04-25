@@ -10,7 +10,7 @@ from math import log2
 #TODO: Maybe it's better to actually store the map from integers in V to sets, instead of recomputing it every time.
 class EneSubmodularSetFnReduction:
     """Implement Ene-Nguyen's reduction from a DR-submodular function F: V^n -> R, where V = {0, 1,..., k - 1}, 
-    to a submodular set function F_set: 2^([n] x [t]) -> R and its Lovasz extension subgradient computation.
+    to a submodular set function F_set: 2^([n] x [t]) -> R.
 
     @article{ene2016reduction,
         title   = {A Reduction for Optimizing Lattice Submodular Functions with Diminishing Returns},
@@ -131,20 +131,39 @@ class EneSubmodularSetFnReduction:
         return rows_list, cols_list
 
     def set2ints(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tensor:
-        """Batched M: subsets of [n] x [t] -> V^n (same pattern as SubmodularSetFnReduction.bitset2int)."""
+        """Batched version of map M: 2^([n] x [t]) -> V^n. Same as SubmodularSetFnReduction.bitset2ints. 
+        #TODO: move this into a separate function, since not specific to either classes?
+        
+        Args:
+            rows_list: List of 1D tensors of type long and length <= n x t
+            cols_list: List of 1D tensors of type long and length <= n x t
+            Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [t].
+        Returns:
+            x: Tensor of type long and shape (batch_size, n). Each row x[i] is an integer vector in V^n such that M(S^i) = x[i].
+        """ 
         assert len(rows_list) == len(cols_list), "rows_list and cols_list must have the same length"
         assert all(
             rows_list[i].device == self.device and cols_list[i].device == self.device
             for i in range(len(rows_list))
         ), "all rows_list and cols_list must be on the same device"
+
         x = torch.zeros((len(rows_list), self.n), dtype=torch.long, device=self.device)
         for i, (rows, cols) in enumerate(zip(rows_list, cols_list)):
             assert rows.shape[0] == cols.shape[0], "rows and cols must have the same length"
             if cols.numel() > 0:
-                x[i].index_add_(0, rows, self.weights[cols])
+                x[i].index_add_(0, rows, self.weights[cols]) # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
-    
+    def _set_function_reduction(self) -> Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]]:
+        #TODO: adjust implementation if bitset2int is changed
+        def F_set_batch(rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
+            """Batched version of F_set: 2^([n] x [t]) -> R: Compute F_set(S^i) for the set 
+            S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
+            """
+            x = self.set2ints(rows_list, cols_list)
+            return self.F_batch(x)
+
+        return F_set_batch
 
 # The following reduction only works if k is a power of 2. If not, we can use k' = ceil(log2(k)) and cut off any integer >= k. 
 # The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
@@ -193,14 +212,16 @@ class SubmodularSetFnReduction:
         # simpler implementation, as I am not actually sure we'll use this for more than one set in the batch.
         # Same for int2bitset and F_set_batch.
         assert len(rows_list) == len(cols_list), "rows_list and cols_list must have the same length"
-        assert all(rows_list[i].device == self.device and cols_list[i].device == self.device \
-        for i in range(len(rows_list))), \
-        "all rows_list and cols_list must be on the same device and have the same length"
+        assert all(
+            rows_list[i].device == self.device and cols_list[i].device == self.device
+            for i in range(len(rows_list))
+        ), "all rows_list and cols_list must be on the same device"
 
         x = torch.zeros((len(rows_list), self.n), dtype=torch.long, device=self.device)
         for i, (rows, cols) in enumerate(zip(rows_list, cols_list)):
             assert rows.shape[0] == cols.shape[0], "rows and cols must have the same length"
-            x[i].index_add_(0, rows, self.weights[cols]) # x[i, rows[j]] += weights[cols[j]] for all j
+            if cols.numel() > 0:
+                x[i].index_add_(0, rows, self.weights[cols]) # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
     def ints2bitset(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:
@@ -213,11 +234,12 @@ class SubmodularSetFnReduction:
             cols_list: List of 1D tensors of type long and length <= n x t
             Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [t] such that M^{-1}(x[i]) = S^i.
         """
-        #TODO: adjust implementation if bitset2int is changed
+        #TODO: adjust implementation if bitset2ints is changed
         assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
         assert x.dtype == torch.long, "x must be of type long"
+
         idx_bits = torch.arange(self.t, dtype=torch.long, device=x.device)
-        x_bits = ((x.unsqueeze(-1) >> idx_bits) & 1).bool() # (batch_size, n, t)
+        x_bits = ((x.unsqueeze(-1) >> idx_bits) & 1).bool() # binary representation of x (batch_size, n, t)
         batch_idx, rows, cols = x_bits.nonzero(as_tuple=True)
         rows_list: List[Tensor] = []
         cols_list: List[Tensor] = []
@@ -228,12 +250,12 @@ class SubmodularSetFnReduction:
         return rows_list, cols_list
 
     def _set_function_reduction(self) -> Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]]:
-        #TODO: adjust implementation if bitset2int is changed
+        #TODO: adjust implementation if bitset2ints is changed
         def F_set_batch(rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
             """Batched version of F_set: 2^([n] x [t]) -> R: Compute F_set(S^i) for the set 
             S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
             """
-            x = self.bitset2int(rows_list, cols_list)
+            x = self.bitset2ints(rows_list, cols_list)
             return self.F_batch(x)
 
         return F_set_batch
