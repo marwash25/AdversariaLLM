@@ -19,8 +19,8 @@ class EneSubmodularSetFnReduction:
         journal = {arXiv preprint arXiv: 1606.08362}
 
     F_set(S) = F(M(S)), where M: 2^([n] x [t]) -> V^n is the map described in Lemma 1 in the paper.
-    S is represented by separate rows and cols indices instead of a set of tuples, i.e., S = {(rows[i], cols[i]) for i in
-    range(rows.shape[0])}. # TODO: modify this if needed
+    S is represented by separate rows and cols indices instead of a set of tuples, i.e., S = {(rows[i], cols[i]) 
+    for i in range(rows.shape[0])}. # TODO: modify this if needed
     """
     def __init__(self, F_batch: Callable[[Tensor], Tuple[Tensor, int]], k: int, n: int, device: torch.device):
         self.F_batch = F_batch
@@ -150,8 +150,8 @@ class EneSubmodularSetFnReduction:
 # The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
 class SubmodularSetFnReduction:
     """Implement binary representation reduction from a DR-submodular discrete function F: V^n -> R, 
-    where V = {0, 1,..., k - 1} and k = 2^t, to a submodular set function F_set: 2^([n] x [t]) -> R 
-    and its Lovasz extension subgradient computation.
+    where V = {0, 1,..., k - 1} and k = 2^t, to a submodular set function F_set: 2^([n] x [t]) -> R.
+
     F_set(S) = F(M(S)), where X = J_S is the matrix with 1 at indices in S, 0
     elsewhere, and x = M(S) is the integer vector such that each x_i is the int
     with binary representation X[i, :].
@@ -168,7 +168,7 @@ class SubmodularSetFnReduction:
         self.n = n
         self.t = int(log2(self.k))
         assert self.k == 2 ** self.t, "k must be a power of 2"
-        self.powers = (1 << torch.arange(self.t, dtype=torch.long, device=self.device)) # more efficient than 2**torch.arange(t)
+        self.weights = 1 << torch.arange(self.t, dtype=torch.long, device=self.device) # more efficient than 2**torch.arange(t)
         
         self.F_set_batch = self._set_function_reduction()
         # TODO: normalize F(emptyset) = 0
@@ -200,7 +200,7 @@ class SubmodularSetFnReduction:
         x = torch.zeros((len(rows_list), self.n), dtype=torch.long, device=self.device)
         for i, (rows, cols) in enumerate(zip(rows_list, cols_list)):
             assert rows.shape[0] == cols.shape[0], "rows and cols must have the same length"
-            x[i].index_add_(0, rows, self.powers[cols]) # x[i, rows[j]] += powers[cols[j]] for all j
+            x[i].index_add_(0, rows, self.weights[cols]) # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
     def ints2bitset(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:
@@ -238,43 +238,53 @@ class SubmodularSetFnReduction:
 
         return F_set_batch
 
-    def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
-        """Compute a subgradient of the Lovasz extension of self.F_set using
-        Edmonds' greedy algorithm.
-        Args:
-            X: Tensor of shape (n, t) in [0,1]^n x t
-            tie_breaker: Tensor of shape (n, t) used to break ties when sorting
-                X.flatten(). If not provided, original order is used.
-        Returns:
-            subgradient: Tensor of shape (n, t)
-        """
-        # TODO: for now assume x is a 2D tensor, not sure if there's a reason to vectorize it 
-        if tie_breaker is None:
-            sorted_idx = torch.argsort(X.flatten(), descending=True, stable=True)
-        else: 
-            sorted_idx = torch.argsort(tie_breaker.flatten(), descending=True, stable=True) 
-            sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], descending=True, stable=True)]
 
-        rows, cols = torch.unravel_index(sorted_idx, X.shape)
-        # map sets S^i = {(rows[1], cols[1]), ..., (rows[i], cols[i])} to x^i in V^n and stack them in x_chain
-        # more efficient than calling F_set on S^i's which would compute each x^i separately
-        x = torch.zeros(X.shape[0], dtype=torch.long, device=X.device)
-        # no need to evaluate F(0) since F is normalized #TODO: normalize earlier
-        x_chain = torch.empty((rows.shape[0], X.shape[0]), dtype=torch.long, device=X.device) # (n x t, n)
-        for i in range(rows.shape[0]):
-            x[rows[i]] += self.powers[cols[i]]
-            x_chain[i] = x
-        
-        # compute F(x^i) for all x^i's
-        Fvalues, _ = self.F_batch(x_chain) # TODO: add flop count handling here
+def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]], weights: Tensor, X: Tensor, tie_breaker: Optional[Tensor] = None):
+    """Compute a subgradient of the Lovasz extension of a submodular set function F_set: 2^([n] x [t]) -> R using Edmonds' greedy algorithm.
 
-        # compute subgradient g_i = F(x^i) - F(x^{i-1}), assume F(0) = 0
-        subgradient = torch.zeros_like(Fvalues) # (n x t,)
-        subgradient[sorted_idx] = torch.diff(Fvalues, prepend=torch.zeros_like(Fvalues[0]))
-        subgradient = subgradient.view_as(X) # (n, t)
+    F_set is given by F_set(S) = F(M(S)) where M: 2^([n] x [t]) -> V^n is [M(S)]_i = \sum_{(i, j) in S} weights[j].
+    Weights can be for example powers of 2 for the binary representation map or a_i's from Ene-Nguyen's reduction.
 
-        return subgradient, Fvalues, sorted_idx 
+    Args:
+        F_batch: Batched version of F. It takes a batch of inputs in V^n (Tensor of shape (batch_size, n)) 
+        and returns the values of F for each input (Tensor of shape (batch_size,)) and flop count (int).
+        weights: Tensor of shape (t,)
+        X: Tensor of shape (n, t) in [0,1]^n x t
+        tie_breaker: Tensor of shape (n, t) used to break ties when sorting
+            X.flatten(). If not provided, original order is used.
+    Returns:
+        subgradient: Tensor of shape (n, t)
+    """
+    # TODO: for now assume x is a 2D tensor, not sure if there's a reason to vectorize it
+    assert X.dim() == 2, "X must be a 2D tensor"
+    n, t = X.shape
+    assert weights.dim() == 1 and weights.shape[0] == t, "weights must be a 1D tensor of shape (t,)"
+
+    if tie_breaker is None:
+        sorted_idx = torch.argsort(X.flatten(), descending=True, stable=True)
+    else: 
+        sorted_idx = torch.argsort(tie_breaker.flatten(), descending=True, stable=True) 
+        sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], descending=True, stable=True)]
+
+    rows, cols = torch.unravel_index(sorted_idx, X.shape) # both are (n x t,)
+    # map sets S^i = {(rows[1], cols[1]), ..., (rows[i], cols[i])} to x^i in V^n and stack them in x_chain
+    # more efficient than calling F_set on S^i's which would compute each x^i separately
+    x = torch.zeros(n, dtype=torch.long, device=X.device)
+    # no need to evaluate F(0) since F is normalized #TODO: normalize earlier
+    x_chain = torch.empty((rows.shape[0], n), dtype=torch.long, device=X.device) # (n x t, n)
+    for i in range(rows.shape[0]):
+        x[rows[i]] += weights[cols[i]]
+        x_chain[i] = x
+    
+    # compute F(x^i) for all x^i's
+    Fvalues, _ = F_batch(x_chain) # TODO: add flop count handling here
+
+    # compute subgradient g_i = F(x^i) - F(x^{i-1}), assume F(0) = 0
+    subgradient = torch.zeros_like(Fvalues) # (n x t,)
+    subgradient[sorted_idx] = torch.diff(Fvalues, prepend=torch.zeros_like(Fvalues[0]))
+    subgradient = subgradient.view_as(X) # (n, t)
+
+    return subgradient, Fvalues, sorted_idx 
 
 
 
- 
