@@ -192,9 +192,13 @@ class DummyAttack(Attack):
         assert torch.all(init_loss == init_loss_2) and init_flops == init_flops_2, "F_batch and F_set_batch are not consistent"
         logging.info("F_batch and F_set_batch are consistent")
 
+        # Test correctness of subgradient_lovasz_extension
+        X = torch.rand(n_optim_tokens, F_set_batch.t, device=device)
+        subgradient, Fvalues, sorted_idx = F_set_batch.subgradient_lovasz_extension(X)
+
         logging.info(f"Initial loss: {init_loss}, Initial flops: {init_flops}")
         for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
-            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_batch)
+            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_set_batch)
             losses.append(current_loss)
             times.append(time_for_step)
             # TODO: add flops for prefill and init to initial step flops as done in GCG if we do prefill/init? 
@@ -260,18 +264,18 @@ class DummyAttack(Attack):
         return run_result
 
 
-    def _single_step(self, optim_ids: Tensor, F_batch: Callable[[Tensor], Any]) -> Tuple[float, float, torch.Tensor, str, int]:
+    def _single_step(self, optim_ids: Tensor, F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]]) -> Tuple[float, float, torch.Tensor, str, int]:
         """ Single step of the attack.
         Args:
             optim_ids: Current attack token ids. Tensor of shape
                 (n_optim_tokens,)
-            F_batch: Function that computes the loss for a batch of attack token
-                ids.
+            F_set_batch: Submodular set function that computes the loss for a batch of attack sets
+
         """
       
         t_start_step = time.time()
         optim_str = self.config.optim_str_init
-        loss, loss_flops = F_batch(optim_ids.unsqueeze(0))
+        loss, loss_flops = F_set_batch.F_batch(optim_ids)
         current_loss = loss.item()
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
         time_for_step =  time.time() - t_start_step
