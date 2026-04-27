@@ -163,6 +163,9 @@ class EneSubmodularSetFnReduction:
 
         return F_set_batch
 
+    def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
+        return subgradient_lovasz_extension(self.F_batch, self.weights, X, tie_breaker)
+
 # The following reduction only works if k is a power of 2. If not, we can use k' = ceil(log2(k)) and cut off any integer >= k. 
 # The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
 # Keep this for now, might use it if we decompose into non-decreasing DR-submodular functions.
@@ -255,11 +258,13 @@ class SubmodularSetFnReduction:
             """
             x = self.bitset2ints(rows_list, cols_list)
             return self.F_batch(x)
-
         return F_set_batch
 
+    def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
+        return subgradient_lovasz_extension(self.F_batch, self.weights, X, tie_breaker)
 
-def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]], weights: Tensor, X: Tensor, tie_breaker: Optional[Tensor] = None):
+
+def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]], weights: Tensor, X: Tensor, tie_breaker: Optional[Tensor] = None): 
     """Compute a subgradient of the Lovasz extension of a submodular set function F_set: 2^([n] x [t]) -> R using Edmonds' greedy algorithm.
 
     F_set is given by F_set(S) = F(M(S)) where M: 2^([n] x [t]) -> V^n is [M(S)]_i = \sum_{(i, j) in S} weights[j].
@@ -275,13 +280,17 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
             X.flatten(). If not provided, original order is used.
     Returns:
         subgradient: Tensor of shape (n, t)
+        Fvalues: Tensor of shape (n x t,)
+        sorted_idx: Tensor of shape (n x t,)
     """
     # TODO: for now assume x is a 2D tensor, not sure if there's a reason to vectorize it
     assert X.dim() == 2, "X must be a 2D tensor"
     n, t = X.shape
     assert weights.dim() == 1 and weights.shape[0] == t, "weights must be a 1D tensor of shape (t,)"
     assert F_batch(torch.zeros(1,n, dtype=torch.long, device=X.device))[0].item() == 0, "F must be normalized"
-
+    if tie_breaker is not None:
+        assert tie_breaker.shape == X.shape, "tie_breaker must be the same shape as X"
+    
     if tie_breaker is None:
         sorted_idx = torch.argsort(X.flatten(), descending=True, stable=True)
     else: 
@@ -300,10 +309,11 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
     
     # compute F(x^i) for all x^i's
     Fvalues, _ = F_batch(x_chain) # TODO: add flop count handling here
+    assert Fvalues.shape[0] == n * t, "F_batch must return one scalar per chain row"
 
     # compute subgradient g_i = F(x^i) - F(x^{i-1}), assume F(0) = 0
-    subgradient = torch.zeros_like(Fvalues) # (n x t,)
-    subgradient[sorted_idx] = torch.diff(Fvalues, prepend=torch.zeros_like(Fvalues[0]))
+    subgradient = torch.zeros_like(Fvalues)  # (n * t,)
+    subgradient[sorted_idx] = torch.diff(Fvalues, prepend=torch.zeros(1, dtype=Fvalues.dtype, device=Fvalues.device))
     subgradient = subgradient.view_as(X) # (n, t)
 
     return subgradient, Fvalues, sorted_idx 
