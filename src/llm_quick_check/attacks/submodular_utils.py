@@ -7,7 +7,10 @@ from torch import Tensor
 from math import log2
 
 
-#TODO: Maybe it's better to actually store the map from integers in V to sets, instead of recomputing it every time.
+# TODO: If SubmodularSetFnReduction is used,create a base class with common functions of both reduction classes (essentially everything except how to map int to binary vector; 
+# done in _decomposition_mask here and simple binary representation in SubmodularSetFnReduction.ints2bitset), with the subgradient computation in it too?
+
+# TODO: Maybe it's better to actually store the map from integers in V to sets, instead of recomputing it every time.
 class EneSubmodularSetFnReduction:
     """Implement Ene-Nguyen's reduction from a DR-submodular function F: V^n -> R, where V = {0, 1,..., k - 1}, 
     to a submodular set function F_set: 2^([n] x [t]) -> R.
@@ -96,10 +99,6 @@ class EneSubmodularSetFnReduction:
 
         return mask_x
 
-    def _column_indices_for_q(self, q: int, out_device: torch.device) -> Tensor:
-        """Subset of column indices whose weights sum to q (0 <= q <= k-1)."""
-        m = self._decomposition_mask(torch.tensor([[q]], dtype=torch.long, device=out_device))[0, 0]
-        return m.nonzero(as_tuple=True)[0]
 
     def ints2set(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:
         """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [t])
@@ -115,24 +114,19 @@ class EneSubmodularSetFnReduction:
         assert x.dtype == torch.long, "x must be of type long"
         assert (x >= 0).all() and (x < self.k).all(), "x must have values in {0,..,self.k - 1}"
 
-        batch_size = x.shape[0]
         mask = self._decomposition_mask(x)
-        if not mask.any():
-            empty = torch.empty(0, dtype=torch.long, device=x.device)
-            return [empty.clone() for _ in range(batch_size)], [empty.clone() for _ in range(batch_size)]
 
         batch_idx, rows, cols = mask.nonzero(as_tuple=True)
         rows_list: List[Tensor] = []
         cols_list: List[Tensor] = []
-        for b in range(batch_size):
-            m_b = batch_idx == b
-            rows_list.append(rows[m_b])
-            cols_list.append(cols[m_b].long())
+        for i in range(mask.size(0)):
+            batch_mask = batch_idx == i
+            rows_list.append(rows[batch_mask].long())
+            cols_list.append(cols[batch_mask].long())
         return rows_list, cols_list
 
     def set2ints(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tensor:
         """Batched version of map M: 2^([n] x [t]) -> V^n. Same as SubmodularSetFnReduction.bitset2ints. 
-        #TODO: move this into a separate function, since not specific to either classes?
         
         Args:
             rows_list: List of 1D tensors of type long and length <= n x t
@@ -167,6 +161,7 @@ class EneSubmodularSetFnReduction:
 
 # The following reduction only works if k is a power of 2. If not, we can use k' = ceil(log2(k)) and cut off any integer >= k. 
 # The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
+# Keep this for now, might use it if we decompose into non-decreasing DR-submodular functions.
 class SubmodularSetFnReduction:
     """Implement binary representation reduction from a DR-submodular discrete function F: V^n -> R, 
     where V = {0, 1,..., k - 1} and k = 2^t, to a submodular set function F_set: 2^([n] x [t]) -> R.
@@ -237,6 +232,7 @@ class SubmodularSetFnReduction:
         #TODO: adjust implementation if bitset2ints is changed
         assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
         assert x.dtype == torch.long, "x must be of type long"
+        assert (x >= 0).all() and (x < self.k).all(), "x must have values in {0,..,self.k - 1}"
 
         idx_bits = torch.arange(self.t, dtype=torch.long, device=x.device)
         x_bits = ((x.unsqueeze(-1) >> idx_bits) & 1).bool() # binary representation of x (batch_size, n, t)
@@ -245,8 +241,8 @@ class SubmodularSetFnReduction:
         cols_list: List[Tensor] = []
         for i in range(x_bits.size(0)):
             batch_mask = batch_idx == i
-            rows_list.append(rows[batch_mask])
-            cols_list.append(cols[batch_mask])
+            rows_list.append(rows[batch_mask].long())
+            cols_list.append(cols[batch_mask].long())
         return rows_list, cols_list
 
     def _set_function_reduction(self) -> Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]]:
