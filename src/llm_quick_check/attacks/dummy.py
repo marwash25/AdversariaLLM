@@ -15,7 +15,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids
 from ..types import Conversation
-from .submodular_utils import SubmodularSetFnReduction
+from .submodular_utils import EneSubmodularSetFnReduction, subgradient_lovasz_extension
 
 
 @dataclass
@@ -160,7 +160,7 @@ class DummyAttack(Attack):
         target_mask = target_mask.to(device)
         n_optim_tokens = int(attack_mask.sum().item())
         F_batch = lambda attack_ids: compute_loss(model, attack_ids, tokens, target_mask, attack_mask, self.config.lm_reg_weight)
-        F_set_batch = SubmodularSetFnReduction(F_batch, self.vocab_size, n_optim_tokens, device)
+        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.vocab_size, n_optim_tokens, device)
 
         losses = []
         times = []
@@ -169,11 +169,11 @@ class DummyAttack(Attack):
         # Initialize with the token ids of optim_str_init
         optim_ids = tokens[attack_mask].detach().clone().unsqueeze(0)
 
-        # Test correctness of int2bitset and bitset2int
-        rows, cols = F_set_batch.int2bitset(optim_ids)
-        optim_ids_2 = F_set_batch.bitset2int(rows, cols)
-        assert torch.all(optim_ids == optim_ids_2), "int2bitset and bitset2int are not inverses"
-        logging.info("int2bitset and bitset2int are correctly implemented as inverses")
+        # Test correctness of ints2set and set2ints
+        rows, cols = F_set_batch.ints2set(optim_ids)
+        optim_ids_2 = F_set_batch.set2ints(rows, cols)
+        assert torch.all(optim_ids == optim_ids_2), "ints2set and set2ints are not inverses"
+        logging.info("ints2set and set2ints are correctly implemented as inverses")
 
         # Test correctness of F_set_batch
         init_loss, init_flops = F_batch(optim_ids)

@@ -32,6 +32,10 @@ class EneSubmodularSetFnReduction:
         self.n = n
         self.v_max = self.k - 1
         self.weights = self.get_weights()
+        self.F_set_batch = self._set_function_reduction() # TODO: normalize F(emptyset) = 0
+
+    def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
+        return self.F_set_batch(rows_list, cols_list)
 
     def get_weights(self) -> Tensor:
         """Lemma 1 (Ene–Nguyen): multiset of t weights a_i summing to v_max = k-1.
@@ -183,9 +187,7 @@ class SubmodularSetFnReduction:
         self.t = int(log2(self.k))
         assert self.k == 2 ** self.t, "k must be a power of 2"
         self.weights = 1 << torch.arange(self.t, dtype=torch.long, device=self.device) # more efficient than 2**torch.arange(t)
-        
-        self.F_set_batch = self._set_function_reduction()
-        # TODO: normalize F(emptyset) = 0
+        self.F_set_batch = self._set_function_reduction() # TODO: normalize F(emptyset) = 0
         
     def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
         return self.F_set_batch(rows_list, cols_list)
