@@ -159,15 +159,26 @@ class DummyAttack(Attack):
         attack_mask = attack_mask.to(device)
         target_mask = target_mask.to(device)
         n_optim_tokens = int(attack_mask.sum().item())
-        F_batch = lambda attack_ids: compute_loss(model, attack_ids, tokens, target_mask, attack_mask, self.config.lm_reg_weight)
-        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.vocab_size, n_optim_tokens, device)
-
         losses = []
         times = []
         flops = []
         optim_strings: List[str] = [self.config.optim_str_init] if self.config.num_steps == 0 else []
         # Initialize with the token ids of optim_str_init
         optim_ids = tokens[attack_mask].detach().clone().unsqueeze(0)
+
+        loss_fn = lambda attack_ids: compute_loss(model, attack_ids, tokens, target_mask, attack_mask, self.config.lm_reg_weight)
+        F_0, F_0_flops = loss_fn(torch.zeros_like(optim_ids))
+        # normalize F(0) = 0
+        def F_batch(attack_ids):
+            loss, flops = loss_fn(attack_ids)
+            return loss - F_0, flops
+        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.vocab_size, n_optim_tokens, device)
+        
+        # Check if properly normalized
+        assert F_batch(torch.zeros_like(optim_ids))[0].item() == 0, "F_batch is not normalized"
+        empty_tensor = torch.empty((0,), dtype=torch.long, device=device)
+        assert F_set_batch([empty_tensor], [empty_tensor])[0].item() == 0, "F_set_batch is not normalized"
+        logging.info("F_batch and F_set_batch are properly normalized")
 
         # Test correctness of ints2set and set2ints
         rows, cols = F_set_batch.ints2set(optim_ids)

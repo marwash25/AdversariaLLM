@@ -264,6 +264,7 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
 
     F_set is given by F_set(S) = F(M(S)) where M: 2^([n] x [t]) -> V^n is [M(S)]_i = \sum_{(i, j) in S} weights[j].
     Weights can be for example powers of 2 for the binary representation map or a_i's from Ene-Nguyen's reduction.
+    F is assumed to be normalized, i.e., F(0) = 0.
 
     Args:
         F_batch: Batched version of F. It takes a batch of inputs in V^n (Tensor of shape (batch_size, n)) 
@@ -279,6 +280,7 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
     assert X.dim() == 2, "X must be a 2D tensor"
     n, t = X.shape
     assert weights.dim() == 1 and weights.shape[0] == t, "weights must be a 1D tensor of shape (t,)"
+    assert F_batch(torch.zeros(1,n, dtype=torch.long, device=X.device))[0].item() == 0, "F must be normalized"
 
     if tie_breaker is None:
         sorted_idx = torch.argsort(X.flatten(), descending=True, stable=True)
@@ -290,7 +292,7 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
     # map sets S^i = {(rows[1], cols[1]), ..., (rows[i], cols[i])} to x^i in V^n and stack them in x_chain
     # more efficient than calling F_set on S^i's which would compute each x^i separately
     x = torch.zeros(n, dtype=torch.long, device=X.device)
-    # no need to evaluate F(0) since F is normalized #TODO: normalize earlier
+    # no need to evaluate F(0) since F is normalized 
     x_chain = torch.empty((rows.shape[0], n), dtype=torch.long, device=X.device) # (n x t, n)
     for i in range(rows.shape[0]):
         x[rows[i]] += weights[cols[i]]
