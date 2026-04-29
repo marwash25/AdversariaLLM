@@ -147,6 +147,7 @@ class DummyAttack(Attack):
 
     def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
+        #TODO: add early stopping if exact match found as done in GCG.
         logging.info(f"Starting attack for conversation: {conversation}")
         t_start = time.time()
         # --- 2. Optimize attack ---
