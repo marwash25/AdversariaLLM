@@ -4,9 +4,8 @@ import time
 import logging
 import sys
 from tqdm import trange
-from typing import List, Optional, Tuple, Callable, Any
+from typing import List, Tuple, Callable, Any
 import torch
-from math import log2
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass, field
@@ -54,6 +53,11 @@ def _masked_cross_entropy(
         loss: Tensor of shape (batch_size,)
     """
     batch_size, _, vocab_size = shift_logits.shape
+    if not logit_mask.any():
+        raise ValueError(
+            "logit_mask selects no positions; cross-entropy is undefined. "
+            "Check target_mask / attack_mask and conversation layout."
+        )
     sel_logits = shift_logits[:, logit_mask, :].contiguous()  # (batch_size, num_selected_tokens, vocab_size)
     sel_labels = shift_labels[:, logit_mask].contiguous()  # (batch_size, num_selected_tokens)
     flat_loss = torch.nn.functional.cross_entropy(
@@ -182,7 +186,7 @@ class DSMAttack(Attack):
 
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[discrete_sols]
-        optim_strings = tokenizer.decode(optim_ids.cpu())  # batched decode (v5.3+)
+        optim_strings = tokenizer.batch_decode(optim_ids.cpu())  # decode handles batching in v5.3+, keeping batch_decode to support older versions
         losses = discrete_obj_values
 
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
@@ -376,10 +380,11 @@ class DSMAttack(Attack):
                 {"role": "assistant", "content": assistant_content},
             ]
         elif self.config.placement == "prefix_suffix":
-            attack_conversation = [
-                {"role": "user", "content": optim_str + conversation[0]["content"] + optim_str},
-                {"role": "assistant", "content": assistant_content},
-            ]
+            raise ValueError(f"Prefix_suffix placement not supported yet for DSM attack.")
+            # attack_conversation = [
+            #     {"role": "user", "content": optim_str_prefix + conversation[0]["content"] + optim_str_suffix},
+            #     {"role": "assistant", "content": assistant_content},
+            # ]
         elif self.config.placement == "prompt":
             attack_conversation = copy.deepcopy(conversation)
             if generation:
