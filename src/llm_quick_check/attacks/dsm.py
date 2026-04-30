@@ -15,7 +15,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids
 from ..types import Conversation
-from .submodular_utils import EneSubmodularSetFnReduction, subgradient_lovasz_extension
+from .submodular_utils import EneSubmodularSetFnReduction, pgm_lovasz
 
 
 @dataclass
@@ -159,9 +159,7 @@ class DSMAttack(Attack):
         attack_mask = attack_mask.to(device)
         target_mask = target_mask.to(device)
         n_optim_tokens = int(attack_mask.sum().item())
-        losses = []
-        times = []
-        flops = []
+
         optim_strings: List[str] = [self.config.optim_str_init] if self.config.num_steps == 0 else []
         # Initialize with the token ids of optim_str_init
         optim_ids = tokens[attack_mask].detach().clone().unsqueeze(0)
@@ -173,9 +171,11 @@ class DSMAttack(Attack):
             loss, flops = loss_fn(attack_ids)
             return loss - F_0, flops
         F_set_batch = EneSubmodularSetFnReduction(F_batch, self.vocab_size, n_optim_tokens, device)
+       
+        # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
+        discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
+            pgm_lovasz(F_set_batch, optim_ids, self.config.num_steps, L, gap_tol=None)
 
-
-        logging.info(f"Initial loss: {init_loss}, Initial flops: {init_flops}")
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
         # for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
         #     current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_set_batch)
