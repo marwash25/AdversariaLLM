@@ -126,17 +126,12 @@ class DSMAttack(Attack):
     @torch.no_grad()
     def run(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, dataset: PromptDataset) -> AttackResult:
         # TODO: add time tracking
-        # --- 1. Prepare Conversations ---
+        # --- Prepare Conversations ---
         tokens, attack_masks, target_masks, conversations = self._prepare_dataset(dataset, tokenizer)
         logging.info(f"Prepared {len(conversations)} conversations for attack")
 
-        # get disallowed_ids as done in GCG
-        not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
-        num_embeddings = model.get_input_embeddings().weight.size(0)
-        # drop disallowed_ids >= num_embeddings; some models like gemma-3 add extra tokens that do not have embeddings
-        self.not_allowed_ids = not_allowed_ids[not_allowed_ids < num_embeddings]
-        self.vocab_size = num_embeddings
-        logging.info(f"Number of embeddings: {num_embeddings}, Tokenizer vocab size: {len(tokenizer)}")  # to check if they match
+        # --- Build Valid Vocab ---
+        self._build_valid_vocab(tokenizer, model)
 
         runs = []
         for idx, conversation in enumerate(conversations):
@@ -149,7 +144,7 @@ class DSMAttack(Attack):
         #TODO: add early stopping if exact match found as done in GCG.
         logging.info(f"Starting attack for conversation: {conversation}")
         t_start = time.time()
-        # --- 2. Optimize attack ---
+        # --- Optimize Attack ---
         # TODO: Implement optimization loop here.
         # TODO: compute loss for initial optim_str. GCG does that in init_buffer
         # it doesn't create a AttackStepResult for it but it uses it for initialization of best loss and best optim_ids
@@ -161,20 +156,24 @@ class DSMAttack(Attack):
         n_optim_tokens = int(attack_mask.sum().item())
         # Initialize with the token ids of optim_str_init
         optim_ids = tokens[attack_mask].detach().clone().unsqueeze(0)
+        # TODO: check if optim_ids is in allowed set
 
-        loss_fn = lambda attack_ids: compute_loss(model, attack_ids, tokens, target_mask, attack_mask, self.config.lm_reg_weight)
+        # define loss_fn over V^n where V = {0, 1, ..., valid_vocab_size - 1} and n = n_optim_tokens
+        loss_fn = lambda attack_ids: compute_loss(model, self.valid_token_ids[attack_ids], tokens, target_mask, attack_mask, self.config.lm_reg_weight)
         F_0, F_0_flops = loss_fn(torch.zeros_like(optim_ids))
         # normalize F(0) = 0
         def F_batch(attack_ids):
             loss, flops = loss_fn(attack_ids)
             return loss - F_0, flops
-        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.vocab_size, n_optim_tokens, device)
+        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device)
        
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
             pgm_lovasz(F_set_batch, optim_ids, self.config.num_steps, 'singletons', gap_tol=None)
 
-        optim_strings = tokenizer.decode(discrete_sols.cpu()) # includes initial optim_str_init
+        # map back to original token ids and decode to strings
+        optim_ids = self.valid_token_ids[discrete_sols]
+        optim_strings = tokenizer.decode(optim_ids.cpu()) # includes initial optim_str_init
         losses = discrete_obj_values
 
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
@@ -193,7 +192,7 @@ class DSMAttack(Attack):
         )
         # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
 
-        # --- 3. Generate Completions ---
+        # --- Generate Completions ---
         # get tokens of attack conversations with otimized attack strings and empty assistant content
         prompt_token_list = []
         attack_conversations = []
@@ -224,7 +223,7 @@ class DSMAttack(Attack):
 
         t_end = time.time()
 
-        # --- 4. Assemble Results ---
+        # --- Assemble Results ---
         #TODO: If we want to also store continuou loss and duality gap, we can create subclasses of AttackStepResult for that.
         steps_results = []
         for i in range(len(optim_strings)):
@@ -262,6 +261,37 @@ class DSMAttack(Attack):
     #     time_for_step = time.time() - t_start_step
     #     flops_for_step = loss_flops + 0
     #     return current_loss, time_for_step, optim_ids, optim_str, flops_for_step
+
+
+    def _build_valid_vocab(self, tokenizer, model):
+        # get disallowed_ids as done in GCG
+        not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
+        num_embeddings = model.get_input_embeddings().weight.size(0)
+        # drop disallowed_ids >= num_embeddings; some models like gemma-3 add extra tokens that do not have embeddings
+        self.not_allowed_ids = not_allowed_ids[not_allowed_ids < num_embeddings]
+        self.vocab_size = num_embeddings
+        logging.info(f"Number of embeddings: {num_embeddings}, Tokenizer vocab size: {len(tokenizer)}")  # to check if they match
+
+        # get valid token ids to map from V = {0, 1, ..., valid_vocab_size - 1} to V_original = {0, 1, ..., vocab_size - 1}
+        valid_tokens_mask = torch.ones(self.vocab_size, dtype=torch.bool, device=model.device)
+        if self.not_allowed_ids is not None and self.not_allowed_ids.numel() > 0:
+            valid_tokens_mask[self.not_allowed_ids.to(model.device)] = False
+
+        self.valid_token_ids = torch.nonzero(valid_tokens_mask, as_tuple=False).squeeze(1)
+        self.valid_vocab_size = int(self.valid_token_ids.numel())
+
+        # build inverse map: V_original -> V or -1 if disallowed
+        self.valid_token_id_to_reduced_idx = torch.full(
+            (self.vocab_size,), -1, dtype=torch.long, device=model.device
+        )
+        self.valid_token_id_to_reduced_idx[self.valid_token_ids] = torch.arange(
+            self.valid_vocab_size, device=model.device, dtype=torch.long
+        )
+
+        logging.info(
+            f"Valid vocab size: {self.valid_vocab_size} (excluded {int(self.not_allowed_ids.numel())} ids)"
+        )
+
 
     # copied from PGDDiscreteAttack. Added assert for single-turn conversation and removed padding.
     # if we're not doing batched optimization, no point preparing full dataset, can call _prepare_single_conversation
