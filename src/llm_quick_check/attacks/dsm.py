@@ -159,8 +159,6 @@ class DSMAttack(Attack):
         attack_mask = attack_mask.to(device)
         target_mask = target_mask.to(device)
         n_optim_tokens = int(attack_mask.sum().item())
-
-        optim_strings: List[str] = [self.config.optim_str_init] if self.config.num_steps == 0 else []
         # Initialize with the token ids of optim_str_init
         optim_ids = tokens[attack_mask].detach().clone().unsqueeze(0)
 
@@ -173,8 +171,11 @@ class DSMAttack(Attack):
         F_set_batch = EneSubmodularSetFnReduction(F_batch, self.vocab_size, n_optim_tokens, device)
        
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
-        discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
+        best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
             pgm_lovasz(F_set_batch, optim_ids, self.config.num_steps, 'singletons', gap_tol=None)
+
+        optim_strings = tokenizer.decode(discrete_sols.cpu()) # includes initial optim_str_init
+        losses = discrete_obj_values
 
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
         # for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
@@ -187,7 +188,7 @@ class DSMAttack(Attack):
         #     pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
 
         logging.info(
-            "Optimization loop completed. "
+            f"Optimization loop completed. Best Attack: {optim_strings[best_sol_idx][:80]}"
             f"Optimization time: {time.time() - t_start:.2f}s."
         )
         # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
@@ -224,8 +225,9 @@ class DSMAttack(Attack):
         t_end = time.time()
 
         # --- 4. Assemble Results ---
+        #TODO: If we want to also store continuou loss and duality gap, we can create subclasses of AttackStepResult for that.
         steps_results = []
-        for i in range(self.config.num_steps):
+        for i in range(len(optim_strings)):
             step_result = AttackStepResult(
                 step=i,
                 model_completions=completions[i],

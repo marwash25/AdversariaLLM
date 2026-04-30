@@ -396,12 +396,14 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
         gap_tol: Stop when duality gap is less than gap_tol. 
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
     Returns:
-        discrete_obj_values: List of discrete objective values F(x^t) for each iteration t.
-        continuous_obj_values: List of continuous objective values f_L(X^t) for each iteration t.
-        duality_gaps: List of duality gaps for each iteration. Not true duality gaps if F_set is not submodular.
-        discrete_sols: List of discrete solutions x^t for each iteration t.
-        times: List of times for each iteration.
-        flops: List of flops for each iteration. 
+        discrete_obj_values: List of T floats, discrete objective values F(x^t) for each iteration t.
+        T is number of iterations ran (includes initial iter, can be less than num_steps + 1 if converged before)
+        continuous_obj_values: List of floats, continuous objective values f_L(X^t) for each iteration t.
+        duality_gaps: List of floats, duality gaps for each iteration. Not true duality gaps if F_set is not submodular.
+        discrete_sols: Tensor of shape (T, n) and type long, discrete solutions x^t in V^n for each iteration t.
+        best_sol_idx: int, index of best discrete solution in discrete_sols.
+        times: List of floats, times for each iteration.
+        flops: List of ints, flops for each iteration. 
     """
     # TODO: add option to only store solutions that improve best objective. 
     # Keeping old doc string to reuse in this case:
@@ -431,19 +433,19 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
             rows_list = [r.view(1) for r in rows]
             cols_list = [c.view(1) for c in cols]
             singleton_vals, flops_L = F_set_batch(rows_list, cols_list)
-            L = torch.linalg.vector_norm(singleton_vals.float(), ord=2).item()
+            L = max(torch.linalg.vector_norm(singleton_vals.float(), ord=2).item(), 1e-12) # L < 1e-12 shouldn't happen unless F = 0 but just in case
         elif L == "normalize":
             normalize = True
             L = 1.0
         else:
             raise ValueError("If L is a string, it must be either 'singletons' or 'normalize'.")
-    else:
-        assert L > 0, "Lipschitz constant L must be positive"
+
+    assert L > 0, "Lipschitz constant L must be positive"
 
     discrete_obj_values = [0.0 for _ in range(num_steps+1)]
     continuous_obj_values = [0.0 for _ in range(num_steps+1)]
     duality_gaps = [0.0 for _ in range(num_steps+1)] # if gap_tol is not None else None
-    discrete_sols = [None for _ in range(num_steps+1)]
+    discrete_sols = torch.empty((num_steps+1, n), dtype=torch.long, device=X.device)
     times = [0.0 for _ in range(num_steps+1)]
     flops = [0 for _ in range(num_steps+1)]
     best_discrete_obj = inf
@@ -456,6 +458,7 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
         
         if F_round < best_discrete_obj: 
             best_discrete_obj = F_round
+            best_sol_idx = iter
             # x_best = x_round
             # best_continuous_obj = cont_value
 
@@ -502,8 +505,8 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
     continuous_obj_values = continuous_obj_values[:iter+1]
     discrete_obj_values = discrete_obj_values[:iter+1]
     duality_gaps = duality_gaps[:iter+1]
-    discrete_sols = discrete_sols[:iter+1]
+    discrete_sols = discrete_sols[:iter+1, :]
     times = times[:iter+1]
     flops = flops[:iter+1]
     
-    return discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops
+    return best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops
