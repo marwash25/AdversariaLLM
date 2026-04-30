@@ -155,12 +155,21 @@ class DSMAttack(Attack):
         target_mask = target_mask.to(device)
         n_optim_tokens = int(attack_mask.sum().item())
         # Initialize with the token ids of optim_str_init
-        optim_ids = tokens[attack_mask].detach().clone().unsqueeze(0)
-        # TODO: check if optim_ids is in allowed set
+        optim_ids_init = tokens[attack_mask].detach().clone().unsqueeze(0) # (1, n_optim_tokens)
+        optim_ids_reduced = self.valid_token_id_to_reduced_idx[optim_ids_init]
+        invalid_optim_ids = optim_ids_init[optim_ids_reduced == -1]
+        if invalid_optim_ids.numel() > 0:
+            raise ValueError(
+                f"Initial attack ids contains {invalid_optim_ids.numel()} not allowed token id(s) "
+                f"e.g. {invalid_optim_ids[:5].tolist()}."
+            )
+    
 
         # define loss_fn over V^n where V = {0, 1, ..., valid_vocab_size - 1} and n = n_optim_tokens
-        loss_fn = lambda attack_ids: compute_loss(model, self.valid_token_ids[attack_ids], tokens, target_mask, attack_mask, self.config.lm_reg_weight)
-        F_0, F_0_flops = loss_fn(torch.zeros_like(optim_ids))
+        loss_fn = lambda attack_ids: compute_loss(
+            model, self.valid_token_ids[attack_ids], tokens, target_mask, attack_mask, self.config.lm_reg_weight
+        )
+        F_0, F_0_flops = loss_fn(torch.zeros_like(optim_ids_reduced))
         # normalize F(0) = 0
         def F_batch(attack_ids):
             loss, flops = loss_fn(attack_ids)
@@ -169,11 +178,11 @@ class DSMAttack(Attack):
        
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
-            pgm_lovasz(F_set_batch, optim_ids, self.config.num_steps, 'singletons', gap_tol=None)
+            pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, 'singletons', gap_tol=None)
 
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[discrete_sols]
-        optim_strings = tokenizer.decode(optim_ids.cpu()) # includes initial optim_str_init
+        optim_strings = tokenizer.decode(optim_ids.cpu())  # batched decode (v5.3+)
         losses = discrete_obj_values
 
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
@@ -187,7 +196,7 @@ class DSMAttack(Attack):
         #     pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
 
         logging.info(
-            f"Optimization loop completed. Best Attack: {optim_strings[best_sol_idx][:80]}"
+            f"Optimization loop completed. Best attack (step {best_sol_idx}): {optim_strings[best_sol_idx][:80]!s}. "
             f"Optimization time: {time.time() - t_start:.2f}s."
         )
         # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss

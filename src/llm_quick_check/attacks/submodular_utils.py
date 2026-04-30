@@ -380,14 +380,14 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
 # Note that this is will be mostly used for non-submodular functions. In DCA, we will use MNP as inner solver.
 # TODO: if used for submodular functions, add ground set trimming and set L to upper bound sqrt(sum_i F_set(i)^2) if not provided
 # TODO: allow to pass SubmodularSetFnReduction object if we keep this
-def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_steps: int, L: float | str, gap_tol: Optional[float] = None):
+def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_steps: int, L: float | str, gap_tol: Optional[float] = None):
     """Run projected subgradient method for problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a set function reduction F_set: 2^([n] x [b]) -> R
     of a discrete function F: V^n -> R.
 
     Args:
         F_set_batch: EneSubmodularSetFnReduction object. 
-        X_init: Initial solution in [0,1]^n x b. Tensor of shape (n, b).
+        x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
         num_steps: Number of iterations.
         L: Positive float or string. Lipschitz constant of the Lovasz extension f_L. 
         If F_set is monotone, set to F_set(V), which holds even if F_set is not submodular.
@@ -413,12 +413,18 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
     # discrete_sols: List of best discrete solution x^i*(b) for each iteration b.
 
     logging.info(f"Running PGM for {num_steps} iterations")
-    assert X_init.dim() == 2, "X_init must be a 2D tensor"
     time_start = time.time() # include initialization time in iter 0 time
 
-    n, b = X_init.shape
+    if x_init.dim() == 1:
+        x_init = x_init.unsqueeze(0)
+    # map x_init to X in [0,1]^n x b
+    rows_list, cols_list = F_set_batch.ints2set(x_init)
+    X = torch.zeros(F_set_batch.n, F_set_batch.b, device=x_init.device)
+    rows, cols = rows_list[0], cols_list[0]
+    X.index_put((rows, cols), torch.ones(rows.shape[0], device=X.device, dtype=X.dtype))
+
+    n, b = X.shape
     D = sqrt(n*b) # domain diameter
-    X = X_init.clone()
     # if gap_tol is not None:
     dual_avg = torch.zeros_like(X)
 
@@ -449,6 +455,7 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
     times = [0.0 for _ in range(num_steps+1)]
     flops = [0 for _ in range(num_steps+1)]
     best_discrete_obj = inf
+    best_sol_idx = -1
     # best_continuous_obj = inf
 
     for iter in (pbar := trange(num_steps+1, file=sys.stdout)):
