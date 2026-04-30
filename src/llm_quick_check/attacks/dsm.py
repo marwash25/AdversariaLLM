@@ -174,7 +174,7 @@ class DSMAttack(Attack):
        
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
         discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
-            pgm_lovasz(F_set_batch, optim_ids, self.config.num_steps, L, gap_tol=None)
+            pgm_lovasz(F_set_batch, optim_ids, self.config.num_steps, 'singletons', gap_tol=None)
 
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
         # for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):

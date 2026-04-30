@@ -378,9 +378,9 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
 # TODO: might be good to actually define a PGM class with step method to have standardized interface for different optimization methods
 # for now let's implement it as a standalone function similar to Matlab code
 # Note that this is will be mostly used for non-submodular functions. In DCA, we will use MNP as inner solver.
-# TODO: if used for submodular functions, add ground set trimming and set L to upper bound sqrt(sum_i F(i)^2) if not provided
+# TODO: if used for submodular functions, add ground set trimming and set L to upper bound sqrt(sum_i F_set(i)^2) if not provided
 # TODO: allow to pass SubmodularSetFnReduction object if we keep this
-def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_steps: int, L: float, gap_tol: Optional[float] = None):
+def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_steps: int, L: float | str, gap_tol: Optional[float] = None):
     """Run projected subgradient method for problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a set function reduction F_set: 2^([n] x [b]) -> R
     of a discrete function F: V^n -> R.
@@ -389,8 +389,10 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
         F_set_batch: EneSubmodularSetFnReduction object. 
         X_init: Initial solution in [0,1]^n x b. Tensor of shape (n, b).
         num_steps: Number of iterations.
-        L: Lipschitz constant of the Lovasz extension f_L. 
-        Set to F_set(V) if F_set is monotone and to 3*max_S |F_set(S)| otherwise, even if F_set is not submodular.
+        L: Positive float or string. Lipschitz constant of the Lovasz extension f_L. 
+        If F_set is monotone, set to F_set(V), which holds even if F_set is not submodular.
+        If F is submodular set to 3 max_S |F_set(S)| if known, otherwise set to 'singletons' to use sqrt(sum_i F_set(i)^2) bound.
+        If F is neither, set to 'normalize' to normalize the subgradient or 'singletons' as heuristic.
         gap_tol: Stop when duality gap is less than gap_tol. 
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
     Returns:
@@ -409,13 +411,34 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
     # discrete_sols: List of best discrete solution x^i*(b) for each iteration b.
 
     logging.info(f"Running PGM for {num_steps} iterations")
-    assert L > 0, "Lipschitz constant L must be positive"
     assert X_init.dim() == 2, "X_init must be a 2D tensor"
+    time_start = time.time() # include initialization time in iter 0 time
+
     n, b = X_init.shape
     D = sqrt(n*b) # domain diameter
     X = X_init.clone()
     # if gap_tol is not None:
     dual_avg = torch.zeros_like(X)
+
+    flops_L = 0
+    normalize = False
+    if isinstance(L, str):
+        if L == "singletons":
+            # Set L to sqrt(sum_i F_set({i})^2) where i ranges over [n] x [b].
+            # We evaluate all singletons in one batched call to F_set_batch.
+            rows = torch.arange(n * b, device=X.device, dtype=torch.long) // b
+            cols = torch.arange(n * b, device=X.device, dtype=torch.long) % b
+            rows_list = [r.view(1) for r in rows]
+            cols_list = [c.view(1) for c in cols]
+            singleton_vals, flops_L = F_set_batch(rows_list, cols_list)
+            L = torch.linalg.vector_norm(singleton_vals.float(), ord=2).item()
+        elif L == "normalize":
+            normalize = True
+            L = 1.0
+        else:
+            raise ValueError("If L is a string, it must be either 'singletons' or 'normalize'.")
+    else:
+        assert L > 0, "Lipschitz constant L must be positive"
 
     discrete_obj_values = [0.0 for _ in range(num_steps+1)]
     continuous_obj_values = [0.0 for _ in range(num_steps+1)]
@@ -426,7 +449,6 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
     best_discrete_obj = inf
     # best_continuous_obj = inf
 
-    time_start = time.time()
     for iter in (pbar := trange(num_steps+1, file=sys.stdout)):
         subgradient, Fvalues, x_chain, flops_subgrad = F_set_batch.subgradient_lovasz_extension(X)
         F_round, x_round = F_set_batch.round_lovasz_extension(X, Fvalues, x_chain)
@@ -453,6 +475,8 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
         
          # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill
         flops[iter] = flops_subgrad # only subgradient involves function evaluations 
+        if iter == 0: 
+            flops[iter] += flops_L
 
         pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
         if gap_tol is not None and duality_gaps[iter] <= gap_tol:
@@ -461,7 +485,16 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_ste
         
         time_start = time.time()
         if iter < num_steps: # no need to update in last iteration
-            eta = D/(L*sqrt(iter+1))
+            if normalize:
+                subgradient_norm = torch.linalg.vector_norm(subgradient.float(), ord=2).item()
+                if subgradient_norm < 1e-12:
+                    logging.info(f"Subgradient norm {subgradient_norm:.4f} < 1e-12.")
+                    #TODO: if F is submodular we should stop. Otherwise still stop?
+                    if gap_tol is not None:
+                        break
+                subgradient /= max(subgradient_norm, 1e-12)
+            
+            eta = D / (L * sqrt(iter + 1))
             # TODO: add Polyak step (to use only in submodular case - again not sure it works for non-submodular)
             X = X - eta * subgradient 
             X = torch.clamp(X, min=0, max=1)
