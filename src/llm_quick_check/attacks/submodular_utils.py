@@ -26,8 +26,7 @@ class EneSubmodularSetFnReduction:
         journal = {arXiv preprint arXiv: 1606.08362}
 
     F_set(S) = F(M(S)), where M: 2^([n] x [b]) -> V^n is the map described in Lemma 1 in the paper.
-    S is represented by separate rows and cols indices instead of a set of tuples, i.e., S = {(rows[i], cols[i]) 
-    for i in range(rows.shape[0])}. # TODO: modify this if needed
+    S is represented by separate rows and cols indices, i.e., S = {(rows[i], cols[i]) for i in range(rows.shape[0])}. 
     """
     def __init__(self, F_batch: Callable[[Tensor], Tuple[Tensor, int]], k: int, n: int, device: torch.device):
         self.F_batch = F_batch
@@ -175,23 +174,24 @@ class EneSubmodularSetFnReduction:
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
         return subgradient_lovasz_extension(self.F_batch, self.weights, X, tie_breaker)
 
-    def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None) -> Tuple[float, Tensor]:
+    def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None) -> float:
         """Evaluate the Lovasz extension f_L of F_set at X: f_L(X)"""
         if subgradient is None:
             subgradient = self.subgradient_lovasz_extension(X)[0]
-        return (X * subgradient).sum() 
+        return (X * subgradient).sum().item() 
 
     def round_lovasz_extension(self, X: Tensor, Fvalues: Optional[Tensor] = None, x_chain: Optional[Tensor] = None)-> Tuple[float, Tensor]:
         """Round X in [0,1]^n x b to a subset S_min in [n] x [b] such that F_set(S_min) <= f_L(X) 
         and map to corresponding x_min = M(S_min) in V^n"""
         if Fvalues is None or x_chain is None:
-            _, Fvalues, x_chain = self.subgradient_lovasz_extension(X)
+            _, Fvalues, x_chain, _ = self.subgradient_lovasz_extension(X)
         
         F_min, min_idx = torch.min(Fvalues, dim=0)
         if F_min >= 0:
             F_min = 0
             x_min = torch.zeros_like(x_chain[0])
         else:
+            F_min = F_min.item()
             x_min = x_chain[min_idx]
         return F_min, x_min
 
@@ -295,6 +295,28 @@ class SubmodularSetFnReduction:
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
         return subgradient_lovasz_extension(self.F_batch, self.weights, X, tie_breaker)
 
+    def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None) -> float:
+        """Evaluate the Lovasz extension f_L of F_set at X: f_L(X)"""
+        if subgradient is None:
+            subgradient = self.subgradient_lovasz_extension(X)[0]
+        return (X * subgradient).sum().item() 
+
+    def round_lovasz_extension(self, X: Tensor, Fvalues: Optional[Tensor] = None, x_chain: Optional[Tensor] = None)-> Tuple[float, Tensor]:
+        """Round X in [0,1]^n x b to a subset S_min in [n] x [b] such that F_set(S_min) <= f_L(X) 
+        and map to corresponding x_min = M(S_min) in V^n"""
+        if Fvalues is None or x_chain is None:
+            _, Fvalues, x_chain, _ = self.subgradient_lovasz_extension(X)
+        
+        F_min, min_idx = torch.min(Fvalues, dim=0)
+        if F_min >= 0:
+            F_min = 0
+            x_min = torch.zeros_like(x_chain[0])
+        else:
+            F_min = F_min.item()
+            x_min = x_chain[min_idx]
+        return F_min, x_min
+
+
 
 def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]], weights: Tensor, X: Tensor, tie_breaker: Optional[Tensor] = None): 
     """Compute a subgradient of the Lovasz extension f_L of a submodular set function F_set: 2^([n] x [b]) -> R using Edmonds' greedy algorithm.
@@ -331,7 +353,7 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
         sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], descending=True, stable=True)]
 
     rows, cols = torch.unravel_index(sorted_idx, X.shape) # both are (n x b,)
-    # map sets S^i = {(rows[1], cols[1]), ..., (rows[i], cols[i])} to x^i in V^n and stack them in x_chain
+    # map sets S^i = {(rows[0], cols[0]), ..., (rows[i], cols[i])} to x^i in V^n and stack them in x_chain
     # more efficient than calling F_set on S^i's which would compute each x^i separately
     x = torch.zeros(n, dtype=torch.long, device=X.device)
     # no need to evaluate F(0) since F is normalized 
@@ -341,7 +363,7 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
         x_chain[i] = x
     
     # compute F(x^i) for all x^i's
-    Fvalues, _ = F_batch(x_chain) # TODO: add flop count handling here
+    Fvalues, flops = F_batch(x_chain) 
     assert Fvalues.shape[0] == n * b, "F_batch must return one scalar per input row"
 
     # compute subgradient g_i = F(x^i) - F(x^{i-1}), assume F(0) = 0
@@ -349,30 +371,32 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
     subgradient[sorted_idx] = torch.diff(Fvalues, prepend=torch.zeros(1, dtype=Fvalues.dtype, device=Fvalues.device))
     subgradient = subgradient.view_as(X) # (n, b)
 
-    return subgradient, Fvalues, x_chain 
+    return subgradient, Fvalues, x_chain, flops
 
 
 
 # TODO: might be good to actually define a PGM class with step method to have standardized interface for different optimization methods
 # for now let's implement it as a standalone function similar to Matlab code
 # Note that this is will be mostly used for non-submodular functions. In DCA, we will use MNP as inner solver.
-# TODO: if used for submodular functions, add ground set trimming
-def pgm_lovasz(F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]], X_init: Tensor, num_steps: int, L: Optional[float] = None, gap_tol: Optional[float] = None):
+# TODO: if used for submodular functions, add ground set trimming and set L to upper bound sqrt(sum_i F(i)^2) if not provided
+# TODO: allow to pass SubmodularSetFnReduction object if we keep this
+def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, X_init: Tensor, num_steps: int, L: float, gap_tol: Optional[float] = None):
     """Run projected subgradient method for problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a set function reduction F_set: 2^([n] x [b]) -> R
     of a discrete function F: V^n -> R.
 
     Args:
-        F_set_batch: Batched version of F_set. 
+        F_set_batch: EneSubmodularSetFnReduction object. 
         X_init: Initial solution in [0,1]^n x b. Tensor of shape (n, b).
         num_steps: Number of iterations.
-        L: Lipschitz constant of the Lovasz extension. If not provided, it is ...
+        L: Lipschitz constant of the Lovasz extension f_L. 
+        Set to F_set(V) if F_set is monotone and to 3*max_S |F_set(S)| otherwise, even if F_set is not submodular.
         gap_tol: Stop when duality gap is less than gap_tol. 
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
     Returns:
         discrete_obj_values: List of discrete objective values F(x^t) for each iteration t.
         continuous_obj_values: List of continuous objective values f_L(X^t) for each iteration t.
-        duality_gaps: List of duality gaps for each iteration. Set to None if gap_tol is not provided.
+        duality_gaps: List of duality gaps for each iteration. Not true duality gaps if F_set is not submodular.
         discrete_sols: List of discrete solutions x^t for each iteration t.
         times: List of times for each iteration.
         flops: List of flops for each iteration. 
@@ -383,72 +407,70 @@ def pgm_lovasz(F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor,
     # continuous_obj_values: List of continuous objective values f_L(X^i*(b)) corresponding to best discrete solution 
     # x^i*(b) = argmin_{i <= t} F(x^i) for each iteration t.
     # discrete_sols: List of best discrete solution x^i*(b) for each iteration b.
-    
+
+    logging.info(f"Running PGM for {num_steps} iterations")
+    assert L > 0, "Lipschitz constant L must be positive"
     assert X_init.dim() == 2, "X_init must be a 2D tensor"
     n, b = X_init.shape
     D = sqrt(n*b) # domain diameter
     X = X_init.clone()
-    if gap_tol is not None:
-        X_avg = X.clone()
-        # dual_avg  # set to corresponding subgradient of X_init
+    # if gap_tol is not None:
+    dual_avg = torch.zeros_like(X)
 
-    # TODO: set L to upper bound if not provided
-
-    discrete_obj_values = [0.0 for _ in range(num_steps)]
-    continuous_obj_values = [0.0 for _ in range(num_steps)]
-    duality_gaps = [0.0 for _ in range(num_steps)] if gap_tol is not None else None
-    discrete_sols = [None for _ in range(num_steps)]
-    times = [0.0 for _ in range(num_steps)]
-    flops = [0.0 for _ in range(num_steps)]
+    discrete_obj_values = [0.0 for _ in range(num_steps+1)]
+    continuous_obj_values = [0.0 for _ in range(num_steps+1)]
+    duality_gaps = [0.0 for _ in range(num_steps+1)] # if gap_tol is not None else None
+    discrete_sols = [None for _ in range(num_steps+1)]
+    times = [0.0 for _ in range(num_steps+1)]
+    flops = [0 for _ in range(num_steps+1)]
     best_discrete_obj = inf
-    best_continuous_obj = inf
-    # TODO: compute initial obj but don'b store it to be consistent with other attack methods
-    # logging.info(f"Initial loss: {init_loss}, Initial flops: {init_flops}")
-    logging.info(f"Running PGM for {num_steps} iterations")
+    # best_continuous_obj = inf
 
+    time_start = time.time()
     for iter in (pbar := trange(num_steps+1, file=sys.stdout)):
-        time_start = time.time()
-        subgradient, Fvalues, x_chain = F_set_batch.subgradient_lovasz_extension(X)
-
+        subgradient, Fvalues, x_chain, flops_subgrad = F_set_batch.subgradient_lovasz_extension(X)
         F_round, x_round = F_set_batch.round_lovasz_extension(X, Fvalues, x_chain)
         cont_value = F_set_batch.lovasz_extension(X, subgradient)
         
         if F_round < best_discrete_obj: 
             best_discrete_obj = F_round
-            #x_best = x_round
-            best_continuous_obj = cont_value
+            # x_best = x_round
+            # best_continuous_obj = cont_value
 
-        discrete_obj_values.append(F_round) # best_discrete_obj
-        continuous_obj_values.append(cont_value) # best_continuous_obj
-        if iter > 0:
-            discrete_sols.append(x_round) # x_best
+        discrete_obj_values[iter] = F_round # best_discrete_obj
+        continuous_obj_values[iter] = cont_value # best_continuous_obj
+        discrete_sols[iter] = x_round # x_best
 
-        if gap_tol is not None:
-            dual_avg = (dual_avg * (iter - 1) + subgradient) / iter
-            # see Bach_learning_new Section 10.8 Proposition 10.4  #TODO: add proper reference here
-            dual_value = torch.clamp(dual_avg, max=0).sum()
-            duality_gap = best_continuous_obj - dual_value
-            duality_gaps.append(duality_gap)
-            if duality_gap <= gap_tol:
+        # if gap_tol is not None: # not used if gap_tol is None but we can still compute it since it's relatively cheap
+        dual_avg = (dual_avg * iter + subgradient) / (iter + 1)
+        # see Bach_learning_new Section 10.8 Proposition 10.4  #TODO: add proper reference here
+        dual_value = torch.clamp(dual_avg, max=0).sum().item()
+        duality_gap = best_discrete_obj - dual_value
+        duality_gaps[iter] = duality_gap
+        
+        # PGM update is included in next iteration time
+        times[iter] = time.time() - time_start
+        
+         # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill
+        flops[iter] = flops_subgrad # only subgradient involves function evaluations 
+
+        pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
+        if gap_tol is not None and duality_gaps[iter] <= gap_tol:
                 logging.info(f"Duality gap {duality_gap:.4f} <= tolerance {gap_tol:.4f} reached after {iter} iterations, stopping.")
-                continuous_obj_values = continuous_obj_values[:iter]
-                duality_gaps = duality_gaps[:iter]
-                discrete_sols = discrete_sols[:iter]
-                times = times[:iter]
-                flops = flops[:iter]
-                discrete_obj_values = discrete_obj_values[:iter]
                 break
+        
+        time_start = time.time()
+        if iter < num_steps: # no need to update in last iteration
+            eta = D/(L*sqrt(iter+1))
+            # TODO: add Polyak step (to use only in submodular case - again not sure it works for non-submodular)
+            X = X - eta * subgradient 
+            X = torch.clamp(X, min=0, max=1)
 
-        eta = D/(L*sqrt(iter))
-        # TODO: add Polyak step (to use only in submodular case - again not sure it works for non-submodular)
-        X = X - eta * subgradient 
-        X = torch.clamp(X, min=0, max=1)
-
-        # current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_set_batch)
-        losses.append(current_loss)
-        times.append(time_for_step)
-        # TODO: add flops for prefill and init to initial step flops as done in GCG if we do prefill/init? 
-        flops.append(flops_for_step) 
-        optim_strings.append(optim_str)
-        pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
-        return discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops
+    continuous_obj_values = continuous_obj_values[:iter+1]
+    discrete_obj_values = discrete_obj_values[:iter+1]
+    duality_gaps = duality_gaps[:iter+1]
+    discrete_sols = discrete_sols[:iter+1]
+    times = times[:iter+1]
+    flops = flops[:iter+1]
+    
+    return discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops
