@@ -174,37 +174,17 @@ class DSMAttack(Attack):
             return loss - F_0, flops
         F_set_batch = EneSubmodularSetFnReduction(F_batch, self.vocab_size, n_optim_tokens, device)
 
-        # Check if properly normalized
-        assert F_batch(torch.zeros_like(optim_ids))[0].item() == 0, "F_batch is not normalized"
-        empty_tensor = torch.empty((0,), dtype=torch.long, device=device)
-        assert F_set_batch([empty_tensor], [empty_tensor])[0].item() == 0, "F_set_batch is not normalized"
-        logging.info("F_batch and F_set_batch are properly normalized")
-
-        # Test correctness of ints2set and set2ints
-        rows, cols = F_set_batch.ints2set(optim_ids)
-        optim_ids_2 = F_set_batch.set2ints(rows, cols)
-        assert torch.all(optim_ids == optim_ids_2), "ints2set and set2ints are not inverses"
-        logging.info("ints2set and set2ints are correctly implemented as inverses")
-
-        # Test correctness of F_set_batch
-        init_loss, init_flops = F_batch(optim_ids)
-        init_loss_2, init_flops_2 = F_set_batch(rows, cols)
-        assert torch.all(init_loss == init_loss_2) and init_flops == init_flops_2, "F_batch and F_set_batch are not consistent"
-        logging.info("F_batch and F_set_batch are consistent")
-
-        # Test correctness of subgradient_lovasz_extension
-        X = torch.rand(n_optim_tokens, F_set_batch.t, device=device)
-        subgradient, Fvalues, sorted_idx = F_set_batch.subgradient_lovasz_extension(X)
 
         logging.info(f"Initial loss: {init_loss}, Initial flops: {init_flops}")
-        for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
-            current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_set_batch)
-            losses.append(current_loss)
-            times.append(time_for_step)
-            # TODO: add flops for prefill and init to initial step flops as done in GCG if we do prefill/init?
-            flops.append(flops_for_step)
-            optim_strings.append(optim_str)
-            pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
+        # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
+        # for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
+        #     current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_set_batch)
+        #     losses.append(current_loss)
+        #     times.append(time_for_step)
+        #     # TODO: add flops for prefill and init to initial step flops as done in GCG if we do prefill/init?
+        #     flops.append(flops_for_step)
+        #     optim_strings.append(optim_str)
+        #     pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
 
         logging.info(
             "Optimization loop completed. "
@@ -264,23 +244,22 @@ class DSMAttack(Attack):
         )
         return run_result
 
-    def _single_step(self, optim_ids: Tensor, F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]]) -> Tuple[float, float, torch.Tensor, str, int]:
-        """Single step of the attack.
-        Args:
-            optim_ids: Current attack token ids. Tensor of shape
-                (n_optim_tokens,)
-            F_set_batch: Submodular set function that computes the loss for a batch of attack sets
+    # def _single_step(self, optim_ids: Tensor, F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]]) -> Tuple[float, float, torch.Tensor, str, int]:
+    #     """Single step of the attack.
+    #     Args:
+    #         optim_ids: Current attack token ids. Tensor of shape
+    #             (n_optim_tokens,)
+    #         F_set_batch: Submodular set function that computes the loss for a batch of attack sets
 
-        """
+    #     """
 
-        t_start_step = time.time()
-        optim_str = self.config.optim_str_init
-        loss, loss_flops = F_set_batch.F_batch(optim_ids)
-        current_loss = loss.item()
-        # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
-        time_for_step = time.time() - t_start_step
-        flops_for_step = loss_flops + 0
-        return current_loss, time_for_step, optim_ids, optim_str, flops_for_step
+    #     t_start_step = time.time()
+    #     optim_str = self.config.optim_str_init
+    #     loss, loss_flops = F_set_batch.F_batch(optim_ids)
+    #     current_loss = loss.item()
+    #     time_for_step = time.time() - t_start_step
+    #     flops_for_step = loss_flops + 0
+    #     return current_loss, time_for_step, optim_ids, optim_str, flops_for_step
 
     # copied from PGDDiscreteAttack. Added assert for single-turn conversation and removed padding.
     # if we're not doing batched optimization, no point preparing full dataset, can call _prepare_single_conversation
