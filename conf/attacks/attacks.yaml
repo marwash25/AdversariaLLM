@@ -394,6 +394,7 @@ dsm:
   optim_str_init: "x x x x x x x x x x x x x x x x x x x x" # all tested tokenizers convert this to exactly 20 tokens
   num_steps: 1
   lm_reg_weight: 0.0
+  pgm_L: 'singletons'
   allow_non_ascii: False
   allow_special: False
 

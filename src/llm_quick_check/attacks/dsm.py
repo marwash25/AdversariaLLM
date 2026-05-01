@@ -31,6 +31,7 @@ class DSMConfig:
     optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
     num_steps: int = 1
     lm_reg_weight: float = 0.0  # weight on -log p(x|q) when using reg_ce
+    pgm_L: float | str = 'singletons' 
     allow_non_ascii: bool = False
     allow_special: bool = False
 
@@ -182,7 +183,7 @@ class DSMAttack(Attack):
        
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
-            pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, 'singletons', gap_tol=None)
+            pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, gap_tol=None)
 
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[discrete_sols]
