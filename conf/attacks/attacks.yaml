@@ -395,6 +395,13 @@ dsm:
   num_steps: 1
   lm_reg_weight: 0.0
   pgm_L: 'singletons'
+  optimizer: "PGM" # "PGM" or "DCA"
+  dca_config:
+    outer_tol: 1e-5
+    inner_gap_tol: 1e-4
+    num_outer_steps: 1
+    num_inner_steps: 1
+    inner_solver: "pgm"
   allow_non_ascii: False
   allow_special: False
 

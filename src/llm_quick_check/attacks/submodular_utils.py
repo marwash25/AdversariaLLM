@@ -2,7 +2,7 @@
 Submodular optimization utilities
 """
 import torch
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Literal
 from torch import Tensor
 from math import log2, inf, sqrt
 from tqdm import trange
@@ -79,7 +79,7 @@ class EneSubmodularSetFnReduction:
         assert x.dtype == torch.long, "x must be of type long"
         assert (x >= 0).all() and (x < self.k).all(), "x must have values in {0,..,self.k - 1}" 
         assert x.device == self.device, "x must be on the same device as the reduction" 
-        
+
         m = self.m
         b = self.b
         v_max = self.v_max
@@ -301,6 +301,20 @@ class SubmodularSetFnReduction:
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
         return subgradient_lovasz_extension(self.F_batch, self.weights, X, tie_breaker)
 
+    def singletons_L_bound(self) -> Tuple[float, int]:
+        """Compute sqrt(sum_i F_set({i})^2) where i ranges over [n] x [b].
+           If F_set is submodular, this is a valid bound on the Lipschitz constant 
+           of its Lovasz extension f_L.
+        """
+        # We evaluate all singletons in one batched call to F_set_batch.
+        rows = torch.arange(self.n * self.b, device=self.device, dtype=torch.long) // self.b
+        cols = torch.arange(self.n * self.b, device=self.device, dtype=torch.long) % self.b
+        rows_list = [r.view(1) for r in rows]
+        cols_list = [c.view(1) for c in cols]
+        singleton_vals, flops_L = self.F_set_batch(rows_list, cols_list)
+        L = torch.linalg.vector_norm(singleton_vals.float(), ord=2).item()
+        return L, flops_L
+
     def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None) -> float:
         """Evaluate the Lovasz extension f_L of F_set at X: f_L(X)"""
         if subgradient is None:
@@ -401,6 +415,7 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_ste
         If F is neither, set to 'normalize' to normalize the subgradient or 'singletons' as heuristic.
         gap_tol: Stop when duality gap is less than gap_tol. 
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
+
     Returns:
         discrete_obj_values: List of T floats, discrete objective values F(x^t) for each iteration t.
         T is number of iterations ran (includes initial iter, can be less than num_steps + 1 if converged before)
@@ -435,14 +450,9 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_ste
     normalize = False
     if isinstance(L, str):
         if L == "singletons":
-            # Set L to sqrt(sum_i F_set({i})^2) where i ranges over [n] x [b].
-            # We evaluate all singletons in one batched call to F_set_batch.
-            rows = torch.arange(n * b, device=X.device, dtype=torch.long) // b
-            cols = torch.arange(n * b, device=X.device, dtype=torch.long) % b
-            rows_list = [r.view(1) for r in rows]
-            cols_list = [c.view(1) for c in cols]
-            singleton_vals, flops_L = F_set_batch(rows_list, cols_list)
-            L = max(torch.linalg.vector_norm(singleton_vals.float(), ord=2).item(), 1e-12) # L < 1e-12 shouldn't happen unless F = 0 but just in case
+            # Set L to sqrt(sum_i F_set({i})^2) 
+            L, flops_L = F_set_batch.singletons_L_bound()
+            L = max(L, 1e-12) # L < 1e-12 shouldn't happen unless F = 0 but just in case
         elif L == "normalize":
             normalize = True
             L = 1.0
@@ -522,7 +532,9 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_ste
     return best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops
 
 
-def dca_dsm(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_steps: int):
+def dca_dsm(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 
+inner_solver: Literal["pgm", "mnp"], outer_tol: Optional[float] = 1e-5, inner_gap_tol: Optional[float] = 1e-4, 
+tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     """
     Implement the difference of convex algorithm (DCA) variant from El Halabi et al. 2023 (Algorithm 2) 
     for the difference of submodular minimization (DSM) problem min_{S} F_set(S):= G_set(S) - H_set(S), which
@@ -537,12 +549,45 @@ def dca_dsm(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_steps:
       year={2023},
     }
 
+    Args:
+        F_set_batch: EneSubmodularSetFnReduction object. Set function reduction F_set.
+        x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
+    
+    Returns:
     """
     # Decided to implement DCA-Restart version for now since simpler and faster. 
     # TODO: add DCA-LS version from our ContDSMin paper later since it can perform better in practice 
     # when a good initialization is not provided.  
-    logging.info(f"Running DCA for {num_steps} iterations, L set to {L}, and gap tolerance to {gap_tol}")
+    logging.info(f"Running DCA for {num_outer_steps} outer iterations and {num_inner_steps} inner iterations")
     time_start = time.time() # include initialization time in iter 0 time
 
+    if x_init.dim() == 1:
+        x_init = x_init.unsqueeze(0)
+    # map x_init to X in [0,1]^n x b
+    X = F_set_batch.ints2binary(x_init)[0]
+    n, b = X.shape
+
+    flops_L_G = 0
+    if isinstance(L_G, str):
+        if L_G == "singletons":
+            L_G, flops_L_G = G_set_batch.singletons_L_bound()
+            L_G = max(L_G, 1e-12) # L_G < 1e-12 shouldn't happen unless G = 0 but just in case
+        else:
+            raise ValueError("If L_G is a string, it must be 'singletons'.")
+    assert L_G > 0, "Lipschitz constant L_G must be positive"
+
+    for iter in (pbar := trange(num_outer_steps+1, file=sys.stdout)):
+        subgrad_G, Gvalues, x_chain, flops_subgrad = G_set_batch.subgradient_lovasz_extension(X) # subgrad_G is (n, b)
+
+        if inner_solver == "pgm":
+            L = L_G + torch.linalg.vector_norm(subgradient.float(), ord=2).item()
+            best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
+                pgm_lovasz(G_set_batch, X, num_inner_steps, L, gap_tol=inner_gap_tol)
+        elif inner_solver == "mnp":
+            # TODO: implement MNP 
+            pass
+        else:
+            raise ValueError(f"Inner solver {inner_solver} not supported. Must be 'pgm' or 'mnp'.")
+        #pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
 
     return

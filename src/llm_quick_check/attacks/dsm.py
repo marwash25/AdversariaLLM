@@ -160,6 +160,7 @@ class DSMAttack(Attack):
         target_mask = target_mask.to(device)
         n_optim_tokens = int(attack_mask.sum().item())
         # Initialize with the token ids of optim_str_init
+        # TODO: experiment with different initial solutions (see notes.md)
         optim_ids_init = tokens[attack_mask].detach().clone().unsqueeze(0) # (1, n_optim_tokens)
         optim_ids_reduced = self.valid_token_id_to_reduced_idx[optim_ids_init]
         invalid_optim_ids = optim_ids_init[optim_ids_reduced == -1]
