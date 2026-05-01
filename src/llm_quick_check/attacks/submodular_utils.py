@@ -26,7 +26,6 @@ class EneSubmodularSetFnReduction:
         journal = {arXiv preprint arXiv: 1606.08362}
 
     F_set(S) = F(M(S)), where M: 2^([n] x [b]) -> V^n is the map described in Lemma 1 in the paper.
-    S is represented by separate rows and cols indices, i.e., S = {(rows[i], cols[i]) for i in range(rows.shape[0])}. 
     """
     def __init__(self, F_batch: Callable[[Tensor], Tuple[Tensor, int]], k: int, n: int, device: torch.device):
         self.F_batch = F_batch
@@ -62,17 +61,25 @@ class EneSubmodularSetFnReduction:
         weights = torch.cat((one, base_weights, base_weights[self.v_max_non_zero_bits]))
         return weights
 
-    def _decomposition_mask(self, x: Tensor) -> Tensor:
-        """ Decompose each entry in x into a sum of a subset of the weights a_i's
+    def ints2binary(self, x: Tensor) -> Tensor:
+        """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b]
+        represented by binary matrices X in {0,1}^n x b such that X[j, c] = 1 iff (j, c) in S:
+        
+        Decompose each entry in x into a sum of a subset of the weights a_i's
 
         Args:
             x: Tensor of type long and shape (batch_size, n). Each row is an integer vector in V^n.
         
         Returns:
-            mask: Tensor of type bool and shape (batch_size, n, b). 
-            mask[i, j, c] = True iff weight a_c appears in the decomposition of x[i, j].
+            binary_matrices: Tensor of type bool and shape (batch_size, n, b). 
+            Each binary_matrices[i] represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
+            binary_matrices[i, j, c] = True iff weight a_c appears in the decomposition of x[i, j].
         """
-        assert x.device == self.device, "x must be on the same device as the reduction"
+        assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
+        assert x.dtype == torch.long, "x must be of type long"
+        assert (x >= 0).all() and (x < self.k).all(), "x must have values in {0,..,self.k - 1}" 
+        assert x.device == self.device, "x must be on the same device as the reduction" 
+        
         m = self.m
         b = self.b
         v_max = self.v_max
@@ -113,7 +120,8 @@ class EneSubmodularSetFnReduction:
 
 
     def ints2set(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:
-        """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b])
+        """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b] represented
+        by paired rows and cols indices, i.e., S = {(rows[j], cols[j]) for j in range(rows.shape[0])}. 
 
         Args:
             x: Tensor of type long and shape (batch_size, n). Each row is an integer vector in V^n.
@@ -122,11 +130,7 @@ class EneSubmodularSetFnReduction:
             cols_list: List of 1D tensors of type long and length <= n x b
             Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
         """ 
-        assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
-        assert x.dtype == torch.long, "x must be of type long"
-        assert (x >= 0).all() and (x < self.k).all(), "x must have values in {0,..,self.k - 1}"
-
-        mask = self._decomposition_mask(x)
+        mask = self.ints2binary(x)
 
         batch_idx, rows, cols = mask.nonzero(as_tuple=True)
         rows_list: List[Tensor] = []
@@ -137,9 +141,11 @@ class EneSubmodularSetFnReduction:
             cols_list.append(cols[batch_mask].long())
         return rows_list, cols_list
 
+
     def set2ints(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tensor:
-        """Batched version of map M: 2^([n] x [b]) -> V^n. Same as SubmodularSetFnReduction.bitset2ints. 
-        
+        """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
+        by paired rows and cols indices. 
+
         Args:
             rows_list: List of 1D tensors of type long and length <= n x b
             cols_list: List of 1D tensors of type long and length <= n x b
@@ -381,12 +387,12 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
 # TODO: if used for submodular functions, add ground set trimming and set L to upper bound sqrt(sum_i F_set(i)^2) if not provided
 # TODO: allow to pass SubmodularSetFnReduction object if we keep this
 def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_steps: int, L: float | str, gap_tol: Optional[float] = None):
-    """Run projected subgradient method for problem min_{X in [0,1]^n x b} f_L(X)
+    """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a set function reduction F_set: 2^([n] x [b]) -> R
     of a discrete function F: V^n -> R.
 
     Args:
-        F_set_batch: EneSubmodularSetFnReduction object. 
+        F_set_batch: EneSubmodularSetFnReduction object. Set function reduction F_set.
         x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
         num_steps: Number of iterations.
         L: Positive float or string. Lipschitz constant of the Lovasz extension f_L. 
@@ -412,16 +418,13 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_ste
     # x^i*(b) = argmin_{i <= t} F(x^i) for each iteration t.
     # discrete_sols: List of best discrete solution x^i*(b) for each iteration b.
 
-    logging.info(f"Running PGM for {num_steps} iterations")
+    logging.info(f"Running PGM for {num_steps} iterations, L set to {L}, and gap tolerance to {gap_tol}")
     time_start = time.time() # include initialization time in iter 0 time
 
     if x_init.dim() == 1:
         x_init = x_init.unsqueeze(0)
     # map x_init to X in [0,1]^n x b
-    rows_list, cols_list = F_set_batch.ints2set(x_init)
-    X = torch.zeros(F_set_batch.n, F_set_batch.b, device=x_init.device)
-    rows, cols = rows_list[0], cols_list[0]
-    X.index_put((rows, cols), torch.ones(rows.shape[0], device=X.device, dtype=X.dtype))
+    X = F_set_batch.ints2binary(x_init)[0]
 
     n, b = X.shape
     D = sqrt(n*b) # domain diameter
@@ -517,3 +520,29 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_ste
     flops = flops[:iter+1]
     
     return best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops
+
+
+def dca_dsm(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_steps: int):
+    """
+    Implement the difference of convex algorithm (DCA) variant from El Halabi et al. 2023 (Algorithm 2) 
+    for the difference of submodular minimization (DSM) problem min_{S} F_set(S):= G_set(S) - H_set(S), which
+    applies DCA to the equivalent continuous problem min_{X in [0,1]^n x b} f_L(X) := g_L(X) - h_L(X).
+    Here F_set, G_set, H_set: 2^([n] x [b]) -> R are the set function reductions of the discrete functions 
+    F, G, H: V^n -> R, and f_L, g_L, h_L are their Lovasz extensions.
+
+    @InProceedings{elhalabi2023dsm,
+      title={Difference of Submodular Minimization via DC Programming}, 
+      author={Marwa El Halabi and George Orfanides and Tim Hoheisel},
+      booktitle = {Proceedings of the 40th International Conference on Machine Learning},
+      year={2023},
+    }
+
+    """
+    # Decided to implement DCA-Restart version for now since simpler and faster. 
+    # TODO: add DCA-LS version from our ContDSMin paper later since it can perform better in practice 
+    # when a good initialization is not provided.  
+    logging.info(f"Running DCA for {num_steps} iterations, L set to {L}, and gap tolerance to {gap_tol}")
+    time_start = time.time() # include initialization time in iter 0 time
+
+
+    return
