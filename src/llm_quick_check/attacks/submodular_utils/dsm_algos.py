@@ -10,21 +10,20 @@ import sys
 import logging
 import time
 
-from .setfn_reductions import EneSubmodularSetFnReduction
+from .setfn_reductions import SetFnReduction
 
 
 # TODO: might be good to actually define a PGM class with step method to have standardized interface for different optimization methods
 # for now let's implement it as a standalone function similar to Matlab code
 # Note that this is will be mostly used for non-submodular functions. In DCA, we will use MNP as inner solver.
 # TODO: if used for submodular functions, add ground set trimming and set L to upper bound sqrt(sum_i F_set(i)^2) if not provided
-# TODO: allow to pass SubmodularSetFnReduction object if we keep this
-def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_steps: int, L: float | str, gap_tol: Optional[float] = None):
+def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: float | str, gap_tol: Optional[float] = None):
     """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a set function reduction F_set: 2^([n] x [b]) -> R
     of a discrete function F: V^n -> R.
 
     Args:
-        F_set_batch: EneSubmodularSetFnReduction object. Set function reduction F_set.
+        F_set_batch: SetFnReduction instance.
         x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
         num_steps: Number of iterations.
         L: Positive float or string. Lipschitz constant of the Lovasz extension f_L. 
@@ -150,7 +149,7 @@ def pgm_lovasz(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_ste
     return best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops
 
 
-def dca_dsm(F_set_batch: EneSubmodularSetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 
+def dca_dsm(F_set_batch: SetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 
 inner_solver: Literal["pgm", "mnp"], outer_tol: Optional[float] = 1e-5, inner_gap_tol: Optional[float] = 1e-4, 
 tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     """
@@ -168,7 +167,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     }
 
     Args:
-        F_set_batch: EneSubmodularSetFnReduction object. Set function reduction F_set.
+        F_set_batch: SetFnReduction instance. 
         x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
     
     Returns:
