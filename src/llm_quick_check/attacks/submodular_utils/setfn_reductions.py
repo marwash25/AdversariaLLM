@@ -11,7 +11,7 @@ from math import log2
 # done in _decomposition_mask here and simple binary representation in SubmodularSetFnReduction.ints2bitset), with the subgradient computation in it too?
 
 # TODO: Maybe it's better to actually store the map from integers in V to sets, instead of recomputing it every time.
-class EneSubmodularSetFnReduction:
+class EneSubmodularSetFnReduction(SubmodularSetFnReduction):
     """Implement Ene-Nguyen's reduction from a DR-submodular function F: V^n -> R, where V = {0, 1,..., k - 1}, 
     to a submodular set function F_set: 2^([n] x [b]) -> R.
 
@@ -24,17 +24,9 @@ class EneSubmodularSetFnReduction:
     F_set(S) = F(M(S)), where M: 2^([n] x [b]) -> V^n is the map described in Lemma 1 in the paper.
     """
     def __init__(self, F_batch: Callable[[Tensor], Tuple[Tensor, int]], k: int, n: int, device: torch.device):
-        self.F_batch = F_batch
-        self.device = device
-        self.k = k
-        self.n = n
+        super().__init__(F_batch, k, n, device)
         self.v_max = self.k - 1
-        self.weights = self.get_weights()
-        self.F_set_batch = self._set_function_reduction() # TODO: normalize F(emptyset) = 0
-
-    def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
-        return self.F_set_batch(rows_list, cols_list)
-
+        
     def get_weights(self) -> Tensor:
         """Multiset of b weights a_1, ..., a_b summing to v_max = k-1.
 
@@ -57,18 +49,18 @@ class EneSubmodularSetFnReduction:
         weights = torch.cat((one, base_weights, base_weights[self.v_max_non_zero_bits]))
         return weights
 
-    def ints2binary(self, x: Tensor) -> Tensor:
+    def ints2binary(self, x: Tensor) -> Tensor: # used to convert x_init in V^n to X in {0,1}^n x b in pgm and DCA and in ints2set
         """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b]
         represented by binary matrices X in {0,1}^n x b such that X[j, c] = 1 iff (j, c) in S:
         
-        Decompose each entry in x into a sum of a subset of the weights a_i's
+        Decompose each entry in x into a sum of a subset of the weights a_i's; x[i,j] = sum_{c in [b]} X[i, j, c] * a_c
 
         Args:
             x: Tensor of type long and shape (batch_size, n). Each row is an integer vector in V^n.
         
         Returns:
             binary_matrices: Tensor of type bool and shape (batch_size, n, b). 
-            Each binary_matrices[i] represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
+            Each X[i] = binary_matrices[i] represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
             binary_matrices[i, j, c] = True iff weight a_c appears in the decomposition of x[i, j].
         """
         assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
@@ -115,7 +107,20 @@ class EneSubmodularSetFnReduction:
         return mask_x
 
 
-    def ints2set(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:
+class SubmodularSetFnReduction:
+    """ Base class for submodular set function reductions. """
+    def __init__(self, F_batch: Callable[[Tensor], Tuple[Tensor, int]], k: int, n: int, device: torch.device):
+        self.F_batch = F_batch
+        self.device = device
+        self.k = k
+        self.n = n
+        self.weights = self.get_weights()
+        self.F_set_batch = self._set_function_reduction() 
+
+    def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
+        return self.F_set_batch(rows_list, cols_list)
+
+    def ints2set(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]: # TODO: not used anywhere yet, remove if not needed
         """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b] represented
         by paired rows and cols indices, i.e., S = {(rows[j], cols[j]) for j in range(rows.shape[0])}. 
 
@@ -138,7 +143,7 @@ class EneSubmodularSetFnReduction:
         return rows_list, cols_list
 
 
-    def set2ints(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tensor:
+    def set2ints(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tensor: # used in F_set_batch
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by paired rows and cols indices. 
 
@@ -163,8 +168,7 @@ class EneSubmodularSetFnReduction:
         return x
 
     def _set_function_reduction(self) -> Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]]:
-        #TODO: adjust implementation if bitset2int is changed
-        def F_set_batch(rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
+        def F_set_batch(rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]: # used in singleton_L_bound
             """Batched version of F_set: 2^([n] x [b]) -> R: Compute F_set(S^i) for the set 
             S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
             """
@@ -175,6 +179,21 @@ class EneSubmodularSetFnReduction:
 
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
         return subgradient_lovasz_extension(self.F_batch, self.weights, X, tie_breaker)
+
+    
+    def singletons_L_bound(self) -> Tuple[float, int]: # used in pgm and DCA
+        """Compute sqrt(sum_i F_set({i})^2) where i ranges over [n] x [b].
+           If F_set is submodular, this is a valid bound on the Lipschitz constant 
+           of its Lovasz extension f_L.
+        """
+        # We evaluate all singletons in one batched call to F_set_batch.
+        rows = torch.arange(self.n * self.b, device=self.device, dtype=torch.long) // self.b
+        cols = torch.arange(self.n * self.b, device=self.device, dtype=torch.long) % self.b
+        rows_list = [r.view(1) for r in rows]
+        cols_list = [c.view(1) for c in cols]
+        singleton_vals, flops_L = self.F_set_batch(rows_list, cols_list)
+        L = torch.linalg.vector_norm(singleton_vals.float(), ord=2).item()
+        return L, flops_L
 
     def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None) -> float:
         """Evaluate the Lovasz extension f_L of F_set at X: f_L(X)"""
@@ -204,7 +223,7 @@ class EneSubmodularSetFnReduction:
 # The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
 # Keep this for now, might use it if we decompose into non-decreasing DR-submodular functions.
 # I stopped updating this for now.
-class SubmodularSetFnReduction:
+class BinarySubmodularSetFnReduction:
     """Implement binary representation reduction from a DR-submodular discrete function F: V^n -> R, 
     where V = {0, 1,..., k - 1} and k = 2^b, to a submodular set function F_set: 2^([n] x [b]) -> R.
 
@@ -336,7 +355,8 @@ class SubmodularSetFnReduction:
 
 
 def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]], weights: Tensor, X: Tensor, tie_breaker: Optional[Tensor] = None): 
-    """Compute a subgradient of the Lovasz extension f_L of a submodular set function F_set: 2^([n] x [b]) -> R using Edmonds' greedy algorithm.
+    """Compute a subgradient of the Lovasz extension f_L of a submodular set function F_set: 2^([n] x [b]) -> R 
+    using Edmonds' greedy algorithm.
 
     F_set is given by F_set(S) = F(M(S)) where M: 2^([n] x [b]) -> V^n is [M(S)]_i = \sum_{(i, j) in S} weights[j].
     Weights can be for example powers of 2 for the binary representation map or a_i's from Ene-Nguyen's reduction.
@@ -383,10 +403,21 @@ def subgradient_lovasz_extension(F_batch: Callable[[Tensor], Tuple[Tensor, int]]
     Fvalues, flops = F_batch(x_chain) 
     assert Fvalues.shape[0] == n * b, "F_batch must return one scalar per input row"
 
-    # compute subgradient g_i = F(x^i) - F(x^{i-1}), assume F(0) = 0
+    # compute subgradient g_i = F_set(S^i) - F_set(S^{i-1}), assume F_set(emptyset) = 0
     subgradient = torch.zeros_like(Fvalues)  # (n * b,)
     subgradient[sorted_idx] = torch.diff(Fvalues, prepend=torch.zeros(1, dtype=Fvalues.dtype, device=Fvalues.device))
     subgradient = subgradient.view_as(X) # (n, b)
 
     return subgradient, Fvalues, x_chain, flops
 
+class SetFnLinearCombination:
+    """Linear combination of set functions F_i: 2^([n] x [b]) -> R.
+    
+    F_set(S) = \sum_{i=1} \alpha_i F_i(S)
+    """
+    def __init__(self, F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]], alphas: List[float]):
+        self.F_set_batch = F_set_batch
+        self.alphas = alphas
+
+    def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
+        return self.F_set_batch(rows_list, cols_list)
