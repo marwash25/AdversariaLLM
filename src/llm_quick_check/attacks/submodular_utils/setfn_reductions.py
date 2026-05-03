@@ -52,12 +52,12 @@ def subgradient_lovasz_extension(
         sorted_idx = torch.argsort(tie_breaker.flatten(), descending=True, stable=True)
         sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], descending=True, stable=True)]
 
-    # evaluate F(x^i) for all x^i corresponding to S^i = {(rows[0], cols[0]), ..., (rows[i], cols[i])}
+    # evaluate F(x^i) for all x^i corresponding to S^i = {(rows[0], cols[0]), ..., (rows[i-1], cols[i-1])} for i in [n * b]
     rows, cols = torch.unravel_index(sorted_idx, X.shape)  # both are (n x b,)
     Fvalues, x_chain, flops = F_batch.eval_chain(rows, cols, weights)
     assert Fvalues.shape[0] == n * b, "F_batch must return one scalar per input row"
 
-    # compute subgradient g_i = F_set(S^i) - F_set(S^{i-1}), assume F_set(emptyset) = 0
+    # compute subgradient G[rows[i], cols[i]] = F_set(S^i) - F_set(S^{i-1}) = F(x^i) - F(x^{i-1}), assume F(0)= 0
     subgradient = torch.zeros_like(Fvalues)  # (n * b,)
     subgradient[sorted_idx] = torch.diff(Fvalues, prepend=torch.zeros(1, dtype=Fvalues.dtype, device=Fvalues.device))
     subgradient = subgradient.view_as(X)  # (n, b)
