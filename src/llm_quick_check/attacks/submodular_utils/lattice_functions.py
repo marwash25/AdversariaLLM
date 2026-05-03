@@ -1,5 +1,5 @@
 """
-Lattice function base class and subclasses.
+Lattice function base classes and instances.
 """
 
 from abc import ABC, abstractmethod
@@ -8,6 +8,8 @@ from typing import Callable, Optional, Tuple
 import torch
 from torch import Tensor
 
+# TODO: for now we only use flops for forward passes. Create a class for GCG loss that tracks flops count 
+# in its state, and remove flops everywhere else
 
 class LatticeFunction(ABC):
     """Base class for lattice functions F: V^n -> R with batched evaluation and evaluation along a chain of inputs.
@@ -49,9 +51,14 @@ class LatticeFunction(ABC):
         """
         assert rows.device == cols.device == weights.device, "rows, cols, and weights must be on the same device"
 
-        x = torch.zeros(self.n, dtype=torch.long, device=rows.device)
-        x_chain = torch.empty((rows.shape[0], self.n), dtype=torch.long, device=rows.device)  # (m, n)
-        for i in range(rows.shape[0]):
+        m = rows.shape[0]
+        device = rows.device
+        x = torch.zeros(self.n, dtype=torch.long, device=device)
+        x_chain = torch.empty((m, self.n), dtype=torch.long, device=device)  # (m, n)
+        if m==0:
+            return torch.empty((0,), device=device), x_chain, 0
+            
+        for i in range(m):
             x[rows[i]] += weights[cols[i]]
             x_chain[i] = x
 
@@ -117,7 +124,7 @@ class SequentialLatticeFunction(LatticeFunction):
         self.current_val = vals[0]
         return self.current_val, flops
 
-    def remove(self, i: int, weight: Tensor) -> int:
+    def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, int]:
         """Decrement current_x[i] by weight, and update current_val to F at the new x
         Default: call eval_batch. Override for more efficient update.
         
@@ -142,17 +149,19 @@ class SequentialLatticeFunction(LatticeFunction):
         device = rows.device
         m = rows.shape[0]
         x_chain = torch.empty((m, self.n), dtype=torch.long, device=device)
-        Fvalues = torch.empty((m,), dtype=self.current_val.dtype, device=device)
-        flops = 0
-        if m > 0:
-            # set state to x^1 
-            x_chain[0] = torch.zeros(self.n, dtype=torch.long, device=device)
-            x_chain[0][rows[0]] += weights[cols[0]] 
-            Fvalues[0], flops = self.set_state(x_chain[0])
-            for i in range(1, m):
-                flops += self.add(rows[i], weights[cols[i]])
-                x_chain[i] = self.current_x
-                Fvalues[i] = self.current_val
+        if m==0:
+            return torch.empty((0,), device=device), x_chain, 0
+
+        # set state to x^1 
+        x_chain[0] = torch.zeros(self.n, dtype=torch.long, device=device)
+        x_chain[0][rows[0]] += weights[cols[0]] 
+        Fx1_val, flops = self.set_state(x_chain[0])
+        Fvalues = torch.empty((m,), dtype=Fx1_val.dtype, device=device)
+        Fvalues[0] = Fx1_val
+        for i in range(1, m):
+            flops += self.add(rows[i], weights[cols[i]])[1]
+            x_chain[i] = self.current_x
+            Fvalues[i] = self.current_val
         return Fvalues, x_chain, flops
 
 
@@ -181,7 +190,7 @@ class QuadraticFn(SequentialLatticeFunction):
             self._sum_x = None
         elif Q.dim() == 2 and Q.shape[0] == Q.shape[1]:
             assert n is None or n == Q.shape[0], "n must match Q.shape[0] when both are given"
-            assert Q == Q.T, "Q must be symmetric"
+            assert torch.equal(Q, Q.T), "Q must be symmetric" # switch to allclose if we want to allow small numerical errors
             n = Q.shape[0]
         else:
             raise ValueError("Q must be a square matrix or a scalar tensor (constant c) with n set")
@@ -205,7 +214,7 @@ class QuadraticFn(SequentialLatticeFunction):
         return val, flops
 
     def add(self, i: int, weight: Tensor) -> Tuple[Tensor, int]:  
-        assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and w must be on the same device"
+        assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
         if self.Q.dim() == 0:
             assert self._sum_x is not None
             self.current_x[i] += weight
@@ -218,7 +227,7 @@ class QuadraticFn(SequentialLatticeFunction):
         return self.current_val, 0
 
     def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, int]:
-        assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and w must be on the same device"
+        assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
         if self.Q.dim() == 0:
             assert self._sum_x is not None
             self.current_x[i] -= weight
@@ -226,7 +235,7 @@ class QuadraticFn(SequentialLatticeFunction):
             self.current_val = 0.5 * self.Q * self._sum_x**2 
             # alternatively: self.current_val -= self.Q * (weight * sum_x_old + 0.5 * weight^2) 
         else: 
-            self.current_val -= weight * (self.Q[i, :] * self.current_x).sum() + 0.5 * weight**2 * self.Q[i, i]
+            self.current_val -= (weight * (self.Q[i, :] * self.current_x).sum() - 0.5 * weight**2 * self.Q[i, i])
             self.current_x[i] -= weight
         return self.current_val, 0
 
@@ -242,13 +251,13 @@ class ModularFn(SequentialLatticeFunction):
         assert x.device == self.w.device, "x and w must be on the same device"
         return (x * self.w).sum(dim=1), 0
 
-    def add(self, i: int, weight: Tensor) -> int:
+    def add(self, i: int, weight: Tensor) -> Tuple[Tensor, int]:
         assert weight.device == self.w.device == self.current_x.device, "weight, current_x and w must be on the same device"
         self.current_x[i] += weight
         self.current_val += weight * self.w[i]
         return self.current_val, 0
 
-    def remove(self, i: int, weight: Tensor) -> int:
+    def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, int]:
         assert weight.device == self.w.device == self.current_x.device, "weight, current_x and w must be on the same device"
         self.current_x[i] -= weight
         self.current_val -= weight * self.w[i]
