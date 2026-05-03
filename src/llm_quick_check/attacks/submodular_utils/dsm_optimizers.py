@@ -1,5 +1,5 @@
 """
-Difference of submodular minimization algorithms
+Difference of submodular minimization optimizers
 """
 import torch
 from typing import Callable, List, Optional, Tuple, Literal
