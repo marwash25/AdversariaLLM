@@ -2,7 +2,13 @@
 Difference of submodular minimization utilities used by DSM attack.
 """
 
-from .lattice_functions import CallableLatticeFunction, LatticeFunction, Quadratic
+from .lattice_functions import (
+    CallableLatticeFunction,
+    LatticeFunction,
+    ModularFn,
+    QuadraticFn,
+    SequentialLatticeFunction,
+)
 from .setfn_reductions import (
     EneSubmodularSetFnReduction,
     SubmodularSetFnReduction,
@@ -14,7 +20,9 @@ __all__ = [
     "CallableLatticeFunction",
     "EneSubmodularSetFnReduction",
     "LatticeFunction",
-    "Quadratic",
+    "ModularFn",
+    "QuadraticFn",
+    "SequentialLatticeFunction",
     "SubmodularSetFnReduction",
     "subgradient_lovasz_extension",
     "dca_dsm",
