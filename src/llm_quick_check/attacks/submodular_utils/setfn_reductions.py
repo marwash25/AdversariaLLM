@@ -205,7 +205,7 @@ class SetFnReduction(ABC):
 
         F_min, min_idx = torch.min(Fvalues, dim=0)
         if F_min >= 0:
-            F_min = 0
+            F_min = 0.0
             x_min = torch.zeros_like(x_chain[0])
         else:
             F_min = F_min.item()
@@ -356,10 +356,11 @@ class SetFnLinearCombination:
 
     F_set(S) = sum_{i=1} alpha_i F_i(S)
     """
+    #TODO: implement this
+    
+    # def __init__(self, F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]], alphas: List[float]):
+    #     self.F_set_batch = F_set_batch
+    #     self.alphas = alphas
 
-    def __init__(self, F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]], alphas: List[float]):
-        self.F_set_batch = F_set_batch
-        self.alphas = alphas
-
-    def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
-        return self.F_set_batch(rows_list, cols_list)
+    # def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
+    #     return self.F_set_batch(rows_list, cols_list)

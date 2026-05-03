@@ -170,7 +170,6 @@ class DSMAttack(Attack):
                 f"e.g. {invalid_optim_ids[:5].tolist()}."
             )
     
-
         # define loss_fn over V^n where V = {0, 1, ..., valid_vocab_size - 1} and n = n_optim_tokens
         loss_fn = lambda attack_ids: compute_loss(
             model, self.valid_token_ids[attack_ids], tokens, target_mask, attack_mask, self.config.lm_reg_weight
@@ -185,6 +184,8 @@ class DSMAttack(Attack):
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
             pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, gap_tol=None)
+        
+        flops[0] = F_0_flops
 
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[discrete_sols]
