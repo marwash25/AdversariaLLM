@@ -35,7 +35,7 @@ class LatticeFunction(ABC):
         return self.eval_batch(x)
 
     def eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, n: int
+        self, rows: Tensor, cols: Tensor, weights: Tensor,
     ) -> Tuple[Tensor, Tensor, int]:
         """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i]] * e_{rows[i]}.
 
@@ -51,7 +51,7 @@ class LatticeFunction(ABC):
             flops: flop count, int. 
         """
         x = torch.zeros(self.n, dtype=torch.long, device=rows.device)
-        x_chain = torch.empty((rows.shape[0], n), dtype=torch.long, device=rows.device)  # (m, n)
+        x_chain = torch.empty((rows.shape[0], self.n), dtype=torch.long, device=rows.device)  # (m, n)
         for i in range(rows.shape[0]):
             x[rows[i]] += weights[cols[i]]
             x_chain[i] = x
@@ -67,7 +67,8 @@ class CallableLatticeFunction(LatticeFunction):
 
     __slots__ = ("_F_batch",)
 
-    def __init__(self, F_batch: Callable[[Tensor], Tuple[Tensor, int]]):
+    def __init__(self, n: int, F_batch: Callable[[Tensor], Tuple[Tensor, int]]):
+        super().__init__(n)
         self._F_batch = F_batch
 
     def eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
