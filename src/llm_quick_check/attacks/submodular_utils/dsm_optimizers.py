@@ -56,7 +56,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     if x_init.dim() == 1:
         x_init = x_init.unsqueeze(0)
     # map x_init to X in [0,1]^n x b
-    X = F_set_batch.ints2binary(x_init)[0]
+    X = F_set_batch.ints2binary(x_init)[0].to(dtype=torch.float)
 
     n, b = X.shape
     D = sqrt(n*b) # domain diameter
@@ -90,7 +90,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
 
     for iter in (pbar := trange(num_steps+1, file=sys.stdout)):
         subgradient, Fvalues, x_chain, flops_subgrad = F_set_batch.subgradient_lovasz_extension(X)
-        F_round, x_round = F_set_batch.round_lovasz_extension(X, Fvalues, x_chain)
+        F_round, x_round = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
         cont_value = F_set_batch.lovasz_extension(X, subgradient)
         
         if F_round < best_discrete_obj: 
@@ -181,7 +181,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
 #     if x_init.dim() == 1:
 #         x_init = x_init.unsqueeze(0)
 #     # map x_init to X in [0,1]^n x b
-#     X = F_set_batch.ints2binary(x_init)[0]
+#     X = F_set_batch.ints2binary(x_init)[0].to(dtype=torch.float)
 #     n, b = X.shape
 
 #     flops_L_G = 0
