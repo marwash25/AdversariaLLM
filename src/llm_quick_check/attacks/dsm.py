@@ -189,7 +189,7 @@ class DSMAttack(Attack):
         filter_zero = False
         if self.config.filter_ids: 
             if self.config.placement == "suffix":
-                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, attack_ids.cpu()]])
+                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[attack_ids].cpu()]])
                 try:  # check if zero_attack_ids is reachable
                     filter_fn(zero_attack_ids)
                 except RuntimeError:
@@ -234,15 +234,19 @@ class DSMAttack(Attack):
         # get tokens of attack conversations with otimized attack strings and empty assistant content
         prompt_token_list = []
         attack_conversations = []
-        skipped_optim_strings = []
         for idx, attack in enumerate(optim_strings):
             try:
                 parts, attack_conversation = self._prepare_single_conversation(conversation, tokenizer, attack, generation=True)
-            except TokenMergeError: # can still happen even with filtering if one of the solutions is zero and it's unreachable
-                # skip, and decrease num of optim_strings
-                logging.warning(f"TokenMergeError encountered for attack: {attack}. Skipping generation for it.")
-                skipped_optim_strings.append(idx)
-                continue
+            except TokenMergeError: 
+                if self.config.filter_ids:
+                    raise ValueError(f"TokenMergeError encountered for attack: {attack} at step {idx}. This should not happen when filtering is enabled.")
+                else:
+                    logging.warning(f"TokenMergeError encountered for attack: {attack} at step {idx}. Skipping it.")
+                    optim_strings.pop(idx)
+                    losses.pop(idx)
+                    times.pop(idx)
+                    flops.pop(idx)
+                    continue
 
             prompt_token_list.append(torch.cat(parts[:5]))
             attack_conversations.append(attack_conversation)
@@ -258,7 +262,7 @@ class DSMAttack(Attack):
             top_p=self.config.generation_config.top_p,
             top_k=self.config.generation_config.top_k,
             num_return_sequences=self.config.generation_config.num_return_sequences,
-            initial_batch_size=len(optim_strings) - len(skipped_optim_strings),  # change to size of the full dataset if we switch to batched optimization
+            initial_batch_size=len(optim_strings),  # change to size of the full dataset if we switch to batched optimization
         )
         t_end_gen = time.time()
         gen_time_total = t_end_gen - t_start_gen
