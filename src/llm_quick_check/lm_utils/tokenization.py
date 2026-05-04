@@ -430,7 +430,7 @@ def filter_suffix(
     retain_idx : List[int]
         Indices into the search dimension where token ids are stable under decode/encode.
 
-    M: only used in GCG-style attacks (gcg, gcg_refusal, gcg_reinforce). Supports all attack placements (depsite name).
+    M: only used in GCG-style attacks (gcg, gcg_refusal, gcg_reinforce). Supports all attack placements (despite name).
     """
     # Structural assertions
     assert all(len(turn_ids) == 2 for turn_ids in ids), "Each conversation turn must contain [prefix, suffix]."

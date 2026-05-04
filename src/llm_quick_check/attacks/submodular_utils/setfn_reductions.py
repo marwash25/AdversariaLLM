@@ -81,11 +81,13 @@ class SetFnReduction(ABC):
         k: int,
         n: int,
         device: torch.device,
+        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
     ):
         self.F_batch: LatticeFunction = (
             F_batch if isinstance(F_batch, LatticeFunction)
             else CallableLatticeFunction(n, F_batch)
         )
+        self.filter_fn = filter_fn
         self.device = device
         self.k = k
         self.n = n
@@ -180,7 +182,7 @@ class SetFnReduction(ABC):
            If F_set is submodular, this is a valid bound on the Lipschitz constant
            of its Lovasz extension f_L.
         """
-        # We evaluate all singletons in one batched call to F_set_batch.
+        # evaluate all singletons in one batched call to F_set_batch.
         rows = torch.arange(self.n * self.b, device=self.device, dtype=torch.long) // self.b
         cols = torch.arange(self.n * self.b, device=self.device, dtype=torch.long) % self.b
         rows_list = [r.view(1) for r in rows]
@@ -203,6 +205,13 @@ class SetFnReduction(ABC):
         if Fvalues is None or x_chain is None:
             assert X is not None, "X must be provided if Fvalues and x_chain are not provided"
             _, Fvalues, x_chain, _ = self.subgradient_lovasz_extension(X)
+
+        
+        if self.filter_fn is not None:
+            # drop x^i's in the chain whose full prompt tokenization would be unreachable from any input string
+            retain_idx = self.filter_fn(x_chain)
+            x_chain = x_chain[retain_idx]
+            Fvalues = Fvalues[retain_idx]
 
         F_min, min_idx = torch.min(Fvalues, dim=0)
         if F_min >= 0:

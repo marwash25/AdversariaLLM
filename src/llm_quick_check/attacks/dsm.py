@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from ..dataset import PromptDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
-from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids
+from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix
 from ..types import Conversation
 from .submodular_utils import EneSubmodularSetFnReduction, pgm_lovasz
 
@@ -170,17 +170,33 @@ class DSMAttack(Attack):
                 f"e.g. {invalid_optim_ids[:5].tolist()}."
             )
     
+
         # define loss_fn over V^n where V = {0, 1, ..., valid_vocab_size - 1} and n = n_optim_tokens
         loss_fn = lambda attack_ids: compute_loss(
             model, self.valid_token_ids[attack_ids], tokens, target_mask, attack_mask, self.config.lm_reg_weight
         )
-        F_0, F_0_flops = loss_fn(torch.zeros_like(optim_ids_reduced))
+        zero_attack_ids = torch.zeros_like(optim_ids_reduced)
+        F_0, F_0_flops = loss_fn(zero_attack_ids)
         logging.info(f"Loss at zero F(0): {F_0.item():.4f}")
         # normalize F(0) = 0
         def F_batch(attack_ids):
             loss, flops = loss_fn(attack_ids)
             return loss - F_0, flops
-        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device)
+
+        # define filter function
+        filter_fn = None
+        if self.config.filter_ids: 
+            if self.config.placement == "suffix":
+                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation,[[None, attack_ids.cpu()]])
+                # check if zero_attack_ids is reachable
+                retain_idx = filter_fn(zero_attack_ids)
+                if retain_idx.numel() == 0: # TODO: decide what to do in this case
+                    raise ValueError("Zero attack ids is not reachable from any input string.")
+            else:
+                # TODO: adapt filter function for other placements
+                raise ValueError(f"Filtering for {self.config.placement} placement not supported yet.")
+
+        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device, filter_fn)
        
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
