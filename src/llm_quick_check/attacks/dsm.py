@@ -175,6 +175,7 @@ class DSMAttack(Attack):
             model, self.valid_token_ids[attack_ids], tokens, target_mask, attack_mask, self.config.lm_reg_weight
         )
         F_0, F_0_flops = loss_fn(torch.zeros_like(optim_ids_reduced))
+        logging.info(f"Loss at zero F(0): {F_0.item():.4f}")
         # normalize F(0) = 0
         def F_batch(attack_ids):
             loss, flops = loss_fn(attack_ids)
@@ -185,12 +186,12 @@ class DSMAttack(Attack):
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
             pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, gap_tol=None)
         
-        flops[0] = F_0_flops
+        flops[0] += F_0_flops
 
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[discrete_sols]
         optim_strings = tokenizer.batch_decode(optim_ids.cpu())  # decode handles batching in v5.3+, keeping batch_decode to support older versions
-        losses = discrete_obj_values
+        losses = [val + F_0.item() for val in discrete_obj_values]
 
         # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
         # for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):

@@ -196,11 +196,12 @@ class SetFnReduction(ABC):
         return (X * subgradient).sum().item()
 
     def round_lovasz_extension(
-        self, X: Tensor, Fvalues: Optional[Tensor] = None, x_chain: Optional[Tensor] = None
+        self, X: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None, x_chain: Optional[Tensor] = None
     ) -> Tuple[float, Tensor]:
         """Round X in [0,1]^n x b to a subset S_min in [n] x [b] such that F_set(S_min) <= f_L(X)
         and map to corresponding x_min = M(S_min) in V^n"""
         if Fvalues is None or x_chain is None:
+            assert X is not None, "X must be provided if Fvalues and x_chain are not provided"
             _, Fvalues, x_chain, _ = self.subgradient_lovasz_extension(X)
 
         F_min, min_idx = torch.min(Fvalues, dim=0)
