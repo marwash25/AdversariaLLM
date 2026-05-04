@@ -199,7 +199,7 @@ class DSMAttack(Attack):
        
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
-            pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, gap_tol=None)
+            pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, tie_break=self.config.pgm_tie_break, gap_tol=None)
 
         plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps)
 

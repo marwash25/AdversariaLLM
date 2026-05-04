@@ -17,7 +17,7 @@ from .setfn_reductions import SetFnReduction
 # for now let's implement it as a standalone function similar to Matlab code
 # Note that this is will be mostly used for non-submodular functions. In DCA, we will use MNP as inner solver.
 # TODO: if used for submodular functions, add ground set trimming and set L to upper bound sqrt(sum_i F_set(i)^2) if not provided
-def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: float | str, gap_tol: Optional[float] = None):
+def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: float | str, tie_break: Literal["random"] = None, gap_tol: Optional[float] = None):
     """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a set function reduction F_set: 2^([n] x [b]) -> R
     of a discrete function F: V^n -> R.
@@ -89,7 +89,8 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     # best_continuous_obj = inf
 
     for iter in (pbar := trange(num_steps+1, file=sys.stdout)):
-        subgradient, Fvalues, x_chain, flops_subgrad = F_set_batch.subgradient_lovasz_extension(X)
+        tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b) if tie_break == "random" else None
+        subgradient, Fvalues, x_chain, flops_subgrad = F_set_batch.subgradient_lovasz_extension(X, tie_breaker)
         F_round, x_round = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
         cont_value = F_set_batch.lovasz_extension(X, subgradient)
         

@@ -392,9 +392,10 @@ dsm:
   seed: ${attacks._default.seed}
   generation_config: ${attacks._default.generation_config}
   optim_str_init: "x x x x x x x x x x x x x x x x x x x x" # all tested tokenizers convert this to exactly 20 tokens
-  num_steps: 100
+  num_steps: 300
   lm_reg_weight: 0.0
-  pgm_L: 'singletons'
+  pgm_L: 'normalize' # 'singletons' or 'normalize'
+  pgm_tie_break: "random" # "random" or "none"
   optimizer: "pgm" # "pgm" or "dca"
   dca_config:
     outer_tol: 1e-5
