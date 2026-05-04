@@ -3,6 +3,8 @@ import copy
 import time
 import logging
 import sys
+import os
+from datetime import datetime
 import matplotlib.pyplot as plt
 from tqdm import trange
 from typing import List, Tuple, Callable, Any
@@ -141,20 +143,16 @@ class DSMAttack(Attack):
 
         runs = []
         for idx, conversation in enumerate(conversations):
-            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx]))
+            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx], dataset_idx=self.dataset_params["idx"][idx]))
 
         return AttackResult(runs=runs)
 
-    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask) -> SingleAttackRunResult:
+    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask, dataset_idx: int) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
         #TODO: add early stopping if exact match found as done in GCG.
         logging.info(f"Starting attack for conversation: {conversation}")
         t_start = time.time()
         # --- Optimize Attack ---
-        # TODO: Implement optimization loop here.
-        # TODO: compute loss for initial optim_str. GCG does that in init_buffer
-        # it doesn't create a AttackStepResult for it but it uses it for initialization of best loss and best optim_ids
-        # so to be consistent with it and other attacks I won't do that either
         device = model.device
         tokens = tokens.to(device)
         attack_mask = attack_mask.to(device)
@@ -205,7 +203,7 @@ class DSMAttack(Attack):
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
             pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, gap_tol=None)
 
-        plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps)
+        plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps, self.config.save_dir, dataset_idx)
 
         flops[0] += F_0_flops
 
@@ -214,7 +212,6 @@ class DSMAttack(Attack):
         optim_strings = tokenizer.batch_decode(optim_ids.cpu())  # decode handles batching in v5.3+, keeping batch_decode to support older versions
         losses = [val + F_0.item() for val in discrete_obj_values]
 
-        # TODO: check if optim_ids is reachable using filter_suffix as done in GCG.
         # for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
         #     current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_set_batch)
         #     losses.append(current_loss)
@@ -274,7 +271,7 @@ class DSMAttack(Attack):
         t_end = time.time()
 
         # --- Assemble Results ---
-        #TODO: If we want to also store continuou loss and duality gap, we can create subclasses of AttackStepResult for that.
+        #TODO: If we want to also store continuous loss and duality gap, we can create subclasses of AttackStepResult for that.
         steps_results = []
         for i in range(len(optim_strings)):
             step_result = AttackStepResult(
@@ -440,7 +437,13 @@ class DSMAttack(Attack):
 
         return parts, attack_conversation
 
-def plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps):
+def plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps, save_dir: str, idx: int):
+    # save figure in the same directory and with the same name format used in log_attack for results json file
+    date_time_string = datetime.now().strftime("%Y-%m-%d/%Hh%Mm%Ss")
+    date_string, time_string = date_time_string.split("/")
+    filename = os.path.join(save_dir, f"run-{idx}__{date_string}__{time_string}_pgm_curves.png")
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+
     steps_axis = range(len(discrete_obj_values))
     fig, (ax_obj, ax_gap) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
     ax_obj.plot(steps_axis, discrete_obj_values, label=r"Discrete $F(x^t)$", marker="o", ms=3)
@@ -452,7 +455,7 @@ def plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps):
     ax_gap.set_xlabel("PGM iteration")
     ax_gap.set_ylabel("Duality gap")
     ax_gap.grid(True, alpha=0.3)
-    fig.suptitle("DSM PGM trace")
+    fig.suptitle("PGM objective values and duality gap")
     fig.tight_layout()
-    fig.savefig("dsm_pgm_curves.png", dpi=150)
+    fig.savefig(filename, dpi=150)
     plt.close(fig)
