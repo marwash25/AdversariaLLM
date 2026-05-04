@@ -3,8 +3,6 @@ import copy
 import time
 import logging
 import sys
-import os
-from datetime import datetime
 import matplotlib.pyplot as plt
 from tqdm import trange
 from typing import List, Tuple, Callable, Any
@@ -143,11 +141,11 @@ class DSMAttack(Attack):
 
         runs = []
         for idx, conversation in enumerate(conversations):
-            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx], dataset_idx=self.dataset_params["idx"][idx]))
+            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx]))
 
         return AttackResult(runs=runs)
 
-    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask, dataset_idx: int) -> SingleAttackRunResult:
+    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
         #TODO: add early stopping if exact match found as done in GCG.
         logging.info(f"Starting attack for conversation: {conversation}")
@@ -203,7 +201,7 @@ class DSMAttack(Attack):
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
             pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, gap_tol=None)
 
-        plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps, self.config.save_dir, dataset_idx)
+        plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps)
 
         flops[0] += F_0_flops
 
@@ -437,12 +435,8 @@ class DSMAttack(Attack):
 
         return parts, attack_conversation
 
-def plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps, save_dir: str, idx: int):
-    # save figure in the same directory and with the same name format used in log_attack for results json file
-    date_time_string = datetime.now().strftime("%Y-%m-%d/%Hh%Mm%Ss")
-    date_string, time_string = date_time_string.split("/")
-    filename = os.path.join(save_dir, f"run-{idx}__{date_string}__{time_string}_pgm_curves.png")
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
+def plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps):
+    # figure will be saved in Hydra run directory ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
 
     steps_axis = range(len(discrete_obj_values))
     fig, (ax_obj, ax_gap) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
@@ -457,5 +451,5 @@ def plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps, sa
     ax_gap.grid(True, alpha=0.3)
     fig.suptitle("PGM objective values and duality gap")
     fig.tight_layout()
-    fig.savefig(filename, dpi=150)
+    fig.savefig("pgm_curves.png", dpi=150)
     plt.close(fig)
