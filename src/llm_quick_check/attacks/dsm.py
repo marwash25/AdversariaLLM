@@ -3,6 +3,7 @@ import copy
 import time
 import logging
 import sys
+import matplotlib.pyplot as plt
 from tqdm import trange
 from typing import List, Tuple, Callable, Any
 import torch
@@ -185,23 +186,27 @@ class DSMAttack(Attack):
 
         # define filter function
         filter_fn = None
+        filter_zero = False
         if self.config.filter_ids: 
             if self.config.placement == "suffix":
-                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation,[[None, attack_ids.cpu()]])
-                # check if zero_attack_ids is reachable
-                retain_idx = filter_fn(zero_attack_ids)
-                if retain_idx.numel() == 0: # TODO: decide what to do in this case
-                    raise ValueError("Zero attack ids is not reachable from any input string.")
+                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, attack_ids.cpu()]])
+                try:  # check if zero_attack_ids is reachable
+                    filter_fn(zero_attack_ids)
+                except RuntimeError:
+                    filter_zero = True
+                    logging.warning("Zero attack ids is not reachable from any input string. Will not round to zero during optimization.") 
             else:
                 # TODO: adapt filter function for other placements
                 raise ValueError(f"Filtering for {self.config.placement} placement not supported yet.")
 
-        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device, filter_fn)
+        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device, filter_fn, filter_zero)
        
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
         best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
             pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, gap_tol=None)
-        
+
+        plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps)
+
         flops[0] += F_0_flops
 
         # map back to original token ids and decode to strings
@@ -229,8 +234,16 @@ class DSMAttack(Attack):
         # get tokens of attack conversations with otimized attack strings and empty assistant content
         prompt_token_list = []
         attack_conversations = []
-        for attack in optim_strings:
-            parts, attack_conversation = self._prepare_single_conversation(conversation, tokenizer, attack, generation=True)
+        skipped_optim_strings = []
+        for idx, attack in enumerate(optim_strings):
+            try:
+                parts, attack_conversation = self._prepare_single_conversation(conversation, tokenizer, attack, generation=True)
+            except TokenMergeError: # can still happen even with filtering if one of the solutions is zero and it's unreachable
+                # skip, and decrease num of optim_strings
+                logging.warning(f"TokenMergeError encountered for attack: {attack}. Skipping generation for it.")
+                skipped_optim_strings.append(idx)
+                continue
+
             prompt_token_list.append(torch.cat(parts[:5]))
             attack_conversations.append(attack_conversation)
 
@@ -245,7 +258,7 @@ class DSMAttack(Attack):
             top_p=self.config.generation_config.top_p,
             top_k=self.config.generation_config.top_k,
             num_return_sequences=self.config.generation_config.num_return_sequences,
-            initial_batch_size=len(optim_strings),  # change to size of the full dataset if we switch to batched optimization
+            initial_batch_size=len(optim_strings) - len(skipped_optim_strings),  # change to size of the full dataset if we switch to batched optimization
         )
         t_end_gen = time.time()
         gen_time_total = t_end_gen - t_start_gen
@@ -422,3 +435,20 @@ class DSMAttack(Attack):
         parts = prepare_conversation(tokenizer, conversation, attack_conversation)[0]  # assumes single-turn conversation
 
         return parts, attack_conversation
+
+def plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps):
+    steps_axis = range(len(discrete_obj_values))
+    fig, (ax_obj, ax_gap) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+    ax_obj.plot(steps_axis, discrete_obj_values, label=r"Discrete $F(x^t)$", marker="o", ms=3)
+    ax_obj.plot(steps_axis, continuous_obj_values, label=r"Lovasz $f_L(X^t)$", marker="s", ms=3)
+    ax_obj.set_ylabel("Objective")
+    ax_obj.legend(loc="best")
+    ax_obj.grid(True, alpha=0.3)
+    ax_gap.plot(steps_axis, duality_gaps, color="C2", label="Duality gap", marker="^", ms=3)
+    ax_gap.set_xlabel("PGM iteration")
+    ax_gap.set_ylabel("Duality gap")
+    ax_gap.grid(True, alpha=0.3)
+    fig.suptitle("DSM PGM trace")
+    fig.tight_layout()
+    fig.savefig("dsm_pgm_curves.png", dpi=150)
+    plt.close(fig)

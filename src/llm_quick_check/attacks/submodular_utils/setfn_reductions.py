@@ -82,12 +82,14 @@ class SetFnReduction(ABC):
         n: int,
         device: torch.device,
         filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
+        filter_zero: bool = False,
     ):
         self.F_batch: LatticeFunction = (
             F_batch if isinstance(F_batch, LatticeFunction)
             else CallableLatticeFunction(n, F_batch)
         )
         self.filter_fn = filter_fn
+        self.filter_zero = filter_zero
         self.device = device
         self.k = k
         self.n = n
@@ -214,7 +216,7 @@ class SetFnReduction(ABC):
             Fvalues = Fvalues[retain_idx]
 
         F_min, min_idx = torch.min(Fvalues, dim=0)
-        if F_min >= 0:
+        if F_min >= 0 and not self.filter_zero: # if filter_zero is True, don't round to zero
             F_min = 0.0
             x_min = torch.zeros_like(x_chain[0])
         else:
@@ -242,9 +244,11 @@ class EneSubmodularSetFnReduction(SetFnReduction):
         k: int,
         n: int,
         device: torch.device,
+        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
+        filter_zero: bool = False,
     ):
         self.v_max = k - 1
-        super().__init__(F_batch, k, n, device)
+        super().__init__(F_batch, k, n, device, filter_fn, filter_zero)
 
     def get_weights(self) -> Tensor:
         """Multiset of b weights a_1, ..., a_b summing to v_max = k-1.
@@ -340,8 +344,10 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         k: int,
         n: int,
         device: torch.device,
+        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
+        filter_zero: bool = False,
     ):
-        super().__init__(F_batch, k, n, device)
+        super().__init__(F_batch, k, n, device, filter_fn, filter_zero)
 
     def get_weights(self) -> Tensor:
         b = int(log2(self.k))
