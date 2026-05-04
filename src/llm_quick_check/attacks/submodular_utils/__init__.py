@@ -11,10 +11,10 @@ from .lattice_functions import (
 )
 from .setfn_reductions import (
     EneSubmodularSetFnReduction,
-    SubmodularSetFnReduction,
+    SetFnReduction,
     subgradient_lovasz_extension,
 )
-from .dsm_optimizers import dca_dsm, pgm_lovasz
+from .dsm_optimizers import pgm_lovasz #dca_dsm
 
 __all__ = [
     "CallableLatticeFunction",
@@ -23,8 +23,8 @@ __all__ = [
     "ModularFn",
     "QuadraticFn",
     "SequentialLatticeFunction",
-    "SubmodularSetFnReduction",
+    "SetFnReduction",
     "subgradient_lovasz_extension",
-    "dca_dsm",
+    #"dca_dsm",
     "pgm_lovasz",
 ]
