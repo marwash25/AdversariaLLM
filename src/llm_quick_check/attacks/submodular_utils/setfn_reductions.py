@@ -52,8 +52,11 @@ def subgradient_lovasz_extension(
         sorted_idx = torch.argsort(tie_breaker.flatten(), descending=True, stable=True)
         sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], descending=True, stable=True)]
 
-    # evaluate F(x^i) for all x^i corresponding to S^i = {(rows[0], cols[0]), ..., (rows[i-1], cols[i-1])} for i in [n * b]
     rows, cols = torch.unravel_index(sorted_idx, X.shape)  # both are (n x b,)
+
+    # evaluate F(x^i) for all x^i corresponding to S^i = {(rows[0], cols[0]), ..., (rows[i-1], cols[i-1])} for i in [n * b]
+    # eval_chain computes x^i's sequentially which is more efficient than calling F_set_batch on S^i's which will compute 
+    # each x^i separately (O(n * b) vs O((n * b)^2)) 
     Fvalues, x_chain, flops = F_batch.eval_chain(rows, cols, weights)
     assert Fvalues.shape[0] == n * b, "F_batch must return one scalar per input row"
 
@@ -87,7 +90,7 @@ class SetFnReduction(ABC):
         self.F_batch: LatticeFunction = (
             F_batch if isinstance(F_batch, LatticeFunction)
             else CallableLatticeFunction(n, F_batch)
-        )
+        ) # this can be swapped out after initialization for any LatticeFunction on the same domain V^n
         self.filter_fn = filter_fn
         self.filter_zero = filter_zero
         self.device = device

@@ -178,7 +178,7 @@ class CallableLatticeFunction(LatticeFunction):
         return self._F_batch(x)
 
 
-class SetFnLinearCombination(LatticeFunction):
+class LinearCombinationLatticeFn(LatticeFunction):
     """Linear combination of lattice functions F_i: V^n -> R: F(x) = sum_{i=1} alpha_i F_i(x)
 
     Args:
@@ -333,7 +333,7 @@ class QuadraticFn(SequentialLatticeFunction):
         return self.current_val, 0
 
 
-class ModularFn(SequentialLatticeFunction):
+class ModularFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remove if not needed
     """Modular lattice function F(x) = w^T x."""
 
     def __init__(self, w: Tensor):

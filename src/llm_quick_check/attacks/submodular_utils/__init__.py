@@ -8,6 +8,7 @@ from .lattice_functions import (
     ModularFn,
     QuadraticFn,
     SequentialLatticeFunction,
+    LinearCombinationLatticeFn,
 )
 from .setfn_reductions import (
     EneSubmodularSetFnReduction,
@@ -18,6 +19,7 @@ from .dsm_optimizers import pgm_lovasz #dca_dsm
 
 __all__ = [
     "CallableLatticeFunction",
+    "LinearCombinationLatticeFn",
     "EneSubmodularSetFnReduction",
     "LatticeFunction",
     "ModularFn",
