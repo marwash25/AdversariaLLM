@@ -35,10 +35,12 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
 
     Returns:
         discrete_obj_values: List of T floats, discrete objective values F(x^t) for each iteration t.
+        discrete_obj_values_filtered: same as discrete_obj_values but with filtered solutions if filtering is enabled.
         T is number of iterations ran (includes initial iter, can be less than num_steps + 1 if converged before)
         continuous_obj_values: List of floats, continuous objective values f_L(X^t) for each iteration t.
         duality_gaps: List of floats, duality gaps for each iteration. Not true duality gaps if F_set is not submodular.
-        discrete_sols: Tensor of shape (T, n) and type long, discrete solutions x^t in V^n for each iteration t.
+        discrete_sols: Tensor of shape (T, n) and type long, discrete solutions x^t in V^n for each iteration t. 
+        If filtering is enabled, these are the filtered solutions.
         best_sol_idx: int, index of best discrete solution in discrete_sols.
         times: List of floats, times for each iteration.
         flops: List of ints, flops for each iteration. 
@@ -79,6 +81,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     assert L > 0, "Lipschitz constant L must be positive"
 
     discrete_obj_values = [0.0 for _ in range(num_steps+1)]
+    discrete_obj_values_filtered = [0.0 for _ in range(num_steps+1)]
     continuous_obj_values = [0.0 for _ in range(num_steps+1)]
     duality_gaps = [0.0 for _ in range(num_steps+1)] # if gap_tol is not None else None
     discrete_sols = torch.empty((num_steps+1, n), dtype=torch.long, device=X.device)
@@ -91,7 +94,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     for iter in (pbar := trange(num_steps+1, file=sys.stdout)):
         tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b) if tie_break == "random" else None
         subgradient, Fvalues, x_chain, flops_subgrad = F_set_batch.subgradient_lovasz_extension(X, tie_breaker)
-        F_round, x_round = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
+        F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
         cont_value = F_set_batch.lovasz_extension(X, subgradient)
         
         if F_round < best_discrete_obj: 
@@ -101,8 +104,11 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
             # best_continuous_obj = cont_value
 
         discrete_obj_values[iter] = F_round # best_discrete_obj
+        discrete_obj_values_filtered[iter] = F_round_filtered 
         continuous_obj_values[iter] = cont_value # best_continuous_obj
-        discrete_sols[iter] = x_round # x_best
+        if F_round_filtered > cont_value:
+            breakpoint()
+        discrete_sols[iter] = x_round_filtered # x_best
 
         # if gap_tol is not None: # not used if gap_tol is None but we can still compute it since it's relatively cheap
         dual_avg = (dual_avg * iter + subgradient) / (iter + 1)
@@ -142,12 +148,13 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
 
     continuous_obj_values = continuous_obj_values[:iter+1]
     discrete_obj_values = discrete_obj_values[:iter+1]
+    discrete_obj_values_filtered = discrete_obj_values_filtered[:iter+1]
     duality_gaps = duality_gaps[:iter+1]
     discrete_sols = discrete_sols[:iter+1, :]
     times = times[:iter+1]
     flops = flops[:iter+1]
     
-    return best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops
+    return best_sol_idx, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols, times, flops
 
 
 # def dca_dsm(F_set_batch: SetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 

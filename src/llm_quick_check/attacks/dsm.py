@@ -198,17 +198,17 @@ class DSMAttack(Attack):
         F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device, filter_fn, filter_zero)
        
         # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
-        best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
+        best_sol_idx, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
             pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, tie_break=self.config.pgm_tie_break, gap_tol=None)
 
-        plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps)
+        plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps)
 
         flops[0] += F_0_flops
 
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[discrete_sols]
         optim_strings = tokenizer.batch_decode(optim_ids.cpu())  # decode handles batching in v5.3+, keeping batch_decode to support older versions
-        losses = [val + F_0.item() for val in discrete_obj_values]
+        losses = [val + F_0.item() for val in discrete_obj_values_filtered]
 
         # for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
         #     current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_set_batch)

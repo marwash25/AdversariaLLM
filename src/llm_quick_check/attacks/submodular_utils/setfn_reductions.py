@@ -201,28 +201,33 @@ class SetFnReduction(ABC):
 
     def round_lovasz_extension(
         self, X: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None, x_chain: Optional[Tensor] = None
-    ) -> Tuple[float, Tensor]:
+    ) -> Tuple[float, Tensor, float, Tensor]:
         """Round X in [0,1]^n x b to a subset S_min in [n] x [b] such that F_set(S_min) <= f_L(X)
-        and map to corresponding x_min = M(S_min) in V^n"""
+        and map to corresponding x_min = M(S_min) in V^n
+        If filtering is enabled, F_min_filtered, x_min_filtered correspond to the minimum over only 
+        retained x^i's in the chain. Otherwise, they're the same as F_min, x_min. 
+        #TODO: remove this when done testing to avoid cost of two min?
+        """
         if Fvalues is None or x_chain is None:
             assert X is not None, "X must be provided if Fvalues and x_chain are not provided"
             _, Fvalues, x_chain, _ = self.subgradient_lovasz_extension(X)
 
-        
+        def round(Fvals: Tensor, sols: Tensor, filter_zero: bool) -> Tuple[float, Tensor]:
+            F_min, min_idx = torch.min(Fvals, dim=0)
+            if F_min >= 0 and not filter_zero:  # if filter_zero is True, don't round to zero
+                return 0.0, torch.zeros_like(sols[0])
+            return F_min.item(), sols[min_idx]
+
+        F_min, x_min = round(Fvalues, x_chain, False)
+
         if self.filter_fn is not None:
             # drop x^i's in the chain whose full prompt tokenization would be unreachable from any input string
             retain_idx = self.filter_fn(x_chain)
-            x_chain = x_chain[retain_idx]
-            Fvalues = Fvalues[retain_idx]
+            F_min_filtered, x_min_filtered = round(Fvalues[retain_idx], x_chain[retain_idx], self.filter_zero)
+        else:    
+            F_min_filtered, x_min_filtered = F_min, x_min
 
-        F_min, min_idx = torch.min(Fvalues, dim=0)
-        if F_min >= 0 and not self.filter_zero: # if filter_zero is True, don't round to zero
-            F_min = 0.0
-            x_min = torch.zeros_like(x_chain[0])
-        else:
-            F_min = F_min.item()
-            x_min = x_chain[min_idx]
-        return F_min, x_min
+        return F_min, x_min, F_min_filtered, x_min_filtered
 
 
 class EneSubmodularSetFnReduction(SetFnReduction):
@@ -367,7 +372,7 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         return x_bits
 
 
-class SetFnLinearCombination:
+class SetFnLinearCombination(LatticeFunction):
     """Linear combination of set functions F_i: 2^([n] x [b]) -> R.
 
     F_set(S) = sum_{i=1} alpha_i F_i(S)
