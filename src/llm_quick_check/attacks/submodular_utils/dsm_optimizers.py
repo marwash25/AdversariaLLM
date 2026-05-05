@@ -106,8 +106,6 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         discrete_obj_values[iter] = F_round # best_discrete_obj
         discrete_obj_values_filtered[iter] = F_round_filtered 
         continuous_obj_values[iter] = cont_value # best_continuous_obj
-        if F_round_filtered > cont_value:
-            breakpoint()
         discrete_sols[iter] = x_round_filtered # x_best
 
         # if gap_tol is not None: # not used if gap_tol is None but we can still compute it since it's relatively cheap
@@ -125,7 +123,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         if iter == 0: 
             flops[iter] += flops_L
 
-        pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
+        pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Discrete obj value filtered": discrete_obj_values_filtered[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
         if gap_tol is not None and duality_gaps[iter] <= gap_tol:
                 logging.info(f"Duality gap {duality_gap:.4f} <= tolerance {gap_tol:.4f} reached after {iter} iterations, stopping.")
                 break
