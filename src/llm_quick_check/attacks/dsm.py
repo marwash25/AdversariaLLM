@@ -5,7 +5,7 @@ import logging
 import sys
 import matplotlib.pyplot as plt
 from tqdm import trange
-from typing import List, Tuple, Callable, Any
+from typing import List, Tuple, Callable, Any, Literal
 import torch
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
@@ -16,6 +16,17 @@ from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, Si
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix
 from ..types import Conversation
 from .submodular_utils import EneSubmodularSetFnReduction, pgm_lovasz
+
+
+@dataclass
+class DCAConfig:
+    """Config for the DCA optimizer."""
+
+    outer_tol: float = 1e-5
+    inner_gap_tol: float = 1e-4
+    num_outer_steps: int = 1
+    num_inner_steps: int = 1
+    inner_solver: str = "pgm"
 
 
 @dataclass
@@ -32,9 +43,13 @@ class DSMConfig:
     optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
     num_steps: int = 1
     lm_reg_weight: float = 0.0  # weight on -log p(x|q) when using reg_ce
-    pgm_L: float | str = 'singletons' 
+    pgm_L: float | Literal["singletons", "normalize"] = "normalize"  # "singletons", "normalize", or a float value
+    pgm_tie_break: Literal["random"] | None = None  # "random" or None
+    optimizer: Literal["pgm", "dca"] = "pgm"  # "pgm" or "dca"
+    dca_config: DCAConfig = field(default_factory=DCAConfig)
     allow_non_ascii: bool = False
     allow_special: bool = False
+    filter_ids: bool = True
 
 
 def _masked_cross_entropy(
@@ -435,17 +450,18 @@ class DSMAttack(Attack):
 
         return parts, attack_conversation
 
-def plot_pgm_curves(discrete_obj_values, continuous_obj_values, duality_gaps):
+def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps):
     # figure will be saved in Hydra run directory ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
 
     steps_axis = range(len(discrete_obj_values))
     fig, (ax_obj, ax_gap) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
     ax_obj.plot(steps_axis, discrete_obj_values, label=r"Discrete $F(x^t)$", marker="o", ms=3)
+    ax_obj.plot(steps_axis, discrete_obj_values_filtered, label=r"Filtered Discrete $F(\tilde{x}^t)$", marker="x", ms=3)
     ax_obj.plot(steps_axis, continuous_obj_values, label=r"Lovasz $f_L(X^t)$", marker="s", ms=3)
     ax_obj.set_ylabel("Objective")
     ax_obj.legend(loc="best")
     ax_obj.grid(True, alpha=0.3)
-    ax_gap.plot(steps_axis, duality_gaps, color="C2", label="Duality gap", marker="^", ms=3)
+    ax_gap.plot(steps_axis, duality_gaps, color="black", label="Duality gap", marker="^", ms=3)
     ax_gap.set_xlabel("PGM iteration")
     ax_gap.set_ylabel("Duality gap")
     ax_gap.grid(True, alpha=0.3)
