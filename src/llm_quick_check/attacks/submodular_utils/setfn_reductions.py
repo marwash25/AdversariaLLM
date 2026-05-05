@@ -372,16 +372,3 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         return x_bits
 
 
-class SetFnLinearCombination(LatticeFunction):
-    """Linear combination of set functions F_i: 2^([n] x [b]) -> R.
-
-    F_set(S) = sum_{i=1} alpha_i F_i(S)
-    """
-    #TODO: implement this
-    
-    # def __init__(self, F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]], alphas: List[float]):
-    #     self.F_set_batch = F_set_batch
-    #     self.alphas = alphas
-
-    # def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
-    #     return self.F_set_batch(rows_list, cols_list)

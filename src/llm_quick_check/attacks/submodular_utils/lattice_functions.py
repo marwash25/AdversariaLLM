@@ -3,7 +3,7 @@ Lattice function base classes and instances.
 """
 
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple, List, Union
 
 import torch
 from torch import Tensor
@@ -53,11 +53,11 @@ class LatticeFunction(ABC):
 
         m = rows.shape[0]
         device = rows.device
-        x = torch.zeros(self.n, dtype=torch.long, device=device)
         x_chain = torch.empty((m, self.n), dtype=torch.long, device=device)  # (m, n)
         if m==0:
             return torch.empty((0,), device=device), x_chain, 0
-            
+        
+        x = torch.zeros(self.n, dtype=torch.long, device=device)
         for i in range(m):
             x[rows[i]] += weights[cols[i]]
             x_chain[i] = x
@@ -154,7 +154,7 @@ class SequentialLatticeFunction(LatticeFunction):
 
         # set state to x^1 
         x_chain[0] = torch.zeros(self.n, dtype=torch.long, device=device)
-        x_chain[0][rows[0]] += weights[cols[0]] 
+        x_chain[0][rows[0]] = weights[cols[0]] 
         Fx1_val, flops = self.set_state(x_chain[0])
         Fvalues = torch.empty((m,), dtype=Fx1_val.dtype, device=device)
         Fvalues[0] = Fx1_val
@@ -176,6 +176,99 @@ class CallableLatticeFunction(LatticeFunction):
 
     def eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
         return self._F_batch(x)
+
+
+class SetFnLinearCombination(LatticeFunction):
+    """Linear combination of lattice functions F_i: V^n -> R: F(x) = sum_{i=1} alpha_i F_i(x)
+
+    Args:
+        n: int, dimension of the lattice
+        F_batch_list: list of lattice functions or callable functions
+        alphas: list of floats
+    """
+    def __init__(self, n: int, F_batch_list: List[Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction]], alphas: List[float]):
+        super().__init__(n)
+        assert len(F_batch_list) == len(alphas), "F_batch_list and alphas must have the same length"
+        assert len(F_batch_list) > 0, "F_batch_list must be non-empty"
+        self.F_batch_list = [F_batch if isinstance(F_batch, LatticeFunction)
+            else CallableLatticeFunction(n, F_batch) for F_batch in F_batch_list]
+        self.alphas = alphas
+        self.seq_F_idx = [i for i, F in enumerate(self.F_batch_list) if isinstance(F, SequentialLatticeFunction)]
+        self.nonseq_F_idx = [i for i, F in enumerate(self.F_batch_list) if not isinstance(F, SequentialLatticeFunction)]
+
+    def eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
+        assert x.dim() == 2 and x.shape[1] == self.n, "x must have shape (batch_size, n)"
+        assert x.dtype == torch.long, "x must be of type long"
+
+        total_flops = 0
+        Fvalues = None
+        for alpha, F in zip(self.alphas, self.F_batch_list):
+            vals, flops = F.eval_batch(x)
+            total_flops += flops
+            if Fvalues is None:
+                Fvalues = alpha * vals
+            else:
+                Fvalues += alpha * vals
+
+        return Fvalues, total_flops
+
+    def eval_chain(
+        self, rows: Tensor, cols: Tensor, weights: Tensor,
+    ) -> Tuple[Tensor, Tensor, int]:
+        assert rows.device == cols.device == weights.device, "rows, cols, and weights must be on the same device"
+        device = rows.device
+        m = rows.shape[0]
+        
+        x_chain = torch.empty((m, self.n), dtype=torch.long, device=device)  # (m, n)
+        if m == 0:
+            return torch.empty((0,), device=device), x_chain, 0
+
+        # build x_chain 
+        x = torch.zeros(self.n, dtype=torch.long, device=device)
+        for i in range(m):
+            x[rows[i]] += weights[cols[i]]
+            x_chain[i] = x
+
+        # evaluate non-sequential Fns
+        # we don't use their eval_chain to avoid building x_chain several times
+        nonseq_flops = 0
+        nonseq_Fvalues = None
+        for F_idx in self.nonseq_F_idx:
+            F, alpha = self.F_batch_list[F_idx], self.alphas[F_idx]
+            vals, flops = F.eval_batch(x_chain)
+            nonseq_flops += flops
+            if nonseq_Fvalues is None:
+                nonseq_Fvalues = alpha * vals
+            else:
+                nonseq_Fvalues += alpha * vals
+
+        # evaluate sequential Fns
+        # we can call eval_chain of each seq fn. This is slightly more efficient
+        seq_flops = 0
+        seq_Fvalues = None
+        for F_idx in self.seq_F_idx:
+            F, alpha = self.F_batch_list[F_idx], self.alphas[F_idx]
+            # set state to x^1
+            Fx1_val, flops = F.set_state(x_chain[0])
+            seq_flops += flops
+            if seq_Fvalues is None:
+                seq_Fvalues = torch.zeros((m,), dtype=Fx1_val.dtype, device=device)
+            seq_Fvalues[0] += alpha * Fx1_val
+            
+            for i in range(1, m):
+                seq_flops += F.add(rows[i], weights[cols[i]])[1]
+                seq_Fvalues[i] += alpha * F.current_val 
+
+        if nonseq_Fvalues is None:
+            Fvalues = seq_Fvalues
+        elif seq_Fvalues is None:
+            Fvalues = nonseq_Fvalues
+        else:
+            Fvalues = nonseq_Fvalues + seq_Fvalues
+        total_flops = nonseq_flops + seq_flops
+
+        return Fvalues, x_chain, total_flops
+
 
 class QuadraticFn(SequentialLatticeFunction):
     """Quadratic lattice function F(x) = 0.5 * x^T Q x with symmetric Q.
