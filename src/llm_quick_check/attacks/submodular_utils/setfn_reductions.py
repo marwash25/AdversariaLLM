@@ -12,7 +12,7 @@ from .lattice_functions import CallableLatticeFunction, LatticeFunction
 
 
 def subgradient_lovasz_extension(
-    F_batch: LatticeFunction,
+    lattice_fn: LatticeFunction,
     weights: Tensor,
     X: Tensor,
     tie_breaker: Optional[Tensor] = None,
@@ -24,7 +24,7 @@ def subgradient_lovasz_extension(
     F is assumed to be normalized, i.e., F(0) = 0.
 
     Args:
-        F_batch: LatticeFunction instance for F.
+        lattice_fn: LatticeFunction instance for F.
         weights: Tensor of shape (b,)
         X: Tensor of shape (n, b) in [0,1]^n x b
         tie_breaker: Tensor of shape (n, b) used to break ties when sorting
@@ -39,9 +39,9 @@ def subgradient_lovasz_extension(
     assert X.dim() == 2, "X must be a 2D tensor"
     n, b = X.shape
     assert weights.dim() == 1 and weights.shape[0] == b, "weights must be a 1D tensor of shape (b,)"
-    assert F_batch.n == n, "F_batch.n must match X.shape[0]"
+    assert lattice_fn.n == n, "lattice_fn.n must match X.shape[0]"
     assert (
-        F_batch.eval_batch(torch.zeros(1, n, dtype=torch.long, device=X.device))[0].item() == 0
+        lattice_fn.eval_batch(torch.zeros(1, n, dtype=torch.long, device=X.device))[0].item() == 0
     ), "F must be normalized"
     if tie_breaker is not None:
         assert tie_breaker.shape == X.shape, "tie_breaker must be the same shape as X"
@@ -55,15 +55,15 @@ def subgradient_lovasz_extension(
     rows, cols = torch.unravel_index(sorted_idx, X.shape)  # both are (n x b,)
 
     # evaluate F(x^i) for all x^i corresponding to S^i = {(rows[0], cols[0]), ..., (rows[i-1], cols[i-1])} for i in [n * b]
-    # compute x^i's sequentially which is more efficient than calling F_set_batch on S^i's which will compute 
+    # compute x^i's sequentially which is more efficient than calling SetFnReduction.set_fn on S^i's which will compute 
     # each x^i separately (O(n * b) vs O((n * b)^2)) 
     x_chain = torch.empty((rows.shape[0], n), dtype=torch.long, device=X.device)  # (m, n)
     x = torch.zeros(n, dtype=torch.long, device=X.device)
     for i in range(rows.shape[0]):
         x[rows[i]] += weights[cols[i]]
         x_chain[i] = x
-    Fvalues, flops = F_batch.eval_chain(rows, cols, weights, x_chain)
-    assert Fvalues.shape[0] == n * b, "F_batch must return one scalar per input row"
+    Fvalues, flops = lattice_fn.eval_chain(rows, cols, weights, x_chain)
+    assert Fvalues.shape[0] == n * b, "lattice_fn must return one scalar per input row"
 
     # compute subgradient G[rows[i], cols[i]] = F_set(S^i) - F_set(S^{i-1}) = F(x^i) - F(x^{i-1}), assume F(0)= 0
     subgradient = torch.zeros_like(Fvalues)  # (n * b,)
@@ -190,7 +190,7 @@ class SetFnReduction():
 
     def __init__(
         self,
-        F_batch: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
+        lattice_fn: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
         reduction_map: SetToLatticeMap,
         filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
         filter_zero: bool = False,
@@ -199,28 +199,28 @@ class SetFnReduction():
         self.k = reduction_map.k
         self.n = reduction_map.n
         self.b = reduction_map.b
-        self.F_batch: LatticeFunction = (
-            F_batch if isinstance(F_batch, LatticeFunction)
-            else CallableLatticeFunction(self.n, F_batch)
+        self.lattice_fn: LatticeFunction = (
+            lattice_fn if isinstance(lattice_fn, LatticeFunction)
+            else CallableLatticeFunction(self.n, lattice_fn)
         )
-        assert self.F_batch.n == self.n, "F_batch.n must match reduction_map.n"
+        assert self.lattice_fn.n == self.n, "lattice_fn.n must match reduction_map.n"
         self.filter_fn = filter_fn
         self.filter_zero = filter_zero
         self.device = reduction_map.device
  
 
     def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
-        return self.F_set_batch(rows_list, cols_list)
+        return self.set_fn(rows_list, cols_list)
 
-    def F_set_batch(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:  # used in singleton_L_bound
+    def set_fn(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:  # used in singleton_L_bound
         """Batched version of F_set: 2^([n] x [b]) -> R: Compute F_set(S^i) for the set
         S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
         """
         x = self.map.set2ints(rows_list, cols_list)
-        return self.F_batch(x)
+        return self.lattice_fn(x)
 
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
-        return subgradient_lovasz_extension(self.F_batch, self.map.weights, X, tie_breaker)
+        return subgradient_lovasz_extension(self.lattice_fn, self.map.weights, X, tie_breaker)
 
     # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class?
 
@@ -235,7 +235,7 @@ class SetFnReduction():
         cols = torch.arange(self.n * self.b, device=self.device, dtype=torch.long) % self.b
         rows_list = [r.view(1) for r in rows]
         cols_list = [c.view(1) for c in cols]
-        singleton_vals, flops_L = self.F_set_batch(rows_list, cols_list)
+        singleton_vals, flops_L = self.set_fn(rows_list, cols_list)
         L = torch.linalg.vector_norm(singleton_vals.float(), ord=2).item()
         return L, flops_L
 
@@ -372,7 +372,7 @@ class EneSubmodularSetFnReduction(SetFnReduction):
     """Ene-Nguyen's set function reduction using EneReductionMap"""
     def __init__(
         self,
-        F_batch: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
+        lattice_fn: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
         k: int,
         n: int,
         device: torch.device,
@@ -380,7 +380,7 @@ class EneSubmodularSetFnReduction(SetFnReduction):
         filter_zero: bool = False,
     ):
         ene_map = EneReductionMap(k, n, device)
-        super().__init__(F_batch, ene_map, filter_fn, filter_zero)
+        super().__init__(lattice_fn, ene_map, filter_fn, filter_zero)
 
 
 
@@ -428,7 +428,7 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
     # Keep this for now, might use it if we decompose into non-decreasing DR-submodular functions.
     def __init__(
         self,
-        F_batch: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
+        lattice_fn: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
         k: int,
         n: int,
         device: torch.device,
@@ -437,7 +437,7 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
     ):
         binary_map = BinaryRepresentationMap(k, n, device)
         assert k == 2**binary_map.b, "k must be a power of 2"
-        super().__init__(F_batch, binary_map, filter_fn, filter_zero)
+        super().__init__(lattice_fn, binary_map, filter_fn, filter_zero)
 
 
             

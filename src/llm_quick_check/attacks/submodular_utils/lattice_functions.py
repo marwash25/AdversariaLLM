@@ -31,6 +31,7 @@ class LatticeFunction(ABC):
         """
 
     def __call__(self, x: Tensor) -> Tuple[Tensor, int]:
+        # TODO: make this work both for single input and batch of inputs
         return self.eval_batch(x)
 
     def eval_chain(
@@ -177,18 +178,17 @@ class LinearCombinationLatticeFn(LatticeFunction):
 
     Args:
         n: int, dimension of the lattice
-        F_batch_list: list of lattice functions or callable functions
+        lattice_fn_list: list of lattice functions or callable functions
         alphas: list of floats
     """
-    def __init__(self, n: int, F_batch_list: List[Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction]], alphas: List[float]):
+    def __init__(self, n: int, lattice_fn_list: List[Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction]], alphas: List[float]):
         super().__init__(n)
-        assert len(F_batch_list) == len(alphas), "F_batch_list and alphas must have the same length"
-        assert len(F_batch_list) > 0, "F_batch_list must be non-empty"
-        self.F_batch_list = [F_batch if isinstance(F_batch, LatticeFunction)
-            else CallableLatticeFunction(n, F_batch) for F_batch in F_batch_list]
+        assert len(lattice_fn_list) == len(alphas), "lattice_fn_list and alphas must have the same length"
+        assert len(lattice_fn_list) > 0, "lattice_fn_list must be non-empty"
+        self.lattice_fn_list = [lattice_fn if isinstance(lattice_fn, LatticeFunction)
+            else CallableLatticeFunction(n, lattice_fn) for lattice_fn in lattice_fn_list]
         self.alphas = alphas
-        # self.seq_F_idx = [i for i, F in enumerate(self.F_batch_list) if isinstance(F, SequentialLatticeFunction)]
-        # self.nonseq_F_idx = [i for i, F in enumerate(self.F_batch_list) if not isinstance(F, SequentialLatticeFunction)]
+
 
     def eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
         assert x.dim() == 2 and x.shape[1] == self.n, "x must have shape (batch_size, n)"
@@ -196,7 +196,7 @@ class LinearCombinationLatticeFn(LatticeFunction):
 
         total_flops = 0
         Fvalues = None
-        for alpha, F in zip(self.alphas, self.F_batch_list):
+        for alpha, F in zip(self.alphas, self.lattice_fn_list):
             vals, flops = F.eval_batch(x)
             total_flops += flops
             if Fvalues is None:
@@ -212,7 +212,7 @@ class LinearCombinationLatticeFn(LatticeFunction):
 
         total_flops = 0
         Fvalues = None
-        for alpha, F in zip(self.alphas, self.F_batch_list):
+        for alpha, F in zip(self.alphas, self.lattice_fn_list):
             vals, flops = F.eval_chain(rows, cols, weights, x_chain)
             total_flops += flops
             if Fvalues is None:
@@ -316,6 +316,14 @@ class LatticeFnWithModReduction(LatticeFunction):
     F_set is given by F_set(S) = F(M(S)) where M: 2^([n] x [b]) -> V^n is [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
     Conversely, F is given by F(x) = F_set(M^{-1}(x)) where M^{-1}: V^n -> 2^([n] x [b]) is the inverse map of M.
     """
+    # This doesn't have a simple closed form that doesn't require going through M^{-1}. 
+    # This function is needed in DCA for H_lowerbd which is combined with G and their set function reduction is minimized by the inner solver
+    # It's inefficient to go through this lattice function when we already have the form of the set function reduction.
+    # Evaluating corresponding SetFnReduction.set_fn will map from sets to ints and back to sets in eval_batch. But we currently only use 
+    # this method in singleton_L_bound which is not used for this function.
+    # We override eval_chain to avoid unecessary map to ints and back.
+    # TODO: refactor code to have set fn class and linear combination of set fns that can be both from reductions or not.
+
     def __init__(self, map: SetToLatticeMap, W: Tensor):
         super().__init__(W.shape[0])
         self.W = W
