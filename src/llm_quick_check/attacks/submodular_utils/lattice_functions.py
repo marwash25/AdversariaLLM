@@ -16,7 +16,8 @@ class LatticeFunction(ABC):
     Subclasses should implement eval_batch and may override eval_chain to provide a more
     efficient implementation for sequential evaluation (see SequentialLatticeFunction).
     """
-
+    # add asserts needed for each method in this base class and have them call private version that can be overridden by subclasses, 
+    # e.g., _eval_batch and _eval_chain, to avoid having to add asserts in each subclass.
     def __init__(self, n: int):
         self.n = n
 
@@ -37,7 +38,7 @@ class LatticeFunction(ABC):
     def eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
     ) -> Tuple[Tensor, int]:
-        """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i]] * e_{rows[i]}.
+        """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}.
 
         Default: call eval_batch on x_chain. Override for more efficient evaluation.
 
@@ -325,16 +326,34 @@ class LatticeFnWithModReduction(LatticeFunction):
     # TODO: refactor code to have set fn class and linear combination of set fns that can be both from reductions or not.
 
     def __init__(self, map: SetToLatticeMap, W: Tensor):
+        assert W.shape[0] == map.n and W.shape[1] == map.b, "W must have shape (map.n, map.b)"
         super().__init__(W.shape[0])
         self.W = W
         self.map = map
 
     def eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
-        assert x.device == self.W.device, "x and W must be on the same device"
+        assert x.dim() == 2 and x.shape[1] == self.n, "x must have shape (batch_size, n)"
+        assert x.dtype == torch.long, "x must be of type long"
+        assert x.device == self.W.device == self.map.device, "x, W, and map must be on the same device"
         X = self.map.ints2binary(x)
         return (X * self.W).sum(dim=(1, 2)), 0
 
     def eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
     ) -> Tuple[Tensor, int]:
-        return super().eval_chain(rows, cols, weights, x_chain)
+        """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}.
+        by directly evaluating F_set(S^i) for the corresponding sets S^i = S^{i-1} + {(rows[i-1], cols[i-1])}.
+        """
+        assert rows.device == cols.device == self.W.device, "rows, cols, and self.W must be on the same device"
+        device = rows.device
+        m = rows.shape[0]
+
+        if m==0:
+            return torch.empty((0,), device=device), 0
+
+        Fvalues = torch.zeros((m,), dtype=self.W.dtype, device=device)
+        Fvalues[0] = self.W[rows[0], cols[0]]
+        for i in range(1,m):
+            Fvalues[i] = Fvalues[i-1] + self.W[rows[i], cols[i]]
+           
+        return Fvalues, 0
