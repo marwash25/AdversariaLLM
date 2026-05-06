@@ -55,9 +55,14 @@ def subgradient_lovasz_extension(
     rows, cols = torch.unravel_index(sorted_idx, X.shape)  # both are (n x b,)
 
     # evaluate F(x^i) for all x^i corresponding to S^i = {(rows[0], cols[0]), ..., (rows[i-1], cols[i-1])} for i in [n * b]
-    # eval_chain computes x^i's sequentially which is more efficient than calling F_set_batch on S^i's which will compute 
+    # compute x^i's sequentially which is more efficient than calling F_set_batch on S^i's which will compute 
     # each x^i separately (O(n * b) vs O((n * b)^2)) 
-    Fvalues, x_chain, flops = F_batch.eval_chain(rows, cols, weights)
+    x_chain = torch.empty((rows.shape[0], n), dtype=torch.long, device=X.device)  # (m, n)
+    x = torch.zeros(n, dtype=torch.long, device=X.device)
+    for i in range(rows.shape[0]):
+        x[rows[i]] += weights[cols[i]]
+        x_chain[i] = x
+    Fvalues, flops = F_batch.eval_chain(rows, cols, weights, x_chain)
     assert Fvalues.shape[0] == n * b, "F_batch must return one scalar per input row"
 
     # compute subgradient G[rows[i], cols[i]] = F_set(S^i) - F_set(S^{i-1}) = F(x^i) - F(x^{i-1}), assume F(0)= 0
