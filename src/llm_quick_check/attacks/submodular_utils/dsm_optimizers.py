@@ -58,7 +58,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     if x_init.dim() == 1:
         x_init = x_init.unsqueeze(0)
     # map x_init to X in [0,1]^n x b
-    X = F_set_batch.ints2binary(x_init)[0].to(dtype=torch.float)
+    X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.float)
 
     n, b = X.shape
     D = sqrt(n*b) # domain diameter
@@ -155,62 +155,69 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     return best_sol_idx, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols, times, flops
 
 
-# def dca_dsm(F_set_batch: SetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 
-# inner_solver: Literal["pgm", "mnp"], outer_tol: Optional[float] = 1e-5, inner_gap_tol: Optional[float] = 1e-4, 
-# tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
-#     """
-#     Implement the difference of convex algorithm (DCA) variant from El Halabi et al. 2023 (Algorithm 2) 
-#     for the difference of submodular minimization (DSM) problem min_{S} F_set(S):= G_set(S) - H_set(S), which
-#     applies DCA to the equivalent continuous problem min_{X in [0,1]^n x b} f_L(X) := g_L(X) - h_L(X).
-#     Here F_set, G_set, H_set: 2^([n] x [b]) -> R are the set function reductions of the discrete functions 
-#     F, G, H: V^n -> R, and f_L, g_L, h_L are their Lovasz extensions.
+def dca_dsm(F_set_batch: SetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 
+inner_solver: Literal["pgm", "mnp"], outer_tol: Optional[float] = 1e-5, inner_gap_tol: Optional[float] = 1e-4, 
+tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
+    """
+    Implement the difference of convex algorithm (DCA) variant from El Halabi et al. 2023 (Algorithm 2) 
+    for the difference of submodular minimization (DSM) problem min_{S} F_set(S):= G_set(S) - H_set(S), which
+    applies DCA to the equivalent continuous problem min_{X in [0,1]^n x b} f_L(X) := g_L(X) - h_L(X).
+    Here F_set, G_set, H_set: 2^([n] x [b]) -> R are the set function reductions of the discrete functions 
+    F, G, H: V^n -> R, and f_L, g_L, h_L are their Lovasz extensions.
 
-#     @InProceedings{elhalabi2023dsm,
-#       title={Difference of Submodular Minimization via DC Programming}, 
-#       author={Marwa El Halabi and George Orfanides and Tim Hoheisel},
-#       booktitle = {Proceedings of the 40th International Conference on Machine Learning},
-#       year={2023},
-#     }
+    @InProceedings{elhalabi2023dsm,
+      title={Difference of Submodular Minimization via DC Programming}, 
+      author={Marwa El Halabi and George Orfanides and Tim Hoheisel},
+      booktitle = {Proceedings of the 40th International Conference on Machine Learning},
+      year={2023},
+    }
 
-#     Args:
-#         F_set_batch: SetFnReduction instance. 
-#         x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
+    Args:
+        F_set_batch: SetFnReduction instance. 
+        x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
     
-#     Returns:
-#     """
-#     # Decided to implement DCA-Restart version for now since simpler and faster. 
-#     # TODO: add DCA-LS version from our ContDSMin paper later since it can perform better in practice 
-#     # when a good initialization is not provided.  
-#     logging.info(f"Running DCA for {num_outer_steps} outer iterations and {num_inner_steps} inner iterations")
-#     time_start = time.time() # include initialization time in iter 0 time
+    Returns:
+    """
+    # Decided to implement DCA-Restart version for now since simpler and faster. 
+    # TODO: add DCA-LS version from our ContDSMin paper later since it can perform better in practice 
+    # when a good initialization is not provided.  
+    logging.info(f"Running DCA for {num_outer_steps} outer iterations and {num_inner_steps} inner iterations")
+    time_start = time.time() # include initialization time in iter 0 time
 
-#     if x_init.dim() == 1:
-#         x_init = x_init.unsqueeze(0)
-#     # map x_init to X in [0,1]^n x b
-#     X = F_set_batch.ints2binary(x_init)[0].to(dtype=torch.float)
-#     n, b = X.shape
+    if x_init.dim() == 1:
+        x_init = x_init.unsqueeze(0)
+    # map x_init to X in [0,1]^n x b
+    X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.float)
+    n, b = X.shape
 
-#     flops_L_G = 0
-#     if isinstance(L_G, str):
-#         if L_G == "singletons":
-#             L_G, flops_L_G = G_set_batch.singletons_L_bound()
-#             L_G = max(L_G, 1e-12) # L_G < 1e-12 shouldn't happen unless G = 0 but just in case
-#         else:
-#             raise ValueError("If L_G is a string, it must be 'singletons'.")
-#     assert L_G > 0, "Lipschitz constant L_G must be positive"
+    flops_L_G = 0
+    if isinstance(L_G, str):
+        if L_G == "singletons":
+            L_G, flops_L_G = G_set_batch.singletons_L_bound()
+            L_G = max(L_G, 1e-12) # L_G < 1e-12 shouldn't happen unless G = 0 but just in case
+        else:
+            raise ValueError("If L_G is a string, it must be 'singletons'.")
+    assert L_G > 0, "Lipschitz constant L_G must be positive"
 
-#     for iter in (pbar := trange(num_outer_steps+1, file=sys.stdout)):
-#         subgrad_G, Gvalues, x_chain, flops_subgrad = G_set_batch.subgradient_lovasz_extension(X) # subgrad_G is (n, b)
+    F_set_upperbd = copy.deepcopy(F_set_batch) # create set function reduction of same type as F_set_batch
 
-#         if inner_solver == "pgm":
-#             L = L_G + torch.linalg.vector_norm(subgradient.float(), ord=2).item()
-#             best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
-#                 pgm_lovasz(G_set_batch, X, num_inner_steps, L, gap_tol=inner_gap_tol)
-#         elif inner_solver == "mnp":
-#             # TODO: implement MNP 
-#             pass
-#         else:
-#             raise ValueError(f"Inner solver {inner_solver} not supported. Must be 'pgm' or 'mnp'.")
-#         #pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
+    for iter in (pbar := trange(num_outer_steps+1, file=sys.stdout)):
+        subgrad_G, Gvalues, x_chain, flops_subgrad = G_set_batch.subgradient_lovasz_extension(X) # subgrad_G is (n, b)
 
-#     return
+        if inner_solver == "pgm":
+            # minimize upper bound on F: F_upperbd(x) = G(x) - 
+            H_lowerbd = ModularFn(subgradient)
+            F_upperbd = LinearCombinationLatticeFn(n, [G_set_batch, H_lowerbd], [1.0, -1.0])
+            F_set_upperbd.F_batch = F_upperbd
+            L = L_G + torch.linalg.vector_norm(subgradient.float(), ord=2).item()
+
+            best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
+                pgm_lovasz(G_set_batch, X, num_inner_steps, L, gap_tol=inner_gap_tol)
+        elif inner_solver == "mnp":
+            # TODO: implement MNP 
+            pass
+        else:
+            raise ValueError(f"Inner solver {inner_solver} not supported. Must be 'pgm' or 'mnp'.")
+        #pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
+
+    return

@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 import torch
 from typing import Callable, List, Optional, Tuple, Union
 from torch import Tensor
-from math import log2
+from math import log2, ceil
 
 from .lattice_functions import CallableLatticeFunction, LatticeFunction
 
@@ -67,37 +67,24 @@ def subgradient_lovasz_extension(
 
     return subgradient, Fvalues, x_chain, flops
 
-
-class SetFnReduction(ABC):
-    """Base class for reductions from a lattice function F: V^n -> R where V = {0, 1,..., k - 1},
-    to a set function F_set: 2^([n] x [b]) -> R.
-
-    F_set is given by F_set(S) = F(M(S)) where M: 2^([n] x [b]) -> V^n is [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
-    F is assumed to be normalized, i.e., F(0) = 0.
-
+class SetToLatticeMap(ABC):
+    """Base class for map M: 2^([n] x [b]) -> V^n and its inverse M^{-1}: V^n -> 2^([n] x [b])
+    where V = {0, 1, ..., k - 1} and [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
     Subclasses should implement get_weights and ints2binary.
     """
 
     def __init__(
         self,
-        F_batch: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
-        k: int,
+        k: int, # TODO: k is not used in this class, we can let subclasses handle this 
         n: int,
         device: torch.device,
-        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
-        filter_zero: bool = False,
     ):
-        self.F_batch: LatticeFunction = (
-            F_batch if isinstance(F_batch, LatticeFunction)
-            else CallableLatticeFunction(n, F_batch)
-        ) # this can be swapped out after initialization for any LatticeFunction on the same domain V^n
-        self.filter_fn = filter_fn
-        self.filter_zero = filter_zero
         self.device = device
         self.k = k
         self.n = n
         self.weights = self.get_weights()
         assert self.weights.dim() == 1, "get_weights must return a 1D tensor of length b"
+        assert self.weights.device == self.device, "get_weights must return a tensor on self.device"
         self.b = int(self.weights.shape[0])
 
     @abstractmethod
@@ -106,7 +93,7 @@ class SetFnReduction(ABC):
 
     @abstractmethod
     def ints2binary(self, x: Tensor) -> Tensor:
-        """"Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b]
+        """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b]
         represented by binary matrices X in {0,1}^n x b such that X[j, c] = 1 iff (j, c) in S. 
         
         Args:
@@ -116,9 +103,6 @@ class SetFnReduction(ABC):
             binary_matrices: Tensor of type bool and shape (batch_size, n, b). 
             Each X[i] = binary_matrices[i] represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
         """
-
-    def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
-        return self.F_set_batch(rows_list, cols_list)
 
     def ints2set(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:  # TODO: not used anywhere yet, remove if not needed
         """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b] represented
@@ -171,15 +155,69 @@ class SetFnReduction(ABC):
                 x[i].index_add_(0, rows, self.weights[cols])  # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
-    def F_set_batch(self,rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:  # used in singleton_L_bound
+    def binary2ints(self, X: Tensor) -> Tensor: # TODO: not used anywhere yet, remove if not needed. 
+        """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
+        by binary matrices X in {0,1}^n x b:
+        
+        x[i, j] = sum_c X[i, j, c] * weights[c].
+
+        Args:
+            X: Tensor of shape (batch_size, n, b), bool or {0, 1}.
+
+        Returns:
+            x: Tensor of type long and shape (batch_size, n).
+        """
+        assert X.dim() == 3 and X.shape[1] == self.n and X.shape[2] == self.b, (
+            f"X must have shape (batch_size, n, b) with n={self.n}, b={self.b}, got {tuple(X.shape)}"
+        )
+        assert X.device == self.device, "X must be on the same device as self.device"
+        w = self.weights.view(1, 1, self.b)
+        return (X.to(dtype=self.weights.dtype) * w).sum(dim=-1).to(torch.long)
+
+
+
+class SetFnReduction():
+    """Reduction from a lattice function F: V^n -> R where V = {0, 1,..., k - 1},
+    to a set function F_set: 2^([n] x [b]) -> R, using a SetToLatticeMap for M.
+
+    F should be normalized, i.e., F(0) = 0.
+    """
+
+    def __init__(
+        self,
+        F_batch: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
+        reduction_map: SetToLatticeMap,
+        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
+        filter_zero: bool = False,
+    ):
+        self.map = reduction_map
+        self.k = reduction_map.k
+        self.n = reduction_map.n
+        self.b = reduction_map.b
+        self.F_batch: LatticeFunction = (
+            F_batch if isinstance(F_batch, LatticeFunction)
+            else CallableLatticeFunction(self.n, F_batch)
+        )
+        assert self.F_batch.n == self.n, "F_batch.n must match reduction_map.n"
+        self.filter_fn = filter_fn
+        self.filter_zero = filter_zero
+        self.device = reduction_map.device
+ 
+
+    def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
+        return self.F_set_batch(rows_list, cols_list)
+
+    def F_set_batch(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:  # used in singleton_L_bound
         """Batched version of F_set: 2^([n] x [b]) -> R: Compute F_set(S^i) for the set
         S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
         """
-        x = self.set2ints(rows_list, cols_list)
+        x = self.map.set2ints(rows_list, cols_list)
         return self.F_batch(x)
 
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
-        return subgradient_lovasz_extension(self.F_batch, self.weights, X, tie_breaker)
+        return subgradient_lovasz_extension(self.F_batch, self.map.weights, X, tie_breaker)
+
+    # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class?
 
     def singletons_L_bound(self) -> Tuple[float, int]:  # used in pgm and DCA
         """Compute sqrt(sum_i F_set({i})^2) where i ranges over [n] x [b].
@@ -233,30 +271,27 @@ class SetFnReduction(ABC):
         return F_min, x_min, F_min_filtered, x_min_filtered
 
 
-class EneSubmodularSetFnReduction(SetFnReduction):
-    """Ene-Nguyen's reduction from a DR-submodular function F: V^n -> R where V = {0, 1,..., k - 1},
-    to a submodular set function F_set: 2^([n] x [b]) -> R.
+class EneReductionMap(SetToLatticeMap):
+    """Ene-Nguyen's map M: 2^([n] x [b]) -> V^n for reduction from a DR-submodular lattice function F: V^n -> R,
+    where V = {0, 1,..., k - 1}, to a submodular set function F_set: 2^([n] x [b]) -> R where F_set(S) = F(M(S)).
+
+    M is defined in Lemma 1 of the paper:
 
     @article{ene2016reduction,
         title   = {A Reduction for Optimizing Lattice Submodular Functions with Diminishing Returns},
         author  = {Alina Ene and Huy L. Nguyen},
         year    = {2016},
-        journal = {arXiv preprint arXiv: 1606.08362}
-
-    F_set(S) = F(M(S)), where M: 2^([n] x [b]) -> V^n is the map in Lemma 1.
+        journal = {arXiv preprint arXiv: 1606.08362}}
     """
-
     def __init__(
         self,
-        F_batch: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
         k: int,
         n: int,
         device: torch.device,
-        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
-        filter_zero: bool = False,
     ):
+        assert k > 1, "k must be greater than 1"
         self.v_max = k - 1
-        super().__init__(F_batch, k, n, device, filter_fn, filter_zero)
+        super().__init__(k, n, device)
 
     def get_weights(self) -> Tensor:
         """Multiset of b weights a_1, ..., a_b summing to v_max = k-1.
@@ -265,8 +300,6 @@ class EneSubmodularSetFnReduction(SetFnReduction):
         Remainder weights: a_{m+1+j} = 2^{c_j} for 1 <= j <= p, where c_j is the j-th non-zero bit 
         in the binary representation of v_max other than m. Total # of weights is b = (m + 1) + p.
         """
-        assert self.k > 1, "k must be greater than 1"
-
         m = self.v_max.bit_length() - 1
         self.m = m
         idx_bits = torch.arange(m + 1, device=self.device, dtype=torch.long)
@@ -330,22 +363,8 @@ class EneSubmodularSetFnReduction(SetFnReduction):
         return mask_x
 
 
-# The following reduction only works if k is a power of 2. If not, we can use k' = ceil(log2(k)) and cut off any integer >= k.
-# The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
-# Keep this for now, might use it if we decompose into non-decreasing DR-submodular functions.
-# I stopped updating this for now.
-class BinarySubmodularSetFnReduction(SetFnReduction):
-    """Implement binary representation reduction from a DR-submodular lattice function F: V^n -> R,
-    where V = {0, 1,..., k - 1} and k = 2^b, to a submodular set function F_set: 2^([n] x [b]) -> R.
-
-    F_set(S) = F(M(S)), where X = J_S is the matrix with 1 at indices in S, 0
-    elsewhere, and x = M(S) is the integer vector such that each x_i is the int
-    with binary representation X[i, :].
-    Least significant bit is at column index 0 (bit index matches column index).
-    S is represented by separate rows and cols indices instead of a set of tuples, i.e., S = {(rows[i], cols[i]) for i in
-    range(rows.shape[0])}. 
-    """
-
+class EneSubmodularSetFnReduction(SetFnReduction):
+    """Ene-Nguyen's set function reduction using EneReductionMap"""
     def __init__(
         self,
         F_batch: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
@@ -355,11 +374,31 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
         filter_zero: bool = False,
     ):
-        super().__init__(F_batch, k, n, device, filter_fn, filter_zero)
+        ene_map = EneReductionMap(k, n, device)
+        super().__init__(F_batch, ene_map, filter_fn, filter_zero)
+
+
+
+class BinaryRepresentationMap(SetToLatticeMap):
+    """Binary representation map M: 2^([n] x [b]) -> V^n:
+    x = M(S) is such that each x_i is the integer with binary representation X[i, :], 
+    where X is the binary matrix with 1 at indices in S, 0 elsewhere.
+    Least significant bit is at column index 0 (bit index matches column index).
+
+    BinaryRepresentationMap M can be used to reduce a DR-submodular lattice function F: V^n -> R, where V = {0, 1,..., k - 1},
+    to a submodular set function F_set: 2^([n] x [b]) -> R where F_set(S) = F(M(S)), if k is a power of 2.
+    """
+    def __init__(
+        self,
+        k: int,
+        n: int,
+        device: torch.device,
+    ):
+        super().__init__(k, n, device)
 
     def get_weights(self) -> Tensor:
-        b = int(log2(self.k))
-        assert self.k == 2**b, "k must be a power of 2"
+        assert self.k > 1, "k must be greater than 1"
+        b = ceil(log2(self.k))
         weights = 1 << torch.arange(b, dtype=torch.long, device=self.device)  # more efficient than 2**torch.arange(b)
         return weights
 
@@ -375,3 +414,25 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         return x_bits
 
 
+class BinarySubmodularSetFnReduction(SetFnReduction):
+    """Set function reduction using BinaryRepresentationMap
+    k should be a power of 2 for F_set to be submodular.
+    """
+    # If k is not a power of 2, we can use k' = ceil(log2(k)) and cut off any integer >= k.
+    # The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
+    # Keep this for now, might use it if we decompose into non-decreasing DR-submodular functions.
+    def __init__(
+        self,
+        F_batch: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
+        k: int,
+        n: int,
+        device: torch.device,
+        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
+        filter_zero: bool = False,
+    ):
+        binary_map = BinaryRepresentationMap(k, n, device)
+        assert k == 2**binary_map.b, "k must be a power of 2"
+        super().__init__(F_batch, binary_map, filter_fn, filter_zero)
+
+
+            
