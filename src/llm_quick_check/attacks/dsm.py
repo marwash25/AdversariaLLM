@@ -15,7 +15,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix
 from ..types import Conversation
-from .submodular_utils import EneSubmodularSetFnReduction, pgm_lovasz
+from .submodular_utils import EneSubmodularSetFnReduction, pgm_lovasz, DR_submodular_decomposition, SetFnReduction
 
 
 @dataclass
@@ -51,6 +51,12 @@ class DSMConfig:
     allow_special: bool = False
     filter_ids: bool = True
 
+@dataclass
+class DSMAttackStepResult(AttackStepResult):
+    continuous_loss: float
+    duality_gap: float
+    outer_step: int
+    inner_step: int
 
 def _masked_cross_entropy(
     shift_logits: Tensor,
@@ -163,6 +169,7 @@ class DSMAttack(Attack):
     def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
         #TODO: add early stopping if exact match found as done in GCG.
+        #TODO: move things like building loss_fn, filter_fn, initialization to separate functions
         logging.info(f"Starting attack for conversation: {conversation}")
         t_start = time.time()
         # --- Optimize Attack ---
@@ -212,16 +219,30 @@ class DSMAttack(Attack):
 
         F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device, filter_fn, filter_zero)
        
-        # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
-        best_sol_idx, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
-            pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, tie_break=self.config.pgm_tie_break, gap_tol=None)
+        # TODO: have a common clean interface for optimizers 
+        if self.config.optimizer == "pgm":
+            # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
+            best_discrete_sol, best_sol_idx_filtered, best_continuous_sol, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, \
+                duality_gaps, discrete_sols_filtered, times, flops = \
+                    pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, tie_break=self.config.pgm_tie_break, gap_tol=None)
 
-        plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps)
+            plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps)
+        elif self.config.optimizer == "dca":
+            # decompose F into the difference of two DR-submodular functions G and H
+            G_batch, H_batch = DR_submodular_decomposition(F_batch, self.config.dca_config.alpha, device)
+            G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
+            H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
+            # run DCA with initial optim_ids as initial solution
+            best_discrete_sol, best_sol_idx_filtered, best_continuous_sol, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, times, flops = \
+                dca_dsm(F_set_batch, G_set_batch, H_set_batch, optim_ids_reduced, self.config.num_steps, self.config.dca_config.num_inner_steps, self.config.dca_config.inner_solver, tie_break=self.config.dca_tie_break, L_G=self.config.dca_L_G)
+      
+        else:
+            raise ValueError(f"Optimizer {self.config.optimizer} not supported. Must be 'pgm' or 'dca'.")
 
         flops[0] += F_0_flops
 
         # map back to original token ids and decode to strings
-        optim_ids = self.valid_token_ids[discrete_sols]
+        optim_ids = self.valid_token_ids[discrete_sols_filtered]
         optim_strings = tokenizer.batch_decode(optim_ids.cpu())  # decode handles batching in v5.3+, keeping batch_decode to support older versions
         losses = [val + F_0.item() for val in discrete_obj_values_filtered]
 
@@ -235,7 +256,7 @@ class DSMAttack(Attack):
         #     pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
 
         logging.info(
-            f"Optimization loop completed. Best attack (step {best_sol_idx}): {optim_strings[best_sol_idx][:80]!s}. "
+            f"Optimization loop completed. Best attack (step {best_sol_idx_filtered}): {optim_strings[best_sol_idx_filtered][:80]!s}. "
             f"Optimization time: {time.time() - t_start:.2f}s."
         )
         # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
