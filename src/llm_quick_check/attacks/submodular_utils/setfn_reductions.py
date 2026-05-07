@@ -6,9 +6,9 @@ from abc import ABC, abstractmethod
 import torch
 from typing import Callable, List, Optional, Tuple, Union
 from torch import Tensor
-from math import log2, ceil
+from math import log2, ceil, inf
 
-from .lattice_functions import CallableLatticeFunction, LatticeFunction
+from .lattice_functions import CallableLatticeFunction, LatticeFunction, SequentialLatticeFunction
 
 
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
@@ -205,9 +205,10 @@ class SetFnReduction():
         assert self.k > 1, "k must be greater than 1"
         self.lattice_fn: LatticeFunction = (
             lattice_fn if isinstance(lattice_fn, LatticeFunction)
-            else CallableLatticeFunction(self.n, lattice_fn)
+            else CallableLatticeFunction(self.k, self.n, lattice_fn)
         )
         assert self.lattice_fn.n == self.n, "lattice_fn.n must match reduction_map.n"
+        assert self.lattice_fn.k == self.k, "lattice_fn.k must match reduction_map.k"
         self.filter_fn = filter_fn
         self.filter_zero = filter_zero
         self.device = reduction_map.device
@@ -238,6 +239,9 @@ class SetFnReduction():
         assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
         assert x.dtype == torch.long, "x must be of type long"
 
+        # TODO: if self.lattice_fn is a SequentialLatticeFunction, we don't really need to build x_neighbors 
+        # for now keep it for testing, remove later.
+
         # get neighbors of x in V^n in the order:
         # 1) all x + weights[j] e_i in V^n for all i, j 
         # 2) all x - weights[j] e_i in V^n for all i, j
@@ -258,6 +262,9 @@ class SetFnReduction():
 
         x_neighbors = x.unsqueeze(0).expand(num_neighbors, self.n).clone()
 
+        if num_neighbors == 0: # never happens with our current reductions. Can happen if weights doesn't include 1 
+            return inf, x, inf, x, 0
+
         if num_add > 0:
             add_cols = i_idx[add_valid] 
             add_rows = torch.arange(num_add, device=self.device, dtype=torch.long)
@@ -274,6 +281,7 @@ class SetFnReduction():
 
         if self.filter_fn is not None:
             # drop neighbors whose full prompt tokenization would be unreachable from any input string
+            # TODO: handle case where filter_fn raises RuntimeError because nothing is reachable.
             retain_idx = self.filter_fn(x_neighbors)
             F_best_neighbor_filtered, best_idx_filtered = torch.min(Fvalues[retain_idx])
             best_neighbor_filtered = x_neighbors[retain_idx][best_idx_filtered]
@@ -324,7 +332,7 @@ class SetFnReduction():
             _, Fvalues, x_chain, _ = self.subgradient_lovasz_extension(X)
 
         def round(Fvals: Tensor, sols: Tensor, filter_zero: bool) -> Tuple[float, Tensor]:
-            F_min, min_idx = torch.min(Fvals, dim=0)
+            F_min, min_idx = torch.min(Fvals)
             if F_min >= 0 and not filter_zero:  # if filter_zero is True, don't round to zero
                 return 0.0, torch.zeros_like(sols[0])
             return F_min.item(), sols[min_idx]
@@ -333,6 +341,7 @@ class SetFnReduction():
 
         if self.filter_fn is not None:
             # drop x^i's in the chain whose full prompt tokenization would be unreachable from any input string
+            # TODO: handle case where filter_fn raises RuntimeError because nothing is reachable.
             retain_idx = self.filter_fn(x_chain)
             F_min_filtered, x_min_filtered = round(Fvalues[retain_idx], x_chain[retain_idx], self.filter_zero)
         else:    
