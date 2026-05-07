@@ -264,7 +264,7 @@ class LinearCombinationLatticeFn(LatticeFunction):
     """Linear combination of lattice functions F_i: V^n -> R: F(x) = sum_{i=1} alpha_i F_i(x)
 
     Args:
-        lattice_fn_list: list of lattice functions or callable functions
+        lattice_fn_list: list of LatticeFunction instances
         alphas: list of floats
     """
     def __init__(self, lattice_fn_list: List[LatticeFunction], alphas: List[float]):
@@ -278,37 +278,36 @@ class LinearCombinationLatticeFn(LatticeFunction):
         self.lattice_fn_list = lattice_fn_list
         self.alphas = alphas
 
+    def _eval_linear_comb(
+        self, eval_fn: Callable[[LatticeFunction], Tuple[Tensor, int]]
+    ) -> Tuple[Tensor, int]:
+        """Sum alpha_i * F_i via eval_fn(F_i), which must return (values, flops)."""
+        total_flops = 0
+        Fvalues = None
+        for alpha, F in zip(self.alphas, self.lattice_fn_list):
+            vals, flops = eval_fn(F)
+            total_flops += flops
+            if Fvalues is None:
+                Fvalues = alpha * vals
+            else:
+                Fvalues += alpha * vals
+
+        return Fvalues, total_flops
 
     def eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
         assert x.dim() == 2 and x.shape[1] == self.n, "x must have shape (batch_size, n)"
         assert x.dtype == torch.long, "x must be of type long"
-
-        total_flops = 0
-        Fvalues = None
-        for alpha, F in zip(self.alphas, self.lattice_fn_list):
-            vals, flops = F.eval_batch(x)
-            total_flops += flops
-            if Fvalues is None:
-                Fvalues = alpha * vals
-            else:
-                Fvalues += alpha * vals
-
-        return Fvalues, total_flops
+        return self._eval_linear_comb(lambda F: F.eval_batch(x))
 
     def eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
     ) -> Tuple[Tensor, int]:
+        return self._eval_linear_comb(
+            lambda F: F.eval_chain(rows, cols, weights, x_chain)
+        )
 
-        total_flops = 0
-        Fvalues = None
-        for alpha, F in zip(self.alphas, self.lattice_fn_list):
-            vals, flops = F.eval_chain(rows, cols, weights, x_chain)
-            total_flops += flops
-            if Fvalues is None:
-                Fvalues = alpha * vals
-            else:
-                Fvalues += alpha * vals
-        return Fvalues, total_flops
+    def eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> Tuple[Tensor, int]:
+        return self._eval_linear_comb(lambda F: F.eval_neighbors(x, weights, x_neighbors))
 
 
 class QuadraticFn(SequentialLatticeFunction):
