@@ -283,7 +283,7 @@ class SetFnReduction():
 
         return F_best_neighbor.item(), best_neighbor, F_best_neighbor_filtered.item(), best_neighbor_filtered, flops 
 
-    def rmvgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
+    def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
         return subgradient_lovasz_extension(self.lattice_fn, self.map.weights, X, tie_breaker)
 
     # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class
