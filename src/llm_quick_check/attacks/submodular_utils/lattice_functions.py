@@ -7,6 +7,7 @@ from typing import Callable, Optional, Tuple, List, Union
 from .setfn_reductions import SetToLatticeMap
 import torch
 from torch import Tensor
+import logging
 
 # TODO: for now we only use flops for forward passes. Create a class for GCG loss that tracks flops count 
 # in its state, and remove flops everywhere else
@@ -64,8 +65,28 @@ class LatticeFunction(ABC):
         assert Fvalues.shape[0] == x_chain.shape[0], "eval_batch must return one scalar per chain step"
         return Fvalues, flops
     
-    # TODO: add a eval_neighbors method that evaluates F(x + weight[j] e_i) and F(x - weight[j] e_i) for all i in [n] and j in [b]
-    # needed for local search in DCA again with batched and sequential evaluation
+    def eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> Tuple[Tensor, float]:
+        """Evaluate F for all neighbors x ± weight[j] e_i of x in V^n 
+
+        Default: call eval_batch on x_neighbors. Override for more efficient evaluation.
+
+        Args:
+            x: Tensor of shape (n,).
+            weights: Tensor of shape (b,).
+            x_neighbors: Tensor of shape (n * b, n)
+        Returns:
+            Fvalues: Tensor of shape (n * b,) with Fvalues[i] = F(x_neighbors[i]).
+            flops: flop count, int.
+        """
+        assert x.device == weights.device == x_neighbors.device, "x, weights, and x_neighbors must be on the same device"
+        assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
+        assert x.dtype == torch.long, "x must be of type long"
+        assert x_neighbors.shape[1] == self.n, "x_neighbors must have shape (n * b, n)"
+
+        Fvalues, flops = self.eval_batch(x_neighbors)
+        assert Fvalues.shape[0] == x_neighbors.shape[0], "eval_batch must return one scalar per neighbor"
+        return Fvalues, flops
+
 
 
 class SequentialLatticeFunction(LatticeFunction):
@@ -104,7 +125,26 @@ class SequentialLatticeFunction(LatticeFunction):
 
 
     def add(self, i: int, weight: Tensor) -> Tuple[Tensor, int]:
-        """Increment current_x[i] by weight, and update current_val to F at the new x
+        """Evaluate F(current_x + weight * e_i). Don't update current state
+        Default: call eval_batch. Override for more efficient update.
+        
+        Args:
+            i: coordinate index in [0, n).
+            weight: 0-dimensional tensor
+
+        Returns:
+            Fvalue: F(current_x + weight * e_i), float.
+            Flops: flop count for this step, int.
+        """
+        assert weight.device == self.current_x.device, "weight must be on the same device as current_x"
+        new_x = self.current_x.clone()
+        new_x[i] += weight
+        vals, flops = self.eval_batch(new_x.unsqueeze(0))
+        return vals[0], flops
+
+    def add_update(self, i: int, weight: Tensor) -> Tuple[Tensor, int]:
+        """Evaluate F(current_x + weight * e_i) and update current_x and current_val to the new x and F(x)
+
         Default: call eval_batch. Override for more efficient update.
         
         Args:
@@ -122,7 +162,26 @@ class SequentialLatticeFunction(LatticeFunction):
         return self.current_val, flops
 
     def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, int]:
-        """Decrement current_x[i] by weight, and update current_val to F at the new x
+        """Evaluate F(current_x - weight * e_i). Don't update current state
+        Default: call eval_batch. Override for more efficient update.
+        
+        Args:
+            i: coordinate index in [0, n).
+            weight: 0-dimensional tensor
+
+        Returns:
+            Fvalue: F(current_x - weight * e_i), float.
+            Flops: flop count for this step, int.
+        """
+        assert weight.device == self.current_x.device, "weight must be on the same device as current_x"
+        new_x = self.current_x.clone()
+        new_x[i] -= weight
+        vals, flops = self.eval_batch(new_x.unsqueeze(0))
+        return vals[0], flops
+
+    def remove_update(self, i: int, weight: Tensor) -> Tuple[Tensor, int]:
+        """Evaluate F(current_x - weight * e_i) and update current_x and current_val to the new x and F(x)
+
         Default: call eval_batch. Override for more efficient update.
         
         Args:
@@ -161,6 +220,7 @@ class SequentialLatticeFunction(LatticeFunction):
         return Fvalues, flops
 
 
+
 class CallableLatticeFunction(LatticeFunction):
     """Wrap a plain batched callable F_batch as a LatticeFunction."""
 
@@ -178,14 +238,15 @@ class LinearCombinationLatticeFn(LatticeFunction):
     """Linear combination of lattice functions F_i: V^n -> R: F(x) = sum_{i=1} alpha_i F_i(x)
 
     Args:
-        n: int, dimension of the lattice
         lattice_fn_list: list of lattice functions or callable functions
         alphas: list of floats
     """
-    def __init__(self, n: int, lattice_fn_list: List[Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction]], alphas: List[float]):
-        super().__init__(n)
+    def __init__(self, lattice_fn_list: List[Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction]], alphas: List[float]):
         assert len(lattice_fn_list) == len(alphas), "lattice_fn_list and alphas must have the same length"
         assert len(lattice_fn_list) > 0, "lattice_fn_list must be non-empty"
+        n = lattice_fn_list[0].n
+        assert all(lattice_fn.n == n for lattice_fn in lattice_fn_list), "all lattice functions must have the same dimension"
+        super().__init__(n)
         self.lattice_fn_list = [lattice_fn if isinstance(lattice_fn, LatticeFunction)
             else CallableLatticeFunction(n, lattice_fn) for lattice_fn in lattice_fn_list]
         self.alphas = alphas
@@ -357,3 +418,28 @@ class LatticeFnWithModReduction(LatticeFunction):
             Fvalues[i] = Fvalues[i-1] + self.W[rows[i], cols[i]]
            
         return Fvalues, 0
+
+
+def make_zero_lattice_fn(n: int, dtype: torch.dtype = torch.float32) -> LatticeFunction:
+    """Return a lattice function F(x)=0 for all x in V^n."""
+
+    def zero_F_batch(x: Tensor) -> Tuple[Tensor, int]:
+        assert x.dim() == 2 and x.shape[1] == n, "x must have shape (batch_size, n)"
+        return torch.zeros((x.shape[0],), device=x.device, dtype=dtype), 0
+
+    return CallableLatticeFunction(n, zero_F_batch)
+
+def DR_submodular_decomposition(F_batch: LatticeFunction, alpha: float) -> Tuple[LatticeFunction, LatticeFunction]:
+    """Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H: 
+    F = G - H, with G = F + H and H = - alpha * H' where H' = - 0.5 * x^T J x and J is the matrix of all ones. 
+    F(x + a_ie_i) - F(x) - F(x + a_ie_i + a_je_j) + F(x + a_je_j) >= \alpha for all i, j in [n] and all a_i, a_j in [0,1].
+    """
+    if alpha >= 0: # shouldn't happen but useful to test if dca correctly reduces to its submin inner solver in this case
+        logging.info("alpha >= 0 implies F is already DR-submodular, returning F as G and zero lattice function as H")
+        H_batch = make_zero_lattice_fn(F_batch.n)
+        return F_batch, H_batch
+    
+    H_batch = QuadraticFn(0.5 * alpha * torch.ones(0, dtype=torch.long, device=F_batch.device), F_batch.n)
+    G_batch = LinearCombinationLatticeFn([F_batch, H_batch], [1.0, 1.0])
+    return G_batch, H_batch
+   
