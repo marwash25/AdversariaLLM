@@ -10,8 +10,11 @@ import sys
 import logging
 import time
 
-from .setfn_reductions import SetFnReduction
+from .setfn_reductions import SetFnReduction, LinearCombinationLatticeFn
+from .lattice_functions import ModularFn, make_zero_lattice_fn
 
+# TODO: Both PGM and DCA essentially ignore filtering for the opt itself for now, except for storing filtered solutions at each iteration.
+# This would change if we modify GCG loss to return larger values for unreachable solutions.
 
 # TODO: might be good to actually define a PGM class with step method to have standardized interface for different optimization methods
 # for now let's implement it as a standalone function similar to Matlab code
@@ -45,6 +48,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         times: List of floats, times for each iteration.
         flops: List of ints, flops for each iteration. 
     """
+
     # TODO: add option to only store solutions that improve best objective. 
     # Keeping old doc string to reuse in this case:
     # discrete_obj_values: List of best discrete objective values min_{i <= t} F(x^i) for each iteration t.
@@ -84,11 +88,14 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     discrete_obj_values_filtered = [0.0 for _ in range(num_steps+1)]
     continuous_obj_values = [0.0 for _ in range(num_steps+1)]
     duality_gaps = [0.0 for _ in range(num_steps+1)] # if gap_tol is not None else None
-    discrete_sols = torch.empty((num_steps+1, n), dtype=torch.long, device=X.device)
+    discrete_sols_filtered = torch.empty((num_steps+1, n), dtype=torch.long, device=X.device) # needed when used as standalone solver
     times = [0.0 for _ in range(num_steps+1)]
     flops = [0 for _ in range(num_steps+1)]
-    best_discrete_obj = inf
-    best_sol_idx = -1
+    best_discrete_obj = inf 
+    best_discrete_obj_filtered = inf
+    best_sol_idx_filtered = -1
+    best_continuous_sol = None # needed when used as inner solver for DCA
+    best_discrete_sol = None # needed when used as inner solver for DCA
     # best_continuous_obj = inf
 
     for iter in (pbar := trange(num_steps+1, file=sys.stdout)):
@@ -99,14 +106,18 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         
         if F_round < best_discrete_obj: 
             best_discrete_obj = F_round
-            best_sol_idx = iter
-            # x_best = x_round
+            best_discrete_sol = x_round
+            best_continuous_sol = X
             # best_continuous_obj = cont_value
+
+        if F_round_filtered < best_discrete_obj_filtered:
+            best_discrete_obj_filtered = F_round_filtered
+            best_sol_idx_filtered = iter
 
         discrete_obj_values[iter] = F_round # best_discrete_obj
         discrete_obj_values_filtered[iter] = F_round_filtered 
         continuous_obj_values[iter] = cont_value # best_continuous_obj
-        discrete_sols[iter] = x_round_filtered # x_best
+        discrete_sols_filtered[iter] = x_round_filtered # x_best
 
         # if gap_tol is not None: # not used if gap_tol is None but we can still compute it since it's relatively cheap
         dual_avg = (dual_avg * iter + subgradient) / (iter + 1)
@@ -152,10 +163,10 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     times = times[:iter+1]
     flops = flops[:iter+1]
     
-    return best_sol_idx, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols, times, flops
+    return best_discrete_sol, best_sol_idx_filtered, best_continuous_sol, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, times, flops
 
-
-def dca_dsm(F_set_batch: SetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 
+# TODO: replace length names like discrete_obj_values with F_values here and in pgm_lovasz 
+def dca_dsm(F_set_batch: SetFnReduction, G_set_batch: SetFnReduction, H_set_batch: SetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 
 inner_solver: Literal["pgm", "mnp"], outer_tol: Optional[float] = 1e-5, inner_gap_tol: Optional[float] = 1e-4, 
 tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     """
@@ -199,25 +210,71 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
             raise ValueError("If L_G is a string, it must be 'singletons'.")
     assert L_G > 0, "Lipschitz constant L_G must be positive"
 
-    F_set_upperbd = copy.deepcopy(F_set_batch) # create set function reduction of same type as F_set_batch
+    # create set function reduction with place holder lattice_fn and same reduction map as F_set_batch
+    F_set_upperbd = SetFnReduction(make_zero_lattice_fn(n), F_set_batch.map) 
+
+    discrete_obj_values = [0.0 for _ in range(num_outer_steps)]
+    inner_discrete_values = [List[float] for _ in range(num_outer_steps)]
+    discrete_obj_values_filtered = [0.0 for _ in range(num_outer_steps)]
+    inner_discrete_values_filtered = [List[float] for _ in range(num_outer_steps)]
+    continuous_obj_values = [0.0 for _ in range(num_outer_steps)]
+    inner_continuous_values = [List[float] for _ in range(num_outer_steps)]
+    inner_duality_gaps = [List[float] for _ in range(num_outer_steps)]
+    discrete_sols_filtered = torch.empty((num_outer_steps, n), dtype=torch.long, device=X.device)
+    times = [0.0 for _ in range(num_outer_steps)]
+    flops = [0 for _ in range(num_outer_steps)]
+
+    # TODO: set prev_cont_value to init cont value
+    prev_cont_value = 0
 
     for iter in (pbar := trange(num_outer_steps+1, file=sys.stdout)):
-        subgrad_G, Gvalues, x_chain, flops_subgrad = G_set_batch.subgradient_lovasz_extension(X) # subgrad_G is (n, b)
+        tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b) if tie_break == "random" else None
+        subgrad_H, Hvalues, x_chain, flops_subgrad_H = H_set_batch.subgradient_lovasz_extension(X, tie_breaker) # subgrad_H is (n, b)
 
         if inner_solver == "pgm":
-            # minimize upper bound on F: F_upperbd(x) = G(x) - 
-            H_lowerbd = ModularFn(subgradient)
-            F_upperbd = LinearCombinationLatticeFn(n, [G_set_batch, H_lowerbd], [1.0, -1.0])
-            F_set_upperbd.F_batch = F_upperbd
-            L = L_G + torch.linalg.vector_norm(subgradient.float(), ord=2).item()
+            # minimize upper bound on F_set: F_set_upperbd(S) = G_set(S) - <subgrad_H, 1_S>
+            H_lowerbd = ModularFn(subgrad_H)
+            F_upperbd = LinearCombinationLatticeFn(n, [G_set_batch.lattice_fn, H_lowerbd], [1.0, -1.0])
+            F_set_upperbd.lattice_fn = F_upperbd
+            L_upperbd = L_G + torch.linalg.vector_norm(subgrad_H.float(), ord=2).item()
 
-            best_sol_idx, discrete_obj_values, continuous_obj_values, duality_gaps, discrete_sols, times, flops = \
-                pgm_lovasz(G_set_batch, X, num_inner_steps, L, gap_tol=inner_gap_tol)
+            inner_best_discrete_sol, inner_best_sol_idx_filtered, inner_best_continuous_sol, inner_discrete_values[iter], inner_discrete_values_filtered[iter], \
+            inner_continuous_values[iter], inner_duality_gaps[iter], inner_discrete_sols_filtered, inner_times, inner_flops = \
+                pgm_lovasz(F_set_upperbd, X, num_inner_steps, L_upperbd, gap_tol=inner_gap_tol)
         elif inner_solver == "mnp":
             # TODO: implement MNP 
             pass
         else:
             raise ValueError(f"Inner solver {inner_solver} not supported. Must be 'pgm' or 'mnp'.")
-        #pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
+        
+        # TODO: alternatively use integral X = F_set_batch.map.ints2binary(inner_best_discrete_sol)[0].to(dtype=torch.float)
+        X = inner_best_continuous_sol 
 
+        # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol). 
+        # TODO: this can be done more efficiently without having to evaluate F (which required fwd pass). Do this later. 
+        # I will not count flops for this eval 
+        subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
+        F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
+        continuous_obj_values[iter] = F_set_batch.lovasz_extension(X, subgradient_F)
+
+        
+        discrete_obj_values[iter] = F_round
+        discrete_obj_values_filtered[iter] = F_round_filtered
+        discrete_sols_filtered[iter] = x_round_filtered
+        times[iter] = time.time() - time_start
+        # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill
+        flops[iter] += inner_flops + flops_subgrad_H # flops_subgrad_H is 0 since H doesn't involve model fwd pass, but keeping it in case we flops for other functions later
+        if iter == 0: 
+            flops[iter] += flops_L_G
+        
+        pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Discrete obj value filtered": discrete_obj_values_filtered[iter], \
+        "Continuous obj value": continuous_obj_values[iter], "Inner duality gap reached": inner_duality_gaps[iter][-1]})
+
+        # TODO: add checks here that obj decreased up to inner_gap_tol?
+        if prev_cont_value - continuous_obj_values[iter] <= outer_tol:
+                # TODO: check if local min, restart otw
+                F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops = F_set_batch.get_best_neighbors(x_round)
+                # logging.info(f"Duality gap {duality_gap:.4f} <= tolerance {gap_tol:.4f} reached after {iter} iterations, stopping.")
+
+                break
     return
