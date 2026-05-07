@@ -11,6 +11,9 @@ from math import log2, ceil
 from .lattice_functions import CallableLatticeFunction, LatticeFunction
 
 
+# TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
+# specific to the reduction.
+
 def subgradient_lovasz_extension(
     lattice_fn: LatticeFunction,
     weights: Tensor,
@@ -199,6 +202,7 @@ class SetFnReduction():
         self.k = reduction_map.k
         self.n = reduction_map.n
         self.b = reduction_map.b
+        assert self.k > 1, "k must be greater than 1"
         self.lattice_fn: LatticeFunction = (
             lattice_fn if isinstance(lattice_fn, LatticeFunction)
             else CallableLatticeFunction(self.n, lattice_fn)
@@ -219,10 +223,71 @@ class SetFnReduction():
         x = self.map.set2ints(rows_list, cols_list)
         return self.lattice_fn(x)
 
-    def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
+    def get_best_neighbors(self, x: Tensor) -> Tuple[float, Tensor, float, Tensor, int]:
+        """Get the best neighbor of x in V^n for F, i.e., argmin_{i, j} F(x ± weight[j] e_i)
+        Args:
+            x: Tensor of shape (n,).
+        Returns:
+            F_best_neighbor: float.
+            best_neighbor: Tensor of shape (n,).
+            F_best_neighbor_filtered: float. Same as F_best_neighbor if filtering is disabled.
+            best_neighbor_filtered: Tensor of shape (n,). Same as best_neighbor if filtering is disabled.
+            flops: flop count, int.
+        """
+        assert x.device == self.device, "x must be on the same device as self.device"
+        assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
+        assert x.dtype == torch.long, "x must be of type long"
+
+        # get neighbors of x in V^n in the order:
+        # 1) all x + weights[j] e_i in V^n for all i, j 
+        # 2) all x - weights[j] e_i in V^n for all i, j
+
+        # enumerate all (i, j) pairs in [n] x [b]
+        i_idx = torch.arange(self.n, device=self.device, dtype=torch.long).repeat_interleave(self.b)  # (n*b,)
+        j_idx = torch.arange(self.b, device=self.device, dtype=torch.long).repeat(self.n)  # (n*b,)
+
+        weights = self.map.weights[j_idx]  # (n*b,)
+
+        # check if the neighbor is in V^n
+        add_valid = (x[i_idx] + weights) <= self.k - 1
+        rmv_valid = (x[i_idx] - weights) >= 0
+
+        num_add = add_valid.sum().item()
+        num_rmv = rmv_valid.sum().item()
+        num_neighbors = num_add + num_rmv
+
+        x_neighbors = x.unsqueeze(0).expand(num_neighbors, self.n).clone()
+
+        if num_add > 0:
+            add_cols = i_idx[add_valid] 
+            add_rows = torch.arange(num_add, device=self.device, dtype=torch.long)
+            x_neighbors[add_rows, add_cols] += weights[add_valid]
+
+        if num_rmv > 0:
+            rmv_cols = i_idx[rmv_valid]  
+            rmv_rows = torch.arange(num_rmv, device=self.device, dtype=torch.long) + num_add
+            x_neighbors[rmv_rows, rmv_cols] -= weights[rmv_valid]
+
+        Fvalues, flops = self.lattice_fn.eval_neighbors(x, self.map.weights, x_neighbors)
+        F_best_neighbor, best_idx = torch.min(Fvalues)
+        best_neighbor = x_neighbors[best_idx]
+
+        if self.filter_fn is not None:
+            # drop neighbors whose full prompt tokenization would be unreachable from any input string
+            retain_idx = self.filter_fn(x_neighbors)
+            F_best_neighbor_filtered, best_idx_filtered = torch.min(Fvalues[retain_idx])
+            best_neighbor_filtered = x_neighbors[retain_idx][best_idx_filtered]
+        else:
+            F_best_neighbor_filtered = F_best_neighbor
+            best_neighbor_filtered = best_neighbor
+
+        return F_best_neighbor.item(), best_neighbor, F_best_neighbor_filtered.item(), best_neighbor_filtered, flops 
+
+    def rmvgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
         return subgradient_lovasz_extension(self.lattice_fn, self.map.weights, X, tie_breaker)
 
-    # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class?
+    # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class
+    # or as separate functions?
 
     def singletons_L_bound(self) -> Tuple[float, int]:  # used in pgm and DCA
         """Compute sqrt(sum_i F_set({i})^2) where i ranges over [n] x [b].
@@ -399,10 +464,10 @@ class BinaryRepresentationMap(SetToLatticeMap):
         n: int,
         device: torch.device,
     ):
+        assert k > 1, "k must be greater than 1"
         super().__init__(k, n, device)
 
     def get_weights(self) -> Tensor:
-        assert self.k > 1, "k must be greater than 1"
         b = ceil(log2(self.k))
         weights = 1 << torch.arange(b, dtype=torch.long, device=self.device)  # more efficient than 2**torch.arange(b)
         return weights
