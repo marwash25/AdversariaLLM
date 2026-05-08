@@ -298,8 +298,9 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
                                  f"with discrete obj value {F_best_neighbor:.4f} and discrete obj value filtered {F_best_neighbor_filtered:.4f}.")
                     X = F_set_batch.map.ints2binary(best_neighbor.unsqueeze(0))[0].to(dtype=torch.float)
                     discrete_obj_values[iter] = F_best_neighbor
-                    discrete_obj_values_filtered[iter] = F_best_neighbor_filtered
-                    discrete_sols_filtered[iter] = best_neighbor_filtered
+                    # use current filtered discrete solution if better than best filtered neighbor 
+                    discrete_obj_values_filtered[iter] = min(F_best_neighbor_filtered, F_round_filtered)
+                    discrete_sols_filtered[iter] = best_neighbor_filtered if F_best_neighbor_filtered < F_round_filtered else x_round_filtered
                     continuous_obj_values[iter] = F_best_neighbor # since X is set to binary matrix corresponding to M^-1(best_neighbor)
                     flops[iter] += flops_local_search
 

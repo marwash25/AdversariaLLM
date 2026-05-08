@@ -394,7 +394,8 @@ def get_pre_post_suffix_tokens(tokenizer, num_messages):
 def filter_suffix(
     tokenizer: PreTrainedTokenizerBase,
     clean_conversation: Conversation,
-    ids: list[list[torch.Tensor | None]]
+    ids: list[list[torch.Tensor | None]], 
+    raise_error: bool = True
 ) -> list[int]:
     """
     Filters out sequences of token ids that are not invariant under decode-encode round trip.
@@ -468,7 +469,8 @@ def filter_suffix(
 
     if not retain_idx:
         # This occurs in some cases, e.g. using the Llama-3 tokenizer with a bad initialization
-        raise RuntimeError(
+        if raise_error:
+            raise RuntimeError(
             "No token sequences are the same after decoding and re-encoding. "
             "Consider setting `filter_ids=False` or trying a different `optim_str_init`.\n"
             "Here's an example of the token sequence that failed:\n"

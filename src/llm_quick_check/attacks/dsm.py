@@ -1,10 +1,9 @@
 """Difference of submodular minimization (DSM) attack"""
 import copy
+import math
 import time
 import logging
-import sys
 import matplotlib.pyplot as plt
-from tqdm import trange
 from typing import List, Tuple, Callable, Any, Literal
 import torch
 from torch import Tensor
@@ -216,10 +215,10 @@ class DSMAttack(Attack):
         filter_zero = False
         if self.config.filter_ids: 
             if self.config.placement == "suffix":
-                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[attack_ids].cpu()]])
-                try:  # check if zero_attack_ids is reachable
-                    filter_fn(zero_attack_ids)
-                except RuntimeError:
+                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[attack_ids].cpu()]], False)
+                # check if zero_attack_ids is reachable
+                retained_idx = filter_fn(zero_attack_ids)
+                if not retained_idx:
                     filter_zero = True
                     logging.warning("Zero attack ids is not reachable from any input string. Will not round to zero during optimization.") 
             else:
@@ -261,6 +260,15 @@ class DSMAttack(Attack):
 
         else:
             raise ValueError(f"Optimizer {self.config.optimizer} not supported. Must be 'pgm' or 'dca'.")
+
+        # Drop steps with no valid filtered solution
+        valid_idx = [i for i in range(len(discrete_obj_values_filtered)) if math.isfinite(discrete_obj_values_filtered[i])]
+        if not valid_idx:
+            raise ValueError("Every optimization step has no valid filtered solution.")
+        discrete_sols_filtered = discrete_sols_filtered[valid_idx]
+        discrete_obj_values_filtered = [discrete_obj_values_filtered[i] for i in valid_idx]
+        times = [times[i] for i in valid_idx]
+        flops = [flops[i] for i in valid_idx]
 
         best_sol_idx_filtered = min(range(len(discrete_obj_values_filtered)), key=discrete_obj_values_filtered.__getitem__) 
         flops[0] += F_0_flops

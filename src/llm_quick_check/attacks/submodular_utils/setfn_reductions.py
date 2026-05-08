@@ -7,7 +7,7 @@ import torch
 from typing import Callable, List, Optional, Tuple, Union
 from torch import Tensor
 from math import log2, ceil, inf
-
+import logging
 from .lattice_functions import CallableLatticeFunction, LatticeFunction, SequentialLatticeFunction
 
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
@@ -280,10 +280,14 @@ class SetFnReduction():
 
         if self.filter_fn is not None:
             # drop neighbors whose full prompt tokenization would be unreachable from any input string
-            # TODO: handle case where filter_fn raises RuntimeError because nothing is reachable.
             retain_idx = self.filter_fn(x_neighbors)
-            F_best_neighbor_filtered, best_idx_filtered = torch.min(Fvalues[retain_idx], dim=0)
-            best_neighbor_filtered = x_neighbors[retain_idx][best_idx_filtered]
+            if not retain_idx:
+                logging.warning("No neighbors of current x are reachable. Setting F_best_neighbor_filtered=inf and best_neighbor_filtered to an empty tensor.")
+                F_best_neighbor_filtered = inf
+                best_neighbor_filtered = torch.empty((self.n,), dtype=torch.long, device=self.device)
+            else:
+                F_best_neighbor_filtered, best_idx_filtered = torch.min(Fvalues[retain_idx], dim=0)
+                best_neighbor_filtered = x_neighbors[retain_idx][best_idx_filtered]
         else:
             F_best_neighbor_filtered = F_best_neighbor
             best_neighbor_filtered = best_neighbor
@@ -323,7 +327,8 @@ class SetFnReduction():
         """Round X in [0,1]^n x b to a subset S_min in [n] x [b] such that F_set(S_min) <= f_L(X)
         and map to corresponding x_min = M(S_min) in V^n
         If filtering is enabled, F_min_filtered, x_min_filtered correspond to the minimum over only 
-        retained x^i's in the chain. Otherwise, they're the same as F_min, x_min. 
+        retained x^i's in the chain. If none are retained, F_min_filtered is inf and x_min_filtered is
+        an empty tensor. Otherwise, they're the same as F_min, x_min. 
         #TODO: remove this when done testing to avoid cost of two min?
         """
         if Fvalues is None or x_chain is None:
@@ -340,9 +345,15 @@ class SetFnReduction():
 
         if self.filter_fn is not None:
             # drop x^i's in the chain whose full prompt tokenization would be unreachable from any input string
-            # TODO: handle case where filter_fn raises RuntimeError because nothing is reachable.
             retain_idx = self.filter_fn(x_chain)
-            F_min_filtered, x_min_filtered = round(Fvalues[retain_idx], x_chain[retain_idx], self.filter_zero)
+            if not retain_idx:
+                logging.warning(
+                    "No x^i's in the chain of current X are reachable. Setting F_min_filtered = inf and x_min_filtered to an empty tensor."
+                )
+                F_min_filtered = inf
+                x_min_filtered = torch.empty((self.n,), dtype=torch.long, device=x_chain.device)
+            else:
+                F_min_filtered, x_min_filtered = round(Fvalues[retain_idx], x_chain[retain_idx], self.filter_zero)
         else:    
             F_min_filtered, x_min_filtered = F_min, x_min
 
