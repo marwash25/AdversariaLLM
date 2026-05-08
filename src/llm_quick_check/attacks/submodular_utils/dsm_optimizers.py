@@ -294,8 +294,8 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
                 F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops_local_search = F_set_batch.get_best_neighbors(x_round)
                 times[iter] = time.time() - time_start
                 if F_best_neighbor < F_round:
-                    logging.info(f"DCA converged after {iter} outer steps but not to a local min, restarting from best neighbor \
-                    with discrete obj value {F_best_neighbor:.4f} and discrete obj value filtered {F_best_neighbor_filtered:.4f}.")
+                    logging.info(f"DCA converged after {iter} outer steps but not to a local min, restarting from best neighbor "
+                                 f"with discrete obj value {F_best_neighbor:.4f} and discrete obj value filtered {F_best_neighbor_filtered:.4f}.")
                     X = F_set_batch.map.ints2binary(best_neighbor.unsqueeze(0))[0].to(dtype=torch.float)
                     discrete_obj_values[iter] = F_best_neighbor
                     discrete_obj_values_filtered[iter] = F_best_neighbor_filtered
