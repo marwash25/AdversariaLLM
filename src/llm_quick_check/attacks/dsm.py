@@ -248,7 +248,7 @@ class DSMAttack(Attack):
             # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             # decompose F into the difference of two DR-submodular functions G and H
-            G_batch, H_batch = DR_submodular_decomposition(F_batch, dca_config.alpha, device)
+            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, dca_config.alpha, device)
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
             # run DCA with initial optim_ids as initial solution
@@ -485,9 +485,11 @@ def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuou
     ax_gap.set_ylabel("Duality gap")
     ax_gap.grid(True, alpha=0.3)
     if outer_step is not None:
-        fig.suptitle(f"PGM objective values and duality gap for DCAouter step {outer_step}")
+        fig.suptitle(f"PGM objective values and duality gap for DCA outer step {outer_step}")
+        filename = f"pgm_curves_dca_step_{outer_step}.png"
     else:
         fig.suptitle("PGM objective values and duality gap")
+        filename = "pgm_curves.png"
     fig.tight_layout()
-    fig.savefig("pgm_curves.png", dpi=150)
+    fig.savefig(filename, dpi=150)
     plt.close(fig)

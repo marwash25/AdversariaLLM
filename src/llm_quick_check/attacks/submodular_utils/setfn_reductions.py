@@ -275,14 +275,14 @@ class SetFnReduction():
             x_neighbors[rmv_rows, rmv_cols] -= weights[rmv_valid]
 
         Fvalues, flops = self.lattice_fn.eval_neighbors(x, self.map.weights, x_neighbors)
-        F_best_neighbor, best_idx = torch.min(Fvalues)
+        F_best_neighbor, best_idx = torch.min(Fvalues, dim=0)
         best_neighbor = x_neighbors[best_idx]
 
         if self.filter_fn is not None:
             # drop neighbors whose full prompt tokenization would be unreachable from any input string
             # TODO: handle case where filter_fn raises RuntimeError because nothing is reachable.
             retain_idx = self.filter_fn(x_neighbors)
-            F_best_neighbor_filtered, best_idx_filtered = torch.min(Fvalues[retain_idx])
+            F_best_neighbor_filtered, best_idx_filtered = torch.min(Fvalues[retain_idx], dim=0)
             best_neighbor_filtered = x_neighbors[retain_idx][best_idx_filtered]
         else:
             F_best_neighbor_filtered = F_best_neighbor
@@ -331,7 +331,7 @@ class SetFnReduction():
             _, Fvalues, x_chain, _ = self.subgradient_lovasz_extension(X)
 
         def round(Fvals: Tensor, sols: Tensor, filter_zero: bool) -> Tuple[float, Tensor]:
-            F_min, min_idx = torch.min(Fvals)
+            F_min, min_idx = torch.min(Fvals, dim=0)
             if F_min >= 0 and not filter_zero:  # if filter_zero is True, don't round to zero
                 return 0.0, torch.zeros_like(sols[0])
             return F_min.item(), sols[min_idx]

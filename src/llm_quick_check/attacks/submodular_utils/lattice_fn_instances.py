@@ -160,7 +160,7 @@ def DR_submodular_decomposition(F_batch: LatticeFunction, alpha: float, device: 
     F = G - H, with G = F + H and H = - alpha * H' where H' = - 0.5 * x^T J x and J is the matrix of all ones. 
     F(x + a_ie_i) - F(x) - F(x + a_ie_i + a_je_j) + F(x + a_je_j) >= \alpha for all i, j in [n] and all a_i, a_j in [0,1].
     """
-    if alpha >= 0: # shouldn't happen but useful to test if dca correctly reduces to its submin inner solver in this case
+    if alpha >= 0: # alpha == 0 is useful to test if dca correctly reduces to its submin inner solver in this case
         logging.info("alpha >= 0 implies F is already DR-submodular, returning F as G and zero lattice function as H")
         H_batch = make_zero_lattice_fn(F_batch.k, F_batch.n)
         return F_batch, H_batch

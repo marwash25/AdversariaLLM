@@ -239,7 +239,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
 
         if inner_solver == "pgm":
             # minimize upper bound on F_set: F_set_upperbd(S) = G_set(S) - <subgrad_H, 1_S>
-            H_lowerbd = LatticeFnWithModReduction(subgrad_H)
+            H_lowerbd = LatticeFnWithModReduction(F_set_batch.map,subgrad_H)
             F_upperbd = LinearCombinationLatticeFn([G_set_batch.lattice_fn, H_lowerbd], [1.0, -1.0])
             F_set_upperbd.lattice_fn = F_upperbd
             L_upperbd = L_G + torch.linalg.vector_norm(subgrad_H.float(), ord=2).item()
@@ -268,7 +268,13 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
         subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
         F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
         continuous_obj_values[iter] = F_set_batch.lovasz_extension(X, subgradient_F)
-        assert continuous_obj_values[iter] <= prev_cont_value + inner_gap_tol, "f_L(X^{t+1}) should be less than f_L(X^t) + {inner_gap_tol}."
+
+        if continuous_obj_values[iter] > prev_cont_value + inner_duality_gaps[iter][-1]:
+            logging.warning(
+                f"Continuous obj value: {continuous_obj_values[iter]:.4f} is larger than previous one: "
+                f"{prev_cont_value:.4f} + duality gap reached: {inner_duality_gaps[iter][-1]:.4f}. "
+                "alpha used in decomposition of F should be increased to ensure it is a difference of DR-submodular functions."
+            )
 
         # TODO: check if complement set is better, use that as current sol instead. See Prop G.8 in DSMin paper.
         discrete_obj_values[iter] = F_round
@@ -290,7 +296,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
                 if F_best_neighbor < F_round:
                     logging.info(f"DCA converged after {iter} outer steps but not to a local min, restarting from best neighbor \
                     with discrete obj value {F_best_neighbor:.4f} and discrete obj value filtered {F_best_neighbor_filtered:.4f}.")
-                    X = F_set_batch.map.ints2binary(best_neighbor)[0].to(dtype=torch.float)
+                    X = F_set_batch.map.ints2binary(best_neighbor.unsqueeze(0))[0].to(dtype=torch.float)
                     discrete_obj_values[iter] = F_best_neighbor
                     discrete_obj_values_filtered[iter] = F_best_neighbor_filtered
                     discrete_sols_filtered[iter] = best_neighbor_filtered
