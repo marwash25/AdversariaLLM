@@ -10,8 +10,9 @@ import sys
 import logging
 import time
 
-from .setfn_reductions import SetFnReduction 
-from .lattice_functions import LatticeFnWithModReduction, make_zero_lattice_fn, LinearCombinationLatticeFn
+from .setfn_reductions import SetFnReduction
+from .lattice_fn_instances import LatticeFnWithModReduction
+from .lattice_functions import make_zero_lattice_fn, LinearCombinationLatticeFn
 
 # TODO: Both PGM and DCA essentially ignore filtering for the opt itself for now, except for storing filtered solutions at each iteration.
 # This would change if we modify GCG loss to return larger values for unreachable solutions.

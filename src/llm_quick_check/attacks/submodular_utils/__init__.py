@@ -5,11 +5,10 @@ Difference of submodular minimization utilities used by DSM attack.
 from .lattice_functions import (
     CallableLatticeFunction,
     LatticeFunction,
-    ModularFn,
-    QuadraticFn,
     SequentialLatticeFunction,
     LinearCombinationLatticeFn,
 )
+from .lattice_fn_instances import ModularFn, QuadraticFn
 from .setfn_reductions import (
     EneSubmodularSetFnReduction,
     SetFnReduction,
