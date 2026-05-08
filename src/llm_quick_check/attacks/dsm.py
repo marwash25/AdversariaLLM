@@ -21,12 +21,14 @@ from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decompo
 @dataclass
 class DCAConfig:
     """Config for the DCA optimizer."""
-
+    alpha: float = 0.0 # runs PGM in that case
     outer_tol: float = 1e-5
     inner_gap_tol: float = 1e-4
-    num_outer_steps: int = 1
+    # num_outer_steps: will be set to num_steps / num_inner_steps 
     num_inner_steps: int = 1
     inner_solver: str = "pgm"
+    tie_break: Literal["random"] | None = None  # "random" or None
+    L_G: float | Literal["singletons", "normalize"] = "singletons" # "singletons" or "normalize" or a float value
 
 
 @dataclass
@@ -226,18 +228,22 @@ class DSMAttack(Attack):
             times, flops = pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, tie_break=self.config.pgm_tie_break, gap_tol=None)
 
             plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps)
+
         elif self.config.optimizer == "dca":
+            dca_config = self.config.dca_config
+            # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
+            num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             # decompose F into the difference of two DR-submodular functions G and H
-            G_batch, H_batch = DR_submodular_decomposition(F_batch, self.config.dca_config.alpha, device)
+            G_batch, H_batch = DR_submodular_decomposition(F_batch, dca_config.alpha, device)
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
             # run DCA with initial optim_ids as initial solution
             discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, discrete_sols_filtered, times, flops, \
             inner_discrete_values, inner_discrete_values_filtered, inner_continuous_values, inner_duality_gaps = \
-            dca_dsm(F_set_batch, G_set_batch, H_set_batch, optim_ids_reduced, self.config.num_steps, self.config.dca_config.num_inner_steps, self.config.dca_config.inner_solver, tie_break=self.config.dca_tie_break, L_G=self.config.dca_L_G)
+            dca_dsm(F_set_batch, G_set_batch, H_set_batch, optim_ids_reduced, num_outer_steps, dca_config.num_inner_steps, dca_config.inner_solver, tie_break=dca_config.tie_break, L_G=dca_config.L_G)
             
             for i in range(len(inner_discrete_values)): # plot pgm curves for each outer iteration
-                plot_pgm_curves(inner_discrete_values[i], inner_discrete_values_filtered[i], inner_continuous_values[i], inner_duality_gaps[i])
+                plot_pgm_curves(inner_discrete_values[i], inner_discrete_values_filtered[i], inner_continuous_values[i], inner_duality_gaps[i], outer_step=i)
 
         else:
             raise ValueError(f"Optimizer {self.config.optimizer} not supported. Must be 'pgm' or 'dca'.")
@@ -337,7 +343,7 @@ class DSMAttack(Attack):
             valid_tokens_mask[self.not_allowed_ids.to(model.device)] = False
 
         self.valid_token_ids = torch.nonzero(valid_tokens_mask, as_tuple=False).squeeze(1)
-        self.valid_vocab_size = int(self.valid_token_ids.numel())
+        self.valid_vocab_size = self.valid_token_ids.numel()
 
         # build inverse map: V_original -> V or -1 if disallowed
         self.valid_token_id_to_reduced_idx = torch.full(
@@ -449,7 +455,7 @@ class DSMAttack(Attack):
 
         return parts, attack_conversation
 
-def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps):
+def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, outer_step=None):
     # figure will be saved in Hydra run directory ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
 
     steps_axis = range(len(discrete_obj_values))
@@ -464,7 +470,10 @@ def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuou
     ax_gap.set_xlabel("PGM iteration")
     ax_gap.set_ylabel("Duality gap")
     ax_gap.grid(True, alpha=0.3)
-    fig.suptitle("PGM objective values and duality gap")
+    if outer_step is not None:
+        fig.suptitle(f"PGM objective values and duality gap for DCAouter step {outer_step}")
+    else:
+        fig.suptitle("PGM objective values and duality gap")
     fig.tight_layout()
     fig.savefig("pgm_curves.png", dpi=150)
     plt.close(fig)

@@ -392,17 +392,20 @@ dsm:
   seed: ${attacks._default.seed}
   generation_config: ${attacks._default.generation_config}
   optim_str_init: "x x x x x x x x x x x x x x x x x x x x" # all tested tokenizers convert this to exactly 20 tokens
-  num_steps: 300
+  num_steps: 100
   lm_reg_weight: 0.0
-  pgm_L: "normalize" # "singletons" or "normalize"
+  pgm_L: "normalize" # "singletons" or "normalize" or a float value
   pgm_tie_break: null # "random" or null
   optimizer: "pgm" # "pgm" or "dca"
   dca_config:
+    alpha: 0.0 # first sanity check that DCA basically reduces to PGM when alpha = 0
     outer_tol: 1e-5
     inner_gap_tol: 1e-4
-    num_outer_steps: 1
-    num_inner_steps: 1
+    # num_outer_steps: will be set to num_steps / num_inner_steps # for now 1
+    num_inner_steps: 100
     inner_solver: "pgm"
+    tie_break: null # "random" or null
+    L_G: "singletons" # "singletons" or "normalize" or a float value
   allow_non_ascii: False
   allow_special: False
   filter_ids: True
