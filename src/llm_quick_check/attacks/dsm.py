@@ -222,9 +222,8 @@ class DSMAttack(Attack):
         # TODO: have a common clean interface for optimizers 
         if self.config.optimizer == "pgm":
             # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
-            best_discrete_sol, best_sol_idx_filtered, best_continuous_sol, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, \
-                duality_gaps, discrete_sols_filtered, times, flops = \
-                    pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, tie_break=self.config.pgm_tie_break, gap_tol=None)
+            _, _, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, \
+            times, flops = pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, tie_break=self.config.pgm_tie_break, gap_tol=None)
 
             plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps)
         elif self.config.optimizer == "dca":
@@ -233,27 +232,23 @@ class DSMAttack(Attack):
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
             # run DCA with initial optim_ids as initial solution
-            best_discrete_sol, best_sol_idx_filtered, best_continuous_sol, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, times, flops = \
-                dca_dsm(F_set_batch, G_set_batch, H_set_batch, optim_ids_reduced, self.config.num_steps, self.config.dca_config.num_inner_steps, self.config.dca_config.inner_solver, tie_break=self.config.dca_tie_break, L_G=self.config.dca_L_G)
-      
+            discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, discrete_sols_filtered, times, flops, \
+            inner_discrete_values, inner_discrete_values_filtered, inner_continuous_values, inner_duality_gaps = \
+            dca_dsm(F_set_batch, G_set_batch, H_set_batch, optim_ids_reduced, self.config.num_steps, self.config.dca_config.num_inner_steps, self.config.dca_config.inner_solver, tie_break=self.config.dca_tie_break, L_G=self.config.dca_L_G)
+            
+            for i in range(len(inner_discrete_values)): # plot pgm curves for each outer iteration
+                plot_pgm_curves(inner_discrete_values[i], inner_discrete_values_filtered[i], inner_continuous_values[i], inner_duality_gaps[i])
+
         else:
             raise ValueError(f"Optimizer {self.config.optimizer} not supported. Must be 'pgm' or 'dca'.")
 
+        best_sol_idx_filtered = min(range(len(discrete_obj_values_filtered)), key=discrete_obj_values_filtered.__getitem__) 
         flops[0] += F_0_flops
 
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[discrete_sols_filtered]
         optim_strings = tokenizer.batch_decode(optim_ids.cpu())  # decode handles batching in v5.3+, keeping batch_decode to support older versions
         losses = [val + F_0.item() for val in discrete_obj_values_filtered]
-
-        # for i in (pbar := trange(self.config.num_steps, file=sys.stdout)):
-        #     current_loss, time_for_step, optim_ids, optim_str, flops_for_step = self._single_step(optim_ids, F_set_batch)
-        #     losses.append(current_loss)
-        #     times.append(time_for_step)
-        #     # TODO: add flops for prefill and init to initial step flops as done in GCG if we do prefill/init?
-        #     flops.append(flops_for_step)
-        #     optim_strings.append(optim_str)
-        #     pbar.set_postfix({"Loss": current_loss, "Current Attack": optim_str[:80]})
 
         logging.info(
             f"Optimization loop completed. Best attack (step {best_sol_idx_filtered}): {optim_strings[best_sol_idx_filtered][:80]!s}. "
@@ -325,23 +320,6 @@ class DSMAttack(Attack):
             total_time=t_end - t_start,
         )
         return run_result
-
-    # def _single_step(self, optim_ids: Tensor, F_set_batch: Callable[[List[Tensor], List[Tensor]], Tuple[Tensor, int]]) -> Tuple[float, float, torch.Tensor, str, int]:
-    #     """Single step of the attack.
-    #     Args:
-    #         optim_ids: Current attack token ids. Tensor of shape
-    #             (n_optim_tokens,)
-    #         F_set_batch: Submodular set function that computes the loss for a batch of attack sets
-
-    #     """
-
-    #     t_start_step = time.time()
-    #     optim_str = self.config.optim_str_init
-    #     loss, loss_flops = F_set_batch.F_batch(optim_ids)
-    #     current_loss = loss.item()
-    #     time_for_step = time.time() - t_start_step
-    #     flops_for_step = loss_flops + 0
-    #     return current_loss, time_for_step, optim_ids, optim_str, flops_for_step
 
 
     def _build_valid_vocab(self, tokenizer, model):

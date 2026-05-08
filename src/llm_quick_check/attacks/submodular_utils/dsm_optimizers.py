@@ -27,7 +27,9 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
 
     Args:
         F_set_batch: SetFnReduction instance.
-        x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
+        x_init: Initial solution.
+            - Discrete init in V^n: Tensor of type long and shape (n,).
+            - Continuous init in [0,1]^(n x b): Tensor of shape (n, b).
         num_steps: Number of iterations.
         L: Positive float or string. Lipschitz constant of the Lovasz extension f_L. 
         If F_set is monotone, set to F_set(V), which holds even if F_set is not submodular.
@@ -59,10 +61,15 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     logging.info(f"Running PGM for {num_steps} iterations, L set to {L}, and gap tolerance to {gap_tol}")
     time_start = time.time() # include initialization time in iter 0 time
 
-    if x_init.dim() == 1:
+    # Initialize X in [0,1]^(n x b)
+    if x_init.dim() == 1 and x_init.shape == (F_set_batch.map.n,):
         x_init = x_init.unsqueeze(0)
-    # map x_init to X in [0,1]^n x b
-    X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.float)
+        # map x_init to X in [0,1]^n x b
+        X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.float)
+    elif x_init.dim() == 2 and x_init.shape == (F_set_batch.map.n, F_set_batch.map.b):
+        X = x_init.to(dtype=torch.float)
+    else:
+        raise ValueError(f"x_init must be (n,) or (n,b). Got shape {tuple(x_init.shape)}.")
 
     n, b = X.shape
     D = sqrt(n*b) # domain diameter
@@ -92,8 +99,6 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     times = [0.0 for _ in range(num_steps+1)]
     flops = [0 for _ in range(num_steps+1)]
     best_discrete_obj = inf 
-    best_discrete_obj_filtered = inf
-    best_sol_idx_filtered = -1
     best_continuous_sol = None # needed when used as inner solver for DCA
     best_discrete_sol = None # needed when used as inner solver for DCA
     # best_continuous_obj = inf
@@ -109,10 +114,6 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
             best_discrete_sol = x_round
             best_continuous_sol = X
             # best_continuous_obj = cont_value
-
-        if F_round_filtered < best_discrete_obj_filtered:
-            best_discrete_obj_filtered = F_round_filtered
-            best_sol_idx_filtered = iter
 
         discrete_obj_values[iter] = F_round # best_discrete_obj
         discrete_obj_values_filtered[iter] = F_round_filtered 
@@ -158,14 +159,14 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     continuous_obj_values = continuous_obj_values[:iter+1]
     discrete_obj_values = discrete_obj_values[:iter+1]
     discrete_obj_values_filtered = discrete_obj_values_filtered[:iter+1]
+    discrete_sols_filtered = discrete_sols_filtered[:iter+1, :]
     duality_gaps = duality_gaps[:iter+1]
-    discrete_sols = discrete_sols[:iter+1, :]
     times = times[:iter+1]
     flops = flops[:iter+1]
     
-    return best_discrete_sol, best_sol_idx_filtered, best_continuous_sol, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, times, flops
+    return best_discrete_sol, best_continuous_sol, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, times, flops
 
-# TODO: replace length names like discrete_obj_values with F_values here and in pgm_lovasz 
+# TODO: replace lengthy names like discrete_obj_values with F_values here and in pgm_lovasz?
 def dca_dsm(F_set_batch: SetFnReduction, G_set_batch: SetFnReduction, H_set_batch: SetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 
 inner_solver: Literal["pgm", "mnp"], outer_tol: Optional[float] = 1e-5, inner_gap_tol: Optional[float] = 1e-4, 
 tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
@@ -214,16 +215,15 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     F_set_upperbd = SetFnReduction(make_zero_lattice_fn(n), F_set_batch.map) 
 
     discrete_obj_values = [0.0 for _ in range(num_outer_steps)]
-    inner_discrete_values = [List[float] for _ in range(num_outer_steps)]
+    inner_discrete_values: List[List[float]] = [[] for _ in range(num_outer_steps)]
     discrete_obj_values_filtered = [0.0 for _ in range(num_outer_steps)]
-    inner_discrete_values_filtered = [List[float] for _ in range(num_outer_steps)]
+    inner_discrete_values_filtered: List[List[float]] = [[] for _ in range(num_outer_steps)]
     continuous_obj_values = [0.0 for _ in range(num_outer_steps)]
-    inner_continuous_values = [List[float] for _ in range(num_outer_steps)]
-    inner_duality_gaps = [List[float] for _ in range(num_outer_steps)]
+    inner_continuous_values: List[List[float]] = [[] for _ in range(num_outer_steps)]
+    inner_duality_gaps: List[List[float]] = [[] for _ in range(num_outer_steps)]
     discrete_sols_filtered = torch.empty((num_outer_steps, n), dtype=torch.long, device=X.device)
     times = [0.0 for _ in range(num_outer_steps)]
     flops = [0 for _ in range(num_outer_steps)]
-
     # no need to compute initial obj value, it will be computed in first inner iteration
     # prev_cont_value = F_set_batch.lattice_fn.eval_batch(x_init)[0] # same as F_set_batch.lovasz_extension(X) since X is binary matrix corresponding to M^-1(x_init)
 
@@ -239,17 +239,17 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
             L_upperbd = L_G + torch.linalg.vector_norm(subgrad_H.float(), ord=2).item()
 
             # warm start pgm with current X as initial solution
-            inner_best_discrete_sol, inner_best_sol_idx_filtered, inner_best_continuous_sol, inner_discrete_values[iter], inner_discrete_values_filtered[iter], \
+            inner_best_discrete_sol, inner_best_continuous_sol, inner_discrete_values[iter], inner_discrete_values_filtered[iter], \
             inner_continuous_values[iter], inner_duality_gaps[iter], inner_discrete_sols_filtered, inner_times, inner_flops = \
                 pgm_lovasz(F_set_upperbd, X, num_inner_steps, L_upperbd, gap_tol=inner_gap_tol)
                 
             prev_cont_value = inner_continuous_values[iter][0] # f_L_upperbd(X) = g_L(X) - <subgrad_H, X> = g_L(X) - h_L(X) = f_L(X)
-            assert prev_cont_value == continuous_obj_values[iter-1] == discrete_obj_values[iter-1] if iter > 0 else F_set_batch.lattice_fn.eval_batch(x_init)[0], \
-            "prev_cont_value should match the continuous & discrete obj values of the previous outer step or the initial discrete obj value."
+            assert abs(prev_cont_value - (continuous_obj_values[iter-1] if iter > 0 else F_set_batch.lattice_fn.eval_batch(x_init)[0])) < 1e-12, \
+            "prev_cont_value should match the continuous obj value of the previous outer step."
             
         elif inner_solver == "mnp":
             # TODO: implement MNP 
-            pass
+            raise NotImplementedError("MNP is not implemented yet.")
         else:
             raise ValueError(f"Inner solver {inner_solver} not supported. Must be 'pgm' or 'mnp'.")
         
@@ -258,27 +258,27 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
 
         # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol). 
         # TODO: this can be done more efficiently without having to evaluate F (which required fwd pass). Do this later. 
+        # TODO: if we use integral solutions, no need to keep track of continuous obj values since they'll be equal to discrete ones.
         subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
         F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
         continuous_obj_values[iter] = F_set_batch.lovasz_extension(X, subgradient_F)
         assert continuous_obj_values[iter] <= prev_cont_value + inner_gap_tol, "f_L(X^{t+1}) should be less than f_L(X^t) + {inner_gap_tol}."
 
+        # TODO: check if complement set is better, use that as current sol instead. See Prop G.8 in DSMin paper.
         discrete_obj_values[iter] = F_round
         discrete_obj_values_filtered[iter] = F_round_filtered
         discrete_sols_filtered[iter] = x_round_filtered
         times[iter] = time.time() - time_start
         # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill
         # flops_subgrad_H is 0 since H doesn't involve model fwd pass, but keeping it in case we flops for other functions later
-        flops[iter] += inner_flops + flops_subgrad_F + flops_subgrad_H 
+        flops[iter] += sum(inner_flops) + flops_subgrad_F + flops_subgrad_H 
         if iter == 0: 
             flops[iter] += flops_L_G
         
         pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Discrete obj value filtered": discrete_obj_values_filtered[iter], \
         "Continuous obj value": continuous_obj_values[iter], "Inner duality gap reached": inner_duality_gaps[iter][-1]})
 
-        # TODO: add checks here that obj decreased up to inner_gap_tol?
         if prev_cont_value - continuous_obj_values[iter] <= outer_tol:
-                # TODO: check if local min, restart otw
                 F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops_local_search = F_set_batch.get_best_neighbors(x_round)
                 times[iter] = time.time() - time_start
                 if F_best_neighbor < F_round:
@@ -297,4 +297,28 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
 
         # no need to update prev_cont_value here, it will be computed in first inner iteration of next outer step
         # prev_cont_value = continuous_obj_values[iter]
-    return
+
+    # truncate to actual number of outer iterations executed 
+    discrete_obj_values = discrete_obj_values[:iter + 1]
+    inner_discrete_values = inner_discrete_values[:iter + 1]
+    discrete_obj_values_filtered = discrete_obj_values_filtered[:iter + 1]
+    inner_discrete_values_filtered = inner_discrete_values_filtered[:iter + 1]
+    continuous_obj_values = continuous_obj_values[:iter + 1]
+    inner_continuous_values = inner_continuous_values[:iter + 1]
+    inner_duality_gaps = inner_duality_gaps[:iter + 1]
+    discrete_sols_filtered = discrete_sols_filtered[:iter + 1, :]
+    times = times[:iter + 1]
+    flops = flops[:iter + 1]
+
+    return (
+        discrete_obj_values,
+        discrete_obj_values_filtered,
+        continuous_obj_values,
+        discrete_sols_filtered,
+        times,
+        flops,
+        inner_discrete_values,
+        inner_discrete_values_filtered,
+        inner_continuous_values,
+        inner_duality_gaps,
+    )
