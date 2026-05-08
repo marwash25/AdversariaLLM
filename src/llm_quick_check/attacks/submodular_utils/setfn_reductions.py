@@ -313,7 +313,7 @@ class SetFnReduction():
         return L, flops_L
 
     def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None) -> float:
-        """Evaluate the Lovasz extension f_L of F_set at X: f_L(X)"""
+        """Evaluate the Lovasz extension f_L of F_set at X: f_L(X) = <X, subgradient>"""
         if subgradient is None:
             subgradient = self.subgradient_lovasz_extension(X)[0]
         return (X * subgradient).sum().item()

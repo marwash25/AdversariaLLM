@@ -224,10 +224,10 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     times = [0.0 for _ in range(num_outer_steps)]
     flops = [0 for _ in range(num_outer_steps)]
 
-    # TODO: set prev_cont_value to init cont value
-    prev_cont_value = 0
+    # no need to compute initial obj value, it will be computed in first inner iteration
+    # prev_cont_value = F_set_batch.lattice_fn.eval_batch(x_init)[0] # same as F_set_batch.lovasz_extension(X) since X is binary matrix corresponding to M^-1(x_init)
 
-    for iter in (pbar := trange(num_outer_steps+1, file=sys.stdout)):
+    for iter in (pbar := trange(num_outer_steps, file=sys.stdout)):
         tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b) if tie_break == "random" else None
         subgrad_H, Hvalues, x_chain, flops_subgrad_H = H_set_batch.subgradient_lovasz_extension(X, tie_breaker) # subgrad_H is (n, b)
 
@@ -238,9 +238,15 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
             F_set_upperbd.lattice_fn = F_upperbd
             L_upperbd = L_G + torch.linalg.vector_norm(subgrad_H.float(), ord=2).item()
 
+            # warm start pgm with current X as initial solution
             inner_best_discrete_sol, inner_best_sol_idx_filtered, inner_best_continuous_sol, inner_discrete_values[iter], inner_discrete_values_filtered[iter], \
             inner_continuous_values[iter], inner_duality_gaps[iter], inner_discrete_sols_filtered, inner_times, inner_flops = \
                 pgm_lovasz(F_set_upperbd, X, num_inner_steps, L_upperbd, gap_tol=inner_gap_tol)
+                
+            prev_cont_value = inner_continuous_values[iter][0] # f_L_upperbd(X) = g_L(X) - <subgrad_H, X> = g_L(X) - h_L(X) = f_L(X)
+            assert prev_cont_value == continuous_obj_values[iter-1] == discrete_obj_values[iter-1] if iter > 0 else F_set_batch.lattice_fn.eval_batch(x_init)[0], \
+            "prev_cont_value should match the continuous & discrete obj values of the previous outer step or the initial discrete obj value."
+            
         elif inner_solver == "mnp":
             # TODO: implement MNP 
             pass
@@ -252,17 +258,18 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
 
         # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol). 
         # TODO: this can be done more efficiently without having to evaluate F (which required fwd pass). Do this later. 
-        # I will not count flops for this eval 
         subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
         F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
         continuous_obj_values[iter] = F_set_batch.lovasz_extension(X, subgradient_F)
+        assert continuous_obj_values[iter] <= prev_cont_value + inner_gap_tol, "f_L(X^{t+1}) should be less than f_L(X^t) + {inner_gap_tol}."
 
         discrete_obj_values[iter] = F_round
         discrete_obj_values_filtered[iter] = F_round_filtered
         discrete_sols_filtered[iter] = x_round_filtered
         times[iter] = time.time() - time_start
         # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill
-        flops[iter] += inner_flops + flops_subgrad_H # flops_subgrad_H is 0 since H doesn't involve model fwd pass, but keeping it in case we flops for other functions later
+        # flops_subgrad_H is 0 since H doesn't involve model fwd pass, but keeping it in case we flops for other functions later
+        flops[iter] += inner_flops + flops_subgrad_F + flops_subgrad_H 
         if iter == 0: 
             flops[iter] += flops_L_G
         
@@ -288,5 +295,6 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
                     logging.info(f"DCA converged after {iter} outer steps to a local min, stopping.")
                     break
 
-        prev_cont_value = continuous_obj_values[iter]
+        # no need to update prev_cont_value here, it will be computed in first inner iteration of next outer step
+        # prev_cont_value = continuous_obj_values[iter]
     return
