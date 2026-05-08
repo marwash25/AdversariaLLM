@@ -15,7 +15,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix
 from ..types import Conversation
-from .submodular_utils import EneSubmodularSetFnReduction, pgm_lovasz, DR_submodular_decomposition, SetFnReduction
+from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decomposition, SetFnReduction, pgm_lovasz, dca_dsm
 
 
 @dataclass

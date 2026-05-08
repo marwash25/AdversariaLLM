@@ -15,7 +15,7 @@ from .setfn_reductions import (
     SetFnReduction,
     subgradient_lovasz_extension,
 )
-from .dsm_optimizers import pgm_lovasz #dca_dsm
+from .dsm_optimizers import pgm_lovasz, dca_dsm
 
 __all__ = [
     "CallableLatticeFunction",
@@ -27,6 +27,6 @@ __all__ = [
     "SequentialLatticeFunction",
     "SetFnReduction",
     "subgradient_lovasz_extension",
-    #"dca_dsm",
+    "dca_dsm",
     "pgm_lovasz",
 ]
