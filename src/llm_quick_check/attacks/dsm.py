@@ -27,8 +27,16 @@ class DCAConfig:
     # num_outer_steps: will be set to num_steps / num_inner_steps 
     num_inner_steps: int = 1
     inner_solver: str = "pgm"
+    tie_break: Literal["random"] | None = None  # "random" or None 
+    # TODO: might want to also try using random tie breaking in PGM when used as inner solver, can potentially speed it up?
+    L_G: float | Literal["singletons"] = "singletons" # "singletons" or a float value
+
+
+@dataclass
+class PGMConfig:
+    """Config for the PGM optimizer."""
+    L: float | Literal["singletons", "normalize"] = "normalize"  # "singletons", "normalize", or a float value
     tie_break: Literal["random"] | None = None  # "random" or None
-    L_G: float | Literal["singletons", "normalize"] = "singletons" # "singletons" or "normalize" or a float value
 
 
 @dataclass
@@ -45,8 +53,7 @@ class DSMConfig:
     optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
     num_steps: int = 1
     lm_reg_weight: float = 0.0  # weight on -log p(x|q) when using reg_ce
-    pgm_L: float | Literal["singletons", "normalize"] = "normalize"  # "singletons", "normalize", or a float value
-    pgm_tie_break: Literal["random"] | None = None  # "random" or None
+    pgm_config: PGMConfig = field(default_factory=PGMConfig)
     optimizer: Literal["pgm", "dca"] = "pgm"  # "pgm" or "dca"
     dca_config: DCAConfig = field(default_factory=DCAConfig)
     allow_non_ascii: bool = False
@@ -225,7 +232,14 @@ class DSMAttack(Attack):
         if self.config.optimizer == "pgm":
             # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
             _, _, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, \
-            times, flops = pgm_lovasz(F_set_batch, optim_ids_reduced, self.config.num_steps, self.config.pgm_L, tie_break=self.config.pgm_tie_break, gap_tol=None)
+            times, flops = pgm_lovasz(
+                F_set_batch,
+                optim_ids_reduced,
+                self.config.num_steps,
+                self.config.pgm_config.L,
+                tie_break=self.config.pgm_config.tie_break,
+                gap_tol=None,
+            )
 
             plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps)
 

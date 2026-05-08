@@ -49,6 +49,8 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         best_sol_idx: int, index of best discrete solution in discrete_sols.
         times: List of floats, times for each iteration.
         flops: List of ints, flops for each iteration. 
+
+    #TODO: update doc string
     """
 
     # TODO: add option to only store solutions that improve best objective. 
@@ -189,6 +191,8 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
         x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
     
     Returns:
+    
+    #TODO: finish doc string
     """
     # Decided to implement DCA-Restart version for now since simpler and faster. 
     # TODO: add DCA-LS version from our ContDSMin paper later since it can perform better in practice 
@@ -212,7 +216,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     assert L_G > 0, "Lipschitz constant L_G must be positive"
 
     # create set function reduction with place holder lattice_fn and same reduction map as F_set_batch
-    F_set_upperbd = SetFnReduction(make_zero_lattice_fn(n), F_set_batch.map) 
+    F_set_upperbd = SetFnReduction(make_zero_lattice_fn(F_set_batch.k, n), F_set_batch.map) 
 
     discrete_obj_values = [0.0 for _ in range(num_outer_steps)]
     inner_discrete_values: List[List[float]] = [[] for _ in range(num_outer_steps)]
