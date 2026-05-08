@@ -257,7 +257,6 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
         F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
         continuous_obj_values[iter] = F_set_batch.lovasz_extension(X, subgradient_F)
 
-        
         discrete_obj_values[iter] = F_round
         discrete_obj_values_filtered[iter] = F_round_filtered
         discrete_sols_filtered[iter] = x_round_filtered
@@ -273,8 +272,21 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
         # TODO: add checks here that obj decreased up to inner_gap_tol?
         if prev_cont_value - continuous_obj_values[iter] <= outer_tol:
                 # TODO: check if local min, restart otw
-                F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops = F_set_batch.get_best_neighbors(x_round)
-                # logging.info(f"Duality gap {duality_gap:.4f} <= tolerance {gap_tol:.4f} reached after {iter} iterations, stopping.")
+                F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops_local_search = F_set_batch.get_best_neighbors(x_round)
+                times[iter] = time.time() - time_start
+                if F_best_neighbor < F_round:
+                    logging.info(f"DCA converged after {iter} outer steps but not to a local min, restarting from best neighbor \
+                    with discrete obj value {F_best_neighbor:.4f} and discrete obj value filtered {F_best_neighbor_filtered:.4f}.")
+                    X = F_set_batch.map.ints2binary(best_neighbor)[0].to(dtype=torch.float)
+                    discrete_obj_values[iter] = F_best_neighbor
+                    discrete_obj_values_filtered[iter] = F_best_neighbor_filtered
+                    discrete_sols_filtered[iter] = best_neighbor_filtered
+                    continuous_obj_values[iter] = F_best_neighbor # since X is set to binary matrix corresponding to M^-1(best_neighbor)
+                    flops[iter] += flops_local_search
 
-                break
+                else: 
+                    logging.info(f"DCA converged after {iter} outer steps to a local min, stopping.")
+                    break
+
+        prev_cont_value = continuous_obj_values[iter]
     return
