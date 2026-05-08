@@ -29,7 +29,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     Args:
         F_set_batch: SetFnReduction instance.
         x_init: Initial solution.
-            - Discrete init in V^n: Tensor of type long and shape (n,).
+            - Discrete init in V^n: Tensor of type long and shape (n,) or (1, n).
             - Continuous init in [0,1]^(n x b): Tensor of shape (n, b).
         num_steps: Number of iterations.
         L: Positive float or string. Lipschitz constant of the Lovasz extension f_L. 
@@ -65,14 +65,15 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
     time_start = time.time() # include initialization time in iter 0 time
 
     # Initialize X in [0,1]^(n x b)
-    if x_init.dim() == 1 and x_init.shape == (F_set_batch.map.n,):
-        x_init = x_init.unsqueeze(0)
+    if x_init.shape == (F_set_batch.map.n,) or x_init.shape == (1, F_set_batch.map.n):
+        if x_init.dim() == 1:
+            x_init = x_init.unsqueeze(0)
         # map x_init to X in [0,1]^n x b
         X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.float)
-    elif x_init.dim() == 2 and x_init.shape == (F_set_batch.map.n, F_set_batch.map.b):
+    elif x_init.shape == (F_set_batch.map.n, F_set_batch.map.b):
         X = x_init.to(dtype=torch.float)
     else:
-        raise ValueError(f"x_init must be (n,) or (n,b). Got shape {tuple(x_init.shape)}.")
+        raise ValueError(f"x_init must be (n,), (1, n), or (n,b). Got shape {tuple(x_init.shape)}.")
 
     n, b = X.shape
     D = sqrt(n*b) # domain diameter
