@@ -194,7 +194,7 @@ class SetFnReduction():
         self,
         lattice_fn: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
         reduction_map: SetToLatticeMap,
-        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
+        filter_fn: Optional[Callable[[Tensor], List[int]]] = None,
         filter_zero: bool = False,
     ):
         self.map = reduction_map
@@ -276,6 +276,7 @@ class SetFnReduction():
 
         Fvalues, flops = self.lattice_fn.eval_neighbors(x, self.map.weights, x_neighbors)
         F_best_neighbor, best_idx = torch.min(Fvalues, dim=0)
+        F_best_neighbor = F_best_neighbor.item()
         best_neighbor = x_neighbors[best_idx]
 
         if self.filter_fn is not None:
@@ -287,12 +288,13 @@ class SetFnReduction():
                 best_neighbor_filtered = torch.empty((self.n,), dtype=torch.long, device=self.device)
             else:
                 F_best_neighbor_filtered, best_idx_filtered = torch.min(Fvalues[retain_idx], dim=0)
+                F_best_neighbor_filtered = F_best_neighbor_filtered.item()
                 best_neighbor_filtered = x_neighbors[retain_idx][best_idx_filtered]
         else:
             F_best_neighbor_filtered = F_best_neighbor
             best_neighbor_filtered = best_neighbor
 
-        return F_best_neighbor.item(), best_neighbor, F_best_neighbor_filtered.item(), best_neighbor_filtered, flops 
+        return F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops 
 
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
         return subgradient_lovasz_extension(self.lattice_fn, self.map.weights, X, tie_breaker)
@@ -460,7 +462,7 @@ class EneSubmodularSetFnReduction(SetFnReduction):
         k: int,
         n: int,
         device: torch.device,
-        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
+        filter_fn: Optional[Callable[[Tensor], List[int]]] = None,
         filter_zero: bool = False,
     ):
         ene_map = EneReductionMap(k, n, device)
@@ -516,7 +518,7 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         k: int,
         n: int,
         device: torch.device,
-        filter_fn: Optional[Callable[[Tensor], Tensor]] = None,
+        filter_fn: Optional[Callable[[Tensor], List[int]]] = None,
         filter_zero: bool = False,
     ):
         binary_map = BinaryRepresentationMap(k, n, device)
