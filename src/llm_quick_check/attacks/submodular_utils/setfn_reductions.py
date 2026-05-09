@@ -327,7 +327,7 @@ class SetFnReduction():
             nnz = int(X.sum().item())
             # normally this should match F_set(S), but not for loss based on cross entropy 
             # because of difference between batched and single logits
-            return Fvalues[nnz].item()
+            return Fvalues[nnz-1].item()
 
         if subgradient is None:
             subgradient = self.subgradient_lovasz_extension(X)[0]
