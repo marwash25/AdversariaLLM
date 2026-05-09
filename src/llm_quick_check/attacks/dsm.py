@@ -61,10 +61,9 @@ class DSMConfig:
 
 @dataclass
 class DSMAttackStepResult(AttackStepResult):
-    continuous_loss: float
     unfiltered_loss: float # discrete_obj_values + F_0
     continuous_loss: float
-    duality_gap: List[float] | float # inner_duality_gaps for DCA, duality_gap for PGM
+    duality_gaps: List[float] | float # inner_duality_gaps for DCA, duality_gap for PGM
     # store these info for DCA, set to None for PGM. Later might want to store a separate result for each inner step of DCA.
     inner_discrete_values: List[float] | None = None
     inner_discrete_values_filtered: List[float] | None = None
@@ -278,20 +277,22 @@ class DSMAttack(Attack):
         if not valid_idx:
             raise ValueError("Every optimization step has no valid filtered solution.")
         discrete_sols_filtered = discrete_sols_filtered[valid_idx]
-        discrete_obj_values_filtered = [discrete_obj_values_filtered[i] for i in valid_idx]
-        times = [times[i] for i in valid_idx]
-        flops = [flops[i] for i in valid_idx]
+        # discrete_obj_values_filtered = [discrete_obj_values_filtered[i] for i in valid_idx]
+        # times = [times[i] for i in valid_idx]
+        # flops = [flops[i] for i in valid_idx]
 
-        best_sol_idx_filtered = min(range(len(discrete_obj_values_filtered)), key=discrete_obj_values_filtered.__getitem__) 
-        flops[0] += F_0_flops
+        best_sol_idx_filtered = min(range(len(valid_idx)), key=lambda i: discrete_obj_values_filtered[valid_idx[i]]) 
+        flops[valid_idx[0]] += F_0_flops
 
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[discrete_sols_filtered]
         optim_strings = tokenizer.batch_decode(optim_ids.cpu())  # decode handles batching in v5.3+, keeping batch_decode to support older versions
         losses = [val + F_0.item() for val in discrete_obj_values_filtered]
+        unfiltered_losses = [val + F_0.item() for val in discrete_obj_values]
+        continuous_losses = [val + F_0.item() for val in continuous_obj_values]
 
         logging.info(
-            f"Optimization loop completed. Best attack (step {best_sol_idx_filtered}): {optim_strings[best_sol_idx_filtered][:80]!s}. "
+            f"Optimization loop completed. Best attack (step {valid_idx[best_sol_idx_filtered]}): {optim_strings[best_sol_idx_filtered][:80]!s}. "
             f"Optimization time: {time.time() - t_start:.2f}s."
         )
         # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
@@ -308,11 +309,8 @@ class DSMAttack(Attack):
                     raise ValueError(f"TokenMergeError encountered for attack: {attack} at step {idx}. This should not happen when filtering is enabled.")
                 else:
                     logging.warning(f"TokenMergeError encountered for attack: {attack} at step {idx}. Skipping it.")
-                    #TODO: we should also skip idx from other results lists
                     optim_strings.pop(idx)
-                    losses.pop(idx)
-                    times.pop(idx)
-                    flops.pop(idx)
+                    valid_idx.pop(idx)
                     continue
 
             prompt_token_list.append(torch.cat(parts[:5]))
@@ -341,25 +339,26 @@ class DSMAttack(Attack):
         t_end = time.time()
 
         # --- Assemble Results ---
-        #TODO: If we want to also store continuous loss and duality gap, we can create subclasses of AttackStepResult for that.
+        # model_completions, model_input, and model_input_tokens have only valid steps aligned with optim_strings
+        # all other results lists have results for all steps including invalid ones
         steps_results = []
         for i in range(len(optim_strings)):
             step_result = DSMAttackStepResult(
-                step=i,
+                step=valid_idx[i],
                 model_completions=completions[i],
-                time_taken=times[i],
-                loss=losses[i],
-                unfiltered_loss=losses[i],
-                continuous_loss=continuous_obj_values[i],
-                flops=flops[i],
+                time_taken=times[valid_idx[i]],
+                loss=losses[valid_idx[i]],
+                unfiltered_loss=unfiltered_losses[valid_idx[i]],
+                continuous_loss=continuous_losses[valid_idx[i]],
+                flops=flops[valid_idx[i]],
                 model_input=attack_conversations[i],
                 model_input_tokens=prompt_token_list[i].tolist(),
-                inner_discrete_values=inner_discrete_values[i] if self.config.optimizer == "dca" else None,
-                inner_discrete_values_filtered=inner_discrete_values_filtered[i] if self.config.optimizer == "dca" else None,
-                inner_continuous_values=inner_continuous_values[i] if self.config.optimizer == "dca" else None,
-                duality_gaps=inner_duality_gaps[i] if self.config.optimizer == "dca" else duality_gaps[i],
-                inner_times=inner_times[i] if self.config.optimizer == "dca" else None,
-                inner_flops=inner_flops[i] if self.config.optimizer == "dca" else None,
+                inner_discrete_values=inner_discrete_values[valid_idx[i]] if self.config.optimizer == "dca" else None,
+                inner_discrete_values_filtered=inner_discrete_values_filtered[valid_idx[i]] if self.config.optimizer == "dca" else None,
+                inner_continuous_values=inner_continuous_values[valid_idx[i]] if self.config.optimizer == "dca" else None,
+                duality_gaps=inner_duality_gaps[valid_idx[i]] if self.config.optimizer == "dca" else duality_gaps[valid_idx[i]],
+                inner_times=inner_times[valid_idx[i]] if self.config.optimizer == "dca" else None,
+                inner_flops=inner_flops[valid_idx[i]] if self.config.optimizer == "dca" else None,
             )
             steps_results.append(step_result)
 
