@@ -112,7 +112,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b) if tie_break == "random" else None
         subgradient, Fvalues, x_chain, flops_subgrad = F_set_batch.subgradient_lovasz_extension(X, tie_breaker)
         F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
-        cont_value = F_set_batch.lovasz_extension(X, subgradient)
+        cont_value = F_set_batch.lovasz_extension(X, subgradient, Fvalues)
         
         if F_round < best_discrete_obj: 
             best_discrete_obj = F_round
@@ -271,7 +271,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
         # TODO: if we use integral solutions, no need to keep track of continuous obj values since they'll be equal to discrete ones.
         subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
         F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
-        continuous_obj_values[iter] = F_set_batch.lovasz_extension(X, subgradient_F)
+        continuous_obj_values[iter] = F_set_batch.lovasz_extension(X, subgradient_F, Fvalues)
 
         if continuous_obj_values[iter] > prev_cont_value + inner_duality_gaps[iter][-1]:
             logging.warning(

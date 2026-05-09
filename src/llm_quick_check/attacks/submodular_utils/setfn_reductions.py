@@ -317,10 +317,21 @@ class SetFnReduction():
         L = torch.linalg.vector_norm(singleton_vals.float(), ord=2).item()
         return L, flops_L
 
-    def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None) -> float:
-        """Evaluate the Lovasz extension f_L of F_set at X: f_L(X) = <X, subgradient>"""
+    def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None) -> float:
+        """Evaluate the Lovasz extension f_L of F_set at X: f_L(X) = <X, subgradient>
+        If X is of type long (assumed to be a binary matrix), return F_set(S) where S 
+        is the set of non-zeros indices in X to avoid numerical errors.
+        """
+        if X.dtype == torch.long and Fvalues is not None:
+            assert ((X == 0) | (X == 1)).all().item(), "X must be a binary matrix"
+            nnz = int(X.sum().item())
+            # normally this should match F_set(S), but not for loss based on cross entropy 
+            # because of difference between batched and single logits
+            return Fvalues[nnz].item()
+
         if subgradient is None:
             subgradient = self.subgradient_lovasz_extension(X)[0]
+        
         return (X * subgradient).sum().item()
 
     def round_lovasz_extension(
