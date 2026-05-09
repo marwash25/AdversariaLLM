@@ -30,7 +30,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         F_set_batch: SetFnReduction instance.
         x_init: Initial solution.
             - Discrete init in V^n: Tensor of type long and shape (n,) or (1, n).
-            - Continuous init in [0,1]^(n x b): Tensor of shape (n, b).
+            - Continuous init in [0,1]^(n x b): Tensor of shape (n, b) of type float or long.
         num_steps: Number of iterations.
         L: Positive float or string. Lipschitz constant of the Lovasz extension f_L. 
         If F_set is monotone, set to F_set(V), which holds even if F_set is not submodular.
@@ -69,9 +69,10 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         if x_init.dim() == 1:
             x_init = x_init.unsqueeze(0)
         # map x_init to X in [0,1]^n x b
-        X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.float)
+        X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.long)
     elif x_init.shape == (F_set_batch.map.n, F_set_batch.map.b):
-        X = x_init.to(dtype=torch.float)
+        assert x_init.dtype == torch.float or x_init.dtype == torch.long, "x_init must be of type float or long"
+        X = x_init
     else:
         raise ValueError(f"x_init must be (n,), (1, n), or (n,b). Got shape {tuple(x_init.shape)}.")
 
@@ -205,7 +206,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     if x_init.dim() == 1:
         x_init = x_init.unsqueeze(0)
     # map x_init to X in [0,1]^n x b
-    X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.float)
+    X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.long)
     n, b = X.shape
 
     flops_L_G = 0
@@ -230,8 +231,11 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     discrete_sols_filtered = torch.empty((num_outer_steps, n), dtype=torch.long, device=X.device)
     times = [0.0 for _ in range(num_outer_steps)]
     flops = [0 for _ in range(num_outer_steps)]
+    
     # no need to compute initial obj value, it will be computed in first inner iteration
-    # prev_cont_value = F_set_batch.lattice_fn.eval_batch(x_init)[0] # same as F_set_batch.lovasz_extension(X) since X is binary matrix corresponding to M^-1(x_init)
+    # prev_cont_value = F_set_batch.lattice_fn.eval_batch(x_init)[0] 
+    # should be same as F_set_batch.lovasz_extension(X) since X is binary matrix corresponding to M^-1(x_init)
+    # but not for cross-entropy based losses because of difference between batched and single logits
 
     for iter in (pbar := trange(num_outer_steps, file=sys.stdout)):
         tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b) if tie_break == "random" else None
@@ -250,7 +254,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
                 pgm_lovasz(F_set_upperbd, X, num_inner_steps, L_upperbd, gap_tol=inner_gap_tol)
                 
             prev_cont_value = inner_continuous_values[iter][0] # f_L_upperbd(X) = g_L(X) - <subgrad_H, X> = g_L(X) - h_L(X) = f_L(X)
-            assert abs(prev_cont_value - (continuous_obj_values[iter-1] if iter > 0 else F_set_batch.lattice_fn.eval_batch(x_init)[0])) < 1e-12, \
+            assert abs(prev_cont_value - (continuous_obj_values[iter-1] if iter > 0 else  F_set_batch.lovasz_extension(X)))  < 1e-12, \
             "prev_cont_value should match the continuous obj value of the previous outer step."
             
         elif inner_solver == "mnp":
@@ -259,7 +263,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
         else:
             raise ValueError(f"Inner solver {inner_solver} not supported. Must be 'pgm' or 'mnp'.")
         
-        # TODO: alternatively use integral X = F_set_batch.map.ints2binary(inner_best_discrete_sol)[0].to(dtype=torch.float)
+        # TODO: alternatively use integral X = F_set_batch.map.ints2binary(inner_best_discrete_sol)[0].to(dtype=torch.long)
         X = inner_best_continuous_sol 
 
         # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol). 
@@ -296,7 +300,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
                 if F_best_neighbor < F_round:
                     logging.info(f"DCA converged after {iter} outer steps but not to a local min, restarting from best neighbor "
                                  f"with discrete obj value {F_best_neighbor:.4f} and discrete obj value filtered {F_best_neighbor_filtered:.4f}.")
-                    X = F_set_batch.map.ints2binary(best_neighbor.unsqueeze(0))[0].to(dtype=torch.float)
+                    X = F_set_batch.map.ints2binary(best_neighbor.unsqueeze(0))[0].to(dtype=torch.long)
                     discrete_obj_values[iter] = F_best_neighbor
                     # use current filtered discrete solution if better than best filtered neighbor 
                     discrete_obj_values_filtered[iter] = min(F_best_neighbor_filtered, F_round_filtered)
