@@ -136,7 +136,7 @@ def compute_loss(
     input_ids = original_tokens.unsqueeze(0).repeat(attack_ids.shape[0], 1)  # (batch_size, seq_len)
     input_ids[:, attack_mask] = attack_ids
     # TODO: add KV caching as done in GCG.
-    logits = model(input_ids).logits
+    logits = model(input_ids).logits.to(dtype=torch.float32) # lower precision will lead to issues in optimization
     flops = get_flops(model, input_ids.numel(), 0, "forward")
 
     # logits of token i-1 predicts token i
