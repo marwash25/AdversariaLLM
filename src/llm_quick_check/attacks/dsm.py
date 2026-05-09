@@ -20,7 +20,7 @@ from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decompo
 @dataclass
 class DCAConfig:
     """Config for the DCA optimizer."""
-    alpha: float = 0.0 # runs PGM in that case
+    alpha: float | Literal["F_0"] = "F_0" # runs PGM in that case
     outer_tol: float = 1e-5
     inner_gap_tol: float = 1e-4
     # num_outer_steps: will be set to num_steps / num_inner_steps 
@@ -244,10 +244,15 @@ class DSMAttack(Attack):
 
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
+            # set alpha = - 4 F_0 if not provided
+            alpha = - 4 * F_0.item() if dca_config.alpha == "F_0" else dca_config.alpha
+            logging.info(f"DR-submodular decomposition using alpha: {alpha:.4f}")
+
             # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             # decompose F into the difference of two DR-submodular functions G and H
-            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, dca_config.alpha, device)
+            # TODO: add check that F(x) >= -alpha/4 whenever we evaluate F(x) and keep track of the largest F(x) we see to potentially lower alpha 
+            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, alpha, device)
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
             # run DCA with initial optim_ids as initial solution
