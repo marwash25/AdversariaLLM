@@ -62,9 +62,16 @@ class DSMConfig:
 @dataclass
 class DSMAttackStepResult(AttackStepResult):
     continuous_loss: float
-    duality_gap: float
-    outer_step: int
-    inner_step: int
+    unfiltered_loss: float # discrete_obj_values + F_0
+    continuous_loss: float
+    duality_gap: List[float] | float # inner_duality_gaps for DCA, duality_gap for PGM
+    # store these info for DCA, set to None for PGM. Later might want to store a separate result for each inner step of DCA.
+    inner_discrete_values: List[float] | None = None
+    inner_discrete_values_filtered: List[float] | None = None
+    inner_continuous_values: List[float] | None = None
+    inner_times: List[float] | None = None  
+    inner_flops: List[int] | None = None
+
 
 def _masked_cross_entropy(
     shift_logits: Tensor,
@@ -257,7 +264,7 @@ class DSMAttack(Attack):
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
             # run DCA with initial optim_ids as initial solution
             discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, discrete_sols_filtered, times, flops, \
-            inner_discrete_values, inner_discrete_values_filtered, inner_continuous_values, inner_duality_gaps = \
+            inner_discrete_values, inner_discrete_values_filtered, inner_continuous_values, inner_duality_gaps, inner_times, inner_flops = \
             dca_dsm(F_set_batch, G_set_batch, H_set_batch, optim_ids_reduced, num_outer_steps, dca_config.num_inner_steps, dca_config.inner_solver, tie_break=dca_config.tie_break, L_G=dca_config.L_G)
             
             for i in range(len(inner_discrete_values)): # plot pgm curves for each outer iteration
@@ -301,6 +308,7 @@ class DSMAttack(Attack):
                     raise ValueError(f"TokenMergeError encountered for attack: {attack} at step {idx}. This should not happen when filtering is enabled.")
                 else:
                     logging.warning(f"TokenMergeError encountered for attack: {attack} at step {idx}. Skipping it.")
+                    #TODO: we should also skip idx from other results lists
                     optim_strings.pop(idx)
                     losses.pop(idx)
                     times.pop(idx)
@@ -336,14 +344,22 @@ class DSMAttack(Attack):
         #TODO: If we want to also store continuous loss and duality gap, we can create subclasses of AttackStepResult for that.
         steps_results = []
         for i in range(len(optim_strings)):
-            step_result = AttackStepResult(
+            step_result = DSMAttackStepResult(
                 step=i,
                 model_completions=completions[i],
                 time_taken=times[i],
                 loss=losses[i],
+                unfiltered_loss=losses[i],
+                continuous_loss=continuous_obj_values[i],
                 flops=flops[i],
                 model_input=attack_conversations[i],
                 model_input_tokens=prompt_token_list[i].tolist(),
+                inner_discrete_values=inner_discrete_values[i] if self.config.optimizer == "dca" else None,
+                inner_discrete_values_filtered=inner_discrete_values_filtered[i] if self.config.optimizer == "dca" else None,
+                inner_continuous_values=inner_continuous_values[i] if self.config.optimizer == "dca" else None,
+                duality_gaps=inner_duality_gaps[i] if self.config.optimizer == "dca" else duality_gaps[i],
+                inner_times=inner_times[i] if self.config.optimizer == "dca" else None,
+                inner_flops=inner_flops[i] if self.config.optimizer == "dca" else None,
             )
             steps_results.append(step_result)
 

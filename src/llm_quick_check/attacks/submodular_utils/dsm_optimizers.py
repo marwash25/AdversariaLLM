@@ -325,7 +325,9 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     inner_duality_gaps = inner_duality_gaps[:iter + 1]
     discrete_sols_filtered = discrete_sols_filtered[:iter + 1, :]
     times = times[:iter + 1]
+    inner_times = inner_times[:iter + 1]
     flops = flops[:iter + 1]
+    inner_flops = inner_flops[:iter + 1]
 
     return (
         discrete_obj_values,
@@ -338,4 +340,6 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
         inner_discrete_values_filtered,
         inner_continuous_values,
         inner_duality_gaps,
+        inner_times,
+        inner_flops,
     )
