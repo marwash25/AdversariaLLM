@@ -375,7 +375,9 @@ class SetFnReduction():
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
         rows = flat_idx // self.b
         cols = flat_idx % self.b
-        singleton_vals, flops = self.set_fn(rows.view(1), cols.view(1))
+        rows_list = [r.view(1) for r in rows]
+        cols_list = [c.view(1) for c in cols]
+        singleton_vals, flops = self.set_fn(rows_list, cols_list)
         return singleton_vals, flops
 
     def singletons_L_bound(self, singleton_vals: Optional[Tensor] = None) -> Tuple[float, int]:  # used in pgm and DCA
