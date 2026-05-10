@@ -162,6 +162,74 @@ class SetToLatticeMap(ABC):
                 x[i].index_add_(0, rows, self.weights[cols])  # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
+    # TODO: potentially move to these versions of ints2set and set2ints for efficiency. 
+    # Issue: zero vectors which correspond to empty sets are not included in the output!
+    # def ints2set_batched(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+    #     """Same map as older ``ints2set``, but returns a single sparse COO layout instead of per-batch lists.
+
+    #     Args:
+    #         x: Tensor of type long and shape (batch_size, n). Each row is an integer vector in V^n.
+
+    #     Returns:
+    #         batch_idx, rows, cols: 1D long tensors of equal length ``total`` such that for each t,
+    #         (rows[t], cols[t]) lies in S^{batch_idx[t]} and M(S^i) = x[i] for all i. Batches with no
+    #         elements do not appear (no rows for that ``i`` in ``batch_idx``).
+    #     """
+    #     assert x.dim() == 2 and x.shape[1] == self.n, "x must have shape (batch_size, n)"
+    #     assert x.dtype == torch.long, "x must be of type long"
+    #     assert x.device == self.device, "x must be on the same device as self.device"
+    #     mask = self.ints2binary(x)
+    #     batch_idx, rows, cols = mask.nonzero(as_tuple=True)
+    #     return batch_idx.long(), rows.long(), cols.long()
+
+    # def set2ints_batched(
+    #     self,
+    #     batch_idx: Tensor,
+    #     rows: Tensor,
+    #     cols: Tensor,
+    #     batch_size: Optional[int] = None,
+    # ) -> Tensor:
+    #     """Same map as ``set2ints``, but sets are given as one COO stream (``batch_idx``, ``rows``, ``cols``).
+
+    #     For each index t, element (rows[t], cols[t]) belongs to S^{batch_idx[t]}. Multiple entries with the
+    #     same ``batch_idx`` and ``rows`` (different ``cols``) accumulate like ``index_add_``.
+
+    #     Args:
+    #         batch_idx: 1D long tensor, batch index in [0, batch_size) for each set element.
+    #         rows: 1D long tensor in [0, n).
+    #         cols: 1D long tensor in [0, b).
+    #         batch_size: Number of batches (rows of the output ``x``). If ``None``, inferred as
+    #             ``int(batch_idx.max().item()) + 1`` when there is at least one element; if there are no
+    #             elements, must be provided (use ``0`` for an empty output of shape ``(0, n)``).
+
+    #     Returns:
+    #         x: Tensor of shape (batch_size, n) with the same semantics as ``set2ints``.
+    #     """
+    #     assert batch_idx.dim() == 1 and rows.dim() == 1 and cols.dim() == 1
+    #     assert batch_idx.shape == rows.shape == cols.shape, "batch_idx, rows, cols must have the same shape"
+    #     assert batch_idx.device == rows.device == cols.device == self.device
+    #     assert batch_idx.dtype == rows.dtype == cols.dtype == torch.long
+
+    #     total = batch_idx.numel()
+    #     if total == 0:
+    #         if batch_size is None:
+    #             return torch.zeros((0, self.n), dtype=torch.long, device=self.device)
+    #         return torch.zeros((batch_size, self.n), dtype=torch.long, device=self.device)
+
+    #     if batch_size is None:
+    #         batch_size = int(batch_idx.max().item()) + 1
+    #     assert batch_size > 0, "batch_size must be positive when there is at least one set element"
+    #     assert (batch_idx >= 0).all() and (batch_idx < batch_size).all(), (
+    #         "batch_idx must be in [0, batch_size)"
+    #     )
+    #     assert (rows >= 0).all() and (rows < self.n).all(), "rows must be in [0, n)"
+    #     assert (cols >= 0).all() and (cols < self.b).all(), "cols must be in [0, b)"
+
+    #     flat_idx = batch_idx * self.n + rows
+    #     x_flat = torch.zeros(batch_size * self.n, dtype=torch.long, device=self.device)
+    #     x_flat.scatter_add_(0, flat_idx, self.weights[cols])
+    #     return x_flat.view(batch_size, self.n)
+
     def binary2ints(self, X: Tensor) -> Tensor: # TODO: not used anywhere yet, remove if not needed. 
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by binary matrices X in {0,1}^n x b:
@@ -302,20 +370,65 @@ class SetFnReduction():
     # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class
     # or as separate functions?
 
-    def singletons_L_bound(self) -> Tuple[float, int]:  # used in pgm and DCA
-        """Compute sqrt(sum_i F_set({i})^2) where i ranges over [n] x [b].
+    def eval_singletons(self) -> Tuple[Tensor, int]:
+        """Evaluate F_set({(i, j)}) for all (i, j) in [n] x [b] in one batched call"""
+        flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
+        rows = flat_idx // self.b
+        cols = flat_idx % self.b
+        singleton_vals, flops = self.set_fn(rows.view(1), cols.view(1))
+        return singleton_vals, flops
+
+    def singletons_L_bound(self, singleton_vals: Optional[Tensor] = None) -> Tuple[float, int]:  # used in pgm and DCA
+        """Compute sqrt(sum_{(i, j) in [n] x [b]} F_set({(i, j)})^2)
 
            If F_set is submodular, this is a valid bound on the Lipschitz constant
            of its Lovasz extension f_L.
         """
-        # evaluate all singletons in one batched call to F_set_batch.
-        rows = torch.arange(self.n * self.b, device=self.device, dtype=torch.long) // self.b
-        cols = torch.arange(self.n * self.b, device=self.device, dtype=torch.long) % self.b
-        rows_list = [r.view(1) for r in rows]
-        cols_list = [c.view(1) for c in cols]
-        singleton_vals, flops_L = self.set_fn(rows_list, cols_list)
-        L = torch.linalg.vector_norm(singleton_vals.float(), ord=2).item()
+        flops_L = 0
+        if singleton_vals is None:
+            singleton_vals, flops_L = self.eval_singletons()
+        L = torch.linalg.vector_norm(singleton_vals, ord=2).item()
         return L, flops_L
+
+    def eval_all_pairs(self) -> Tuple[Tensor, Tensor, int]:
+        """Evaluate F_set({v1, v2}) for all v1 = (i_1, j_1), v2 = (i_2, j_2) in [n] x [b]
+        with v_1 != v_2, in one batched call.
+
+        Returns:
+            pair_vals: Tensor of shape (num_pairs,) with num_pairs = n * b * (n * b - 1) / 2 and
+                pair_vals[p] = F_set({v1, v2}) for the p-th (v1, v2) pair.
+            pair_idx: Tensor of shape (2, num_pairs) with the (v1, v2) flat indices for each pair.
+            flops_L: flop count, int.
+        #TODO: can be made more efficient by having more efficient version of set2ints
+        """
+        nb = self.n * self.b
+        # enumerate all pairs of flattened indices v1, v2 in [n * b] with v1 < v2
+        flat_pair_idx = torch.triu_indices(nb, nb, offset=1, device=self.device)  # (2, num_pairs)
+        idx_v1, idx_v2 = flat_pair_idx[0], flat_pair_idx[1]
+
+        rows_v1, cols_v1 = idx_v1 // self.b, idx_v1 % self.b
+        rows_v2, cols_v2 = idx_v2 // self.b, idx_v2 % self.b
+
+        rows_list = list(torch.stack([rows_v1, rows_v2], dim=1).unbind(0))
+        cols_list = list(torch.stack([cols_v1, cols_v2], dim=1).unbind(0))
+        pair_vals, flops = self.set_fn(rows_list, cols_list)
+        return pair_vals, flat_pair_idx, flops
+
+    def alpha_zero_bound(self, singleton_vals: Optional[Tensor] = None) -> float:
+        """ Compute a heuristic bound alpha(emptyset) on the alpha parameter for the DR-submodular decomposition:
+        alpha = min_S alpha(S) = min_S F_set(v1 | S) - F_set(v2 | S + {v1}) for all v1, v2 in [n] x [b] with v1 != v2
+        so alpha(emptyset) = min_{v1, v2} F_set(v1) + F_set(v2) - F_set({v1, v2}) for all v1, v2 in [n] x [b] with v1 != v2
+        """
+        nb = self.n * self.b
+        if nb < 2:
+            return 0.0
+        flops_singletons = 0
+        if singleton_vals is None:
+            singleton_vals, flops_singletons = self.eval_singletons()
+        pair_vals, flat_pair_idx, flops_pairs = self.eval_all_pairs()
+        idx_v1, idx_v2 = flat_pair_idx[0], flat_pair_idx[1]
+        cross = (singleton_vals[idx_v1] + singleton_vals[idx_v2] - pair_vals)
+        return cross.min().item(), flops_singletons + flops_pairs
 
     def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None) -> float:
         """Evaluate the Lovasz extension f_L of F_set at X: f_L(X) = <X, subgradient>
