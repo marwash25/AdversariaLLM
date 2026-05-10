@@ -20,7 +20,7 @@ from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decompo
 @dataclass
 class DCAConfig:
     """Config for the DCA optimizer."""
-    alpha: float | Literal["F_0"] = "F_0" # runs PGM in that case
+    alpha: float | Literal["alpha_zero"] = "alpha_zero" # runs PGM in that case
     outer_tol: float = 1e-5
     inner_gap_tol: float = 1e-4
     # num_outer_steps: will be set to num_steps / num_inner_steps 
@@ -250,21 +250,45 @@ class DSMAttack(Attack):
 
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
-            # set alpha = - 4 F_0 if not provided
-            alpha = - 4 * F_0.item() if dca_config.alpha == "F_0" else dca_config.alpha
+            if dca_config.alpha == "alpha_zero":
+                F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
+                alpha, flops_alpha_zero = F_set_batch.alpha_zero_bound(F_singleton_vals)
+                L_F = F_set_batch.singletons_L_bound(F_singleton_vals)
+            else:
+                alpha = dca_config.alpha
+
             logging.info(f"DR-submodular decomposition using alpha: {alpha:.4f}")
 
             # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
+            assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
             # decompose F into the difference of two DR-submodular functions G and H
             # TODO: add check that F(x) >= -alpha/4 whenever we evaluate F(x) and keep track of the largest F(x) we see to potentially lower alpha 
             G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, alpha, device)
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
+            if dca_config.alpha == "alpha_zero" and dca_config.L_G == "singletons":
+                L_H, flops_L_H = H_set_batch.singletons_L_bound() #TODO: add flops_L_H, flops_alpha_zero, flops_F_singletons to flops count of first step
+                L_G = L_F + L_H
+            else:
+                L_G = dca_config.L_G #TODO: if we keep "alpha_zero" move L_G computation here in all cases
+            
             # run DCA with initial optim_ids as initial solution
             discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, discrete_sols_filtered, times, flops, \
             inner_discrete_values, inner_discrete_values_filtered, inner_continuous_values, inner_duality_gaps, inner_times, inner_flops = \
-            dca_dsm(F_set_batch, G_set_batch, H_set_batch, optim_ids_reduced, num_outer_steps, dca_config.num_inner_steps, dca_config.inner_solver, tie_break=dca_config.tie_break, L_G=dca_config.L_G)
+            dca_dsm(
+                F_set_batch,
+                G_set_batch,
+                H_set_batch,
+                optim_ids_reduced,
+                num_outer_steps,
+                dca_config.num_inner_steps,
+                dca_config.inner_solver,
+                outer_tol=dca_config.outer_tol,
+                inner_gap_tol=dca_config.inner_gap_tol,
+                tie_break=dca_config.tie_break,
+                L_G=L_G,
+            )
             
             for i in range(len(inner_discrete_values)): # plot pgm curves for each outer iteration
                 plot_pgm_curves(inner_discrete_values[i], inner_discrete_values_filtered[i], inner_continuous_values[i], inner_duality_gaps[i], outer_step=i)
@@ -298,7 +322,7 @@ class DSMAttack(Attack):
         # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
 
         # --- Generate Completions ---
-        # get tokens of attack conversations with otimized attack strings and empty assistant content
+        # get tokens of attack conversations with optimized attack strings and empty assistant content
         prompt_token_list = []
         attack_conversations = []
         for idx, attack in enumerate(optim_strings):
@@ -309,13 +333,13 @@ class DSMAttack(Attack):
                     raise ValueError(f"TokenMergeError encountered for attack: {attack} at step {idx}. This should not happen when filtering is enabled.")
                 else:
                     logging.warning(f"TokenMergeError encountered for attack: {attack} at step {idx}. Skipping it.")
-                    optim_strings.pop(idx)
                     valid_idx.pop(idx)
                     continue
 
             prompt_token_list.append(torch.cat(parts[:5]))
             attack_conversations.append(attack_conversation)
 
+        optim_strings = [optim_strings[i] for i in valid_idx]
         t_start_gen = time.time()
         completions = generate_ragged_batched(
             model,

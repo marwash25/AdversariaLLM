@@ -213,9 +213,10 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     if isinstance(L_G, str):
         if L_G == "singletons":
             L_G, flops_L_G = G_set_batch.singletons_L_bound()
-            L_G = max(L_G, 1e-12) # L_G < 1e-12 shouldn't happen unless G = 0 but just in case
         else:
             raise ValueError("If L_G is a string, it must be 'singletons'.")
+
+    L_G = max(L_G, 1e-12) # L_G < 1e-12 shouldn't happen unless G = 0 but just in case
     assert L_G > 0, "Lipschitz constant L_G must be positive"
 
     # create set function reduction with place holder lattice_fn and same reduction map as F_set_batch
