@@ -394,14 +394,14 @@ dsm:
   optim_str_init: "x x x x x x x x x x x x x x x x x x x x"
   #" normally Of someone asking_questionSurefin rhabiither complex audi sheordoither entire x nejen emoji Western" # best attack found by GCG results in outputs/testing/gcg/results/results/run-44__2026-04-13__22h30m12s.json
   # "x x x x x x x x x x x x x x x x x x x x" # all tested tokenizers convert this to exactly 20 tokens
-  num_steps: 1000
+  num_steps: 2
   lm_reg_weight: 0.0
   pgm_config:
     L: "normalize" # "singletons" or "normalize" or a float value
     tie_break: null # "random" or null
-  optimizer: "dca" # "pgm" or "dca"
+  optimizer: "pgm" # "pgm" or "dca"
   dca_config:
-    alpha: "F_0" # sanity check that DCA basically reduces to PGM when alpha = 0
+    alpha: -0.5190 # "alpha_zero" # sanity check that DCA basically reduces to PGM when alpha = 0
     outer_tol: 1e-5
     inner_gap_tol: 1e-4
     # num_outer_steps: will be set to num_steps / num_inner_steps # for now 1
