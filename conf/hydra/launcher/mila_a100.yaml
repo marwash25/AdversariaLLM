@@ -15,5 +15,5 @@ setup: []
 gres: gpu:a100l:1
 mem_gb: 32
 cpus_per_task: 6
-partition: unkillable
+partition: short-unkillable #unkillable
 # array_parallelism: 24
