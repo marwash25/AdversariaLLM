@@ -144,7 +144,10 @@ def compute_loss(
     input_ids = original_tokens.unsqueeze(0).repeat(attack_ids.shape[0], 1)  # (batch_size, seq_len)
     input_ids[:, attack_mask] = attack_ids
     # TODO: add KV caching as done in GCG.
-    logits = model(input_ids).logits.to(dtype=torch.float32) # lower precision will lead to issues in optimization
+    # use float32 for logits to avoid issues in optimization with lower precision
+    # logits device can differ from masks when using several GPUs, move it to same device
+    logits = model(input_ids).logits.to(dtype=torch.float32)
+    logits = logits.to(device=model.device)
     flops = get_flops(model, input_ids.shape[1], 0, "forward") # flops estimate for one attack_id
 
     # logits of token i-1 predicts token i
@@ -222,6 +225,7 @@ class DSMAttack(Attack):
         t_start = time.time()
         # --- Optimize Attack ---
         device = model.device
+        logging.info(f"model device: {device}")
         tokens = tokens.to(device)
         attack_mask = attack_mask.to(device)
         target_mask = target_mask.to(device)

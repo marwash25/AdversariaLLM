@@ -472,6 +472,8 @@ def generate_ragged(
                             break
 
                         for layer in past_key_values.layers:
+                            # still_active.device can differ from layer.keys.device when using several GPUs.
+                            still_active = still_active.to(layer.keys.device) 
                             layer.keys = layer.keys[still_active].clone()
                             layer.values = layer.values[still_active].clone()
 

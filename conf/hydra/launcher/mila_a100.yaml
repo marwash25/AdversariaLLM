@@ -12,7 +12,7 @@ signal_delay_s: 600
 max_num_timeout: 20
 additional_parameters: {}
 setup: []
-gres: gpu:a100l:1
+gres: gpu:a100l:4
 mem_gb: 32
 cpus_per_task: 6
 partition: short-unkillable #unkillable
