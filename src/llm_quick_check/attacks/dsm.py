@@ -135,7 +135,7 @@ def compute_loss(
 
     Returns:
         loss: Tensor of shape (batch_size,)
-        flops: int, number of flops for the forward pass for the full batch
+        flops: Tensor of shape (batch_size,), number of flops for the forward pass per attack_id in the batch
 
     """
     # TODO: if we revert to logits inputs, put back description logits: logits outputs for the full conversation. Tensor of shape (batch_size, seq_len, vocab_size)
@@ -144,7 +144,7 @@ def compute_loss(
     input_ids[:, attack_mask] = attack_ids
     # TODO: add KV caching as done in GCG.
     logits = model(input_ids).logits.to(dtype=torch.float32) # lower precision will lead to issues in optimization
-    flops = get_flops(model, input_ids.numel(), 0, "forward")
+    flops = get_flops(model, input_ids.shape[1], 0, "forward") # flops per attack_id in the batch
 
     # logits of token i-1 predicts token i
     shift_logits = logits[:, :-1, :]
@@ -165,7 +165,7 @@ def compute_loss(
     # gc.collect()
     # torch.cuda.empty_cache()
 
-    return loss, torch.tensor(flops) # with_max_batchsize only handles Tensors or lists outputs, so need to wrap flops in a Tensor
+    return loss, torch.tensor(flops).expand_as(loss) # with_max_batchsize only handles Tensors or lists outputs, so need to wrap flops in a Tensor
 
 def compute_loss_with_max_batchsize(
     model: PreTrainedModel,
