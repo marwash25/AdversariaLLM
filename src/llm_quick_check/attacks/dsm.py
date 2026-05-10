@@ -135,7 +135,8 @@ def compute_loss(
 
     Returns:
         loss: Tensor of shape (batch_size,)
-        flops: Tensor of shape (batch_size,), number of flops for the forward pass per attack_id in the batch
+        flops: Tensor of shape (batch_size,), number of flops for the forward pass per attack_id`
+        Same scalar estimate for all since same sequence length.
 
     """
     # TODO: if we revert to logits inputs, put back description logits: logits outputs for the full conversation. Tensor of shape (batch_size, seq_len, vocab_size)
@@ -144,7 +145,7 @@ def compute_loss(
     input_ids[:, attack_mask] = attack_ids
     # TODO: add KV caching as done in GCG.
     logits = model(input_ids).logits.to(dtype=torch.float32) # lower precision will lead to issues in optimization
-    flops = get_flops(model, input_ids.shape[1], 0, "forward") # flops per attack_id in the batch
+    flops = get_flops(model, input_ids.shape[1], 0, "forward") # flops estimate for one attack_id
 
     # logits of token i-1 predicts token i
     shift_logits = logits[:, :-1, :]
@@ -165,7 +166,7 @@ def compute_loss(
     # gc.collect()
     # torch.cuda.empty_cache()
 
-    return loss, torch.tensor(flops).expand_as(loss) # with_max_batchsize only handles Tensors or lists outputs, so need to wrap flops in a Tensor
+    return loss, torch.tensor(flops, device=loss.device, dtype=loss.dtype).expand_as(loss)
 
 def compute_loss_with_max_batchsize(
     model: PreTrainedModel,
@@ -286,7 +287,7 @@ class DSMAttack(Attack):
             if dca_config.alpha == "alpha_zero":
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
                 alpha, flops_alpha_zero = F_set_batch.alpha_zero_bound(F_singleton_vals)
-                L_F = F_set_batch.singletons_L_bound(F_singleton_vals)
+                L_F, _ = F_set_batch.singletons_L_bound(F_singleton_vals) # flops=0 when singleton_vals are provided
             else:
                 alpha = dca_config.alpha
 
