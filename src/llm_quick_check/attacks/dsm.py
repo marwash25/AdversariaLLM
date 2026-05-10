@@ -3,6 +3,7 @@ import copy
 import math
 import time
 import logging
+import gc
 import matplotlib.pyplot as plt
 from typing import List, Tuple, Callable, Any, Literal
 import torch
@@ -12,7 +13,7 @@ from dataclasses import dataclass, field
 from ..dataset import PromptDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
-from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix
+from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix, with_max_batchsize
 from ..types import Conversation
 from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decomposition, SetFnReduction, pgm_lovasz, dca_dsm
 
@@ -115,7 +116,7 @@ def compute_loss(
     target_mask: torch.BoolTensor,
     attack_mask: torch.BoolTensor,
     lm_reg_weight: float = 0.0,
-) -> Tuple[Tensor, int]:
+) -> Tuple[Tensor, Tensor]:
     """Computes the cross-entropy loss on target tokens (-log p(y|q,x)) plus
     language-model regularizer lm_reg_weight * cross-entropy loss on attack
     tokens (-log p(x|q))
@@ -157,7 +158,39 @@ def compute_loss(
         reg_loss = _masked_cross_entropy(shift_logits, shift_labels, atk_logit_mask)
         loss += lm_reg_weight * reg_loss
 
-    return loss, flops
+
+    # TODO: If we add KV caching, maybe add these lines as done in GCG compute_candidates_loss to free memory?
+    # Should check if this is actually helpful.
+    # del outputs
+    # gc.collect()
+    # torch.cuda.empty_cache()
+
+    return loss, torch.tensor(flops) # with_max_batchsize only handles Tensors or lists outputs, so need to wrap flops in a Tensor
+
+def compute_loss_with_max_batchsize(
+    model: PreTrainedModel,
+    attack_ids: Tensor,
+    original_tokens: Tensor,
+    target_mask: torch.BoolTensor,
+    attack_mask: torch.BoolTensor,
+    lm_reg_weight: float = 0.0,
+) -> Tuple[Tensor, int]:
+    """Wrap compute_loss in with_max_batchsize only if batch_size is large enough to trigger OOM error
+    to avoid unnecessary overhead of with_max_batchsize if batch_size is small.
+    I did not encounter OOM error with eval_chain and eval_neighbors which have batch_size n*b and 2*n*b 
+    respectively (2*n*b = 1040 for Llama-3.2-1B-Instruct with n=20). 
+    I did get OOM error with eval_all_pairs which uses batch_size n*b*(n*b-1)/2.
+    """
+    batch_size = attack_ids.shape[0]
+    compute_loss_fn = lambda attack_ids: compute_loss(model, attack_ids, original_tokens, target_mask, attack_mask, lm_reg_weight)
+    if batch_size > 2**11: # adjust threshold as needed
+        loss, flops = with_max_batchsize(compute_loss_fn, attack_ids)
+        logging.info(f"flops output of with_max_batchsize has shape: {flops.shape}")
+    else:
+        loss, flops = compute_loss_fn(attack_ids)
+    return loss, flops.sum().item()
+
+
 
 
 class DSMAttack(Attack):
@@ -205,7 +238,7 @@ class DSMAttack(Attack):
     
 
         # define loss_fn over V^n where V = {0, 1, ..., valid_vocab_size - 1} and n = n_optim_tokens
-        loss_fn = lambda attack_ids: compute_loss(
+        loss_fn = lambda attack_ids: compute_loss_with_max_batchsize(
             model, self.valid_token_ids[attack_ids], tokens, target_mask, attack_mask, self.config.lm_reg_weight
         )
         zero_attack_ids = torch.zeros_like(optim_ids_reduced)
