@@ -416,21 +416,39 @@ class SetFnReduction():
         pair_vals, flops = self.set_fn(rows_list, cols_list)
         return pair_vals, flat_pair_idx, flops
 
-    def alpha_zero_bound(self, singleton_vals: Optional[Tensor] = None) -> float:
+    def alpha_zero_bound(self, singleton_vals: Optional[Tensor] = None, debug_save_cross: Optional[str] = None) -> Tuple[float, int]:
         """ Compute a heuristic bound alpha(emptyset) on the alpha parameter for the DR-submodular decomposition:
         alpha = min_S alpha(S) = min_S F_set(v1 | S) - F_set(v2 | S + {v1}) for all v1, v2 in [n] x [b] with v1 != v2
         so alpha(emptyset) = min_{v1, v2} F_set(v1) + F_set(v2) - F_set({v1, v2}) for all v1, v2 in [n] x [b] with v1 != v2
         """
         nb = self.n * self.b
         if nb < 2:
-            return 0.0
+            return 0.0, 0
         flops_singletons = 0
         if singleton_vals is None:
             singleton_vals, flops_singletons = self.eval_singletons()
         pair_vals, flat_pair_idx, flops_pairs = self.eval_all_pairs()
         idx_v1, idx_v2 = flat_pair_idx[0], flat_pair_idx[1]
-        cross = (singleton_vals[idx_v1] + singleton_vals[idx_v2] - pair_vals)
-        return cross.min().item(), flops_singletons + flops_pairs
+        j1 = idx_v1 % self.b
+        j2 = idx_v2 % self.b
+        w = self.map.weights
+        cross = singleton_vals[idx_v1] + singleton_vals[idx_v2] - pair_vals
+        cross_normalized = cross / (w[j1] * w[j2])
+        min_cross = cross.min().item()
+        logging.info(f"min_cross: {min_cross}") # -0.51898 for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors
+        logging.info(f"min_cross_normalized: {cross_normalized.min().item()}") # becomes -0.07127
+        if debug_save_cross is not None:
+            torch.save(
+                {
+                    "raw": cross.detach().cpu(),
+                    "cross_normalized": cross_normalized.detach().cpu(),
+                    "n": self.n,
+                    "b": self.b,
+                    "nb": nb,
+                },
+                debug_save_cross,
+            )
+        return min_cross, flops_singletons + flops_pairs
 
     def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None) -> float:
         """Evaluate the Lovasz extension f_L of F_set at X: f_L(X) = <X, subgradient>
