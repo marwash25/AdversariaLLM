@@ -93,7 +93,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
             normalize = True
         elif L == "polyak":
             polyak = True
-            max_duality_gap = 0.0
+            max_dual_value = -inf
         else:
             raise ValueError("If L is a string, it must be 'singletons' or 'normalize' or 'polyak'.")
     else:
@@ -158,8 +158,8 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
                     if gap_tol is not None:
                         break
                 if polyak:
-                    max_duality_gap = max(max_duality_gap, duality_gap)
-                    eta = (continuous_obj_values[iter] - max_duality_gap) / max(subgradient_norm, 1e-12)**2
+                    max_dual_value = max(max_dual_value, dual_value)
+                    eta = (continuous_obj_values[iter] - max_dual_value) / max(subgradient_norm, 1e-12)**2
                 else: 
                     eta = 1 / max(subgradient_norm, 1e-12)
             else:
