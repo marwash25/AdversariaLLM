@@ -392,15 +392,16 @@ class SetFnReduction():
         L = torch.linalg.vector_norm(singleton_vals, ord=2).item()
         return L, flops_L
 
-    def eval_all_pairs(self) -> Tuple[Tensor, Tensor, int]:
-        """Evaluate F_set({v1, v2}) for all v1 = (i_1, j_1), v2 = (i_2, j_2) in [n] x [b]
+    def eval_all_pairs(self) -> Tuple[Tensor, Tensor, Tensor, int]:
+        """Evaluate F_set({v1, v2}) for all v1 = (i1, j1), v2 = (i2, j2) in [n] x [b]
         with v_1 != v_2, in one batched call.
 
         Returns:
             pair_vals: Tensor of shape (num_pairs,) with num_pairs = n * b * (n * b - 1) / 2 and
                 pair_vals[p] = F_set({v1, v2}) for the p-th (v1, v2) pair.
-            pair_idx: Tensor of shape (2, num_pairs) with the (v1, v2) flat indices for each pair.
-            flops_L: flop count, int.
+            rows: Tensor of shape (2, num_pairs) with rows[0, p] = i1, rows[1, p] = i2.
+            cols: Tensor of shape (2, num_pairs) with cols[0, p] = j1, cols[1, p] = j2.
+            flops: flop count, int.
         #TODO: can be made more efficient by having more efficient version of set2ints
         """
         nb = self.n * self.b
@@ -414,41 +415,57 @@ class SetFnReduction():
         rows_list = list(torch.stack([rows_v1, rows_v2], dim=1).unbind(0))
         cols_list = list(torch.stack([cols_v1, cols_v2], dim=1).unbind(0))
         pair_vals, flops = self.set_fn(rows_list, cols_list)
-        return pair_vals, flat_pair_idx, flops
+        rows = torch.stack([rows_v1, rows_v2], dim=0)
+        cols = torch.stack([cols_v1, cols_v2], dim=0)
+        return pair_vals, rows, cols, flops
 
-    def alpha_zero_bound(self, singleton_vals: Optional[Tensor] = None, debug_save_cross: Optional[str] = None) -> Tuple[float, int]:
-        """ Compute a heuristic bound alpha(emptyset) on the alpha parameter for the DR-submodular decomposition:
-        alpha = min_S alpha(S) = min_S F_set(v1 | S) - F_set(v2 | S + {v1}) for all v1, v2 in [n] x [b] with v1 != v2
-        so alpha(emptyset) = min_{v1, v2} F_set(v1) + F_set(v2) - F_set({v1, v2}) for all v1, v2 in [n] x [b] with v1 != v2
+    def alpha_zero_bound(self, singleton_vals: Optional[Tensor] = None, debug_save_cross: Optional[str] = None) -> Tuple[Tensor, int]:
+        """Compute heuristic bounds alpha_{i1, i2}(emptyset) on alpha_{i1, i2}'s for all i1, i2 in [n].
+
+        alpha_{i1, i2} = min_{S} alpha_{i1, i2}(S) = min_{S, j1, j2} (F_set(v1 | S) - F_set(v1 | S + {v2})) / (weights[j1] * weights[j2])
+        for v1 = (i1, j1), v2 = (i2, j2) with v1 != v2, so
+        alpha_{i1, i2}(emptyset) = min_{j1, j2} (F_set(v1) + F_set(v2) - F_set({v1, v2})) / (weights[j1] * weights[j2]).
+
+        Returns:
+            alpha_mat: symmetric (n, n) tensor with alpha_mat[i1, i2] = alpha_{i1, i2}(emptyset).
+            flops: flop count for singleton and pair evaluations.
         """
         nb = self.n * self.b
         if nb < 2:
-            return 0.0, 0
+            return torch.zeros((self.n, self.n), device=self.device, dtype=torch.float32), 0
         flops_singletons = 0
         if singleton_vals is None:
             singleton_vals, flops_singletons = self.eval_singletons()
-        pair_vals, flat_pair_idx, flops_pairs = self.eval_all_pairs()
-        idx_v1, idx_v2 = flat_pair_idx[0], flat_pair_idx[1]
-        j1 = idx_v1 % self.b
-        j2 = idx_v2 % self.b
+        pair_vals, rows, cols, flops_pairs = self.eval_all_pairs()
+        i1, i2 = rows[0], rows[1]
+        j1, j2 = cols[0], cols[1]
+        singleton_mat = singleton_vals.view(self.n, self.b)
         w = self.map.weights
-        cross = singleton_vals[idx_v1] + singleton_vals[idx_v2] - pair_vals
+        cross = singleton_mat[i1, j1] + singleton_mat[i2, j2] - pair_vals
         cross_normalized = cross / (w[j1] * w[j2])
-        min_cross = cross.min().item()
-        logging.info(f"min_cross: {min_cross}") # -0.51898 for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors
-        logging.info(f"min_cross_normalized: {cross_normalized.min().item()}") # becomes -0.07127
+
+        alpha_flat = torch.full((self.n * self.n,), float("inf"), device=self.device, dtype=cross.dtype)
+        alpha_flat.scatter_reduce_(0, i1 * self.n + i2, cross_normalized, reduce="amin", include_self=True)
+        alpha_mat = alpha_flat.view(self.n, self.n)
+        alpha_mat = torch.minimum(alpha_mat, alpha_mat.mT) # copy values of alpha_{i1, i2} to alpha_{i2, i1} 
+
+        min_alpha = alpha_mat.min().item()
+        logging.info(f"min_cross: {cross.min().item()}") # -0.51898 for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors 
+        logging.info(f"min_alpha: {min_alpha}") # becomes -0.07127
+
         if debug_save_cross is not None:
             torch.save(
                 {
                     "raw": cross.detach().cpu(),
                     "cross_normalized": cross_normalized.detach().cpu(),
+                    "alpha_mat": alpha_mat.detach().cpu(),
                     "n": self.n,
                     "b": self.b,
                     "nb": nb,
                 },
                 debug_save_cross,
             )
-        return min_cross, flops_singletons + flops_pairs
+        return alpha_mat, flops_singletons + flops_pairs
 
     def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None) -> float:
         """Evaluate the Lovasz extension f_L of F_set at X: f_L(X) = <X, subgradient>

@@ -209,12 +209,12 @@ def _run_toy_demo(out: Path, n: int, k: int, style: PlotStyle) -> None:
     red = BinarySubmodularSetFnReduction(F, k, n, device)
 
     singleton_vals, _ = red.eval_singletons()
-    pair_vals, flat_pair_idx, _ = red.eval_all_pairs()
-    idx_v1, idx_v2 = flat_pair_idx[0], flat_pair_idx[1]
-    j1 = idx_v1 % red.b
-    j2 = idx_v2 % red.b
+    pair_vals, rows, cols, _ = red.eval_all_pairs()
+    flat_v1 = rows[0] * red.b + cols[0]
+    flat_v2 = rows[1] * red.b + cols[1]
+    j1, j2 = cols[0], cols[1]
     w = red.map.weights
-    raw = singleton_vals[idx_v1] + singleton_vals[idx_v2] - pair_vals
+    raw = singleton_vals[flat_v1] + singleton_vals[flat_v2] - pair_vals
     denom = (w[j1] * w[j2]).to(dtype=raw.dtype, device=raw.device)
     cross_n = raw / denom
 
