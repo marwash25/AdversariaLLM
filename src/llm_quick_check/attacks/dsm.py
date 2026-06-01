@@ -27,16 +27,16 @@ class DCAConfig:
     # num_outer_steps: will be set to num_steps / num_inner_steps 
     num_inner_steps: int = 1
     inner_solver: str = "pgm"
-    tie_break: Literal["random"] | None = None  # "random" or None 
+    tie_break: Literal["random"] | None = None  
     # TODO: might want to also try using random tie breaking in PGM when used as inner solver, can potentially speed it up?
-    L_G: float | Literal["singletons"] = "singletons" # "singletons" or a float value
+    L_G: float | Literal["singletons"] = "singletons" 
 
 
 @dataclass
 class PGMConfig:
     """Config for the PGM optimizer."""
-    L: float | Literal["singletons", "normalize"] = "normalize"  # "singletons", "normalize", or a float value
-    tie_break: Literal["random"] | None = None  # "random" or None
+    L: float | Literal["singletons", "normalize", "polyak"] = "polyak"  
+    tie_break: Literal["random"] | None = None 
 
 
 @dataclass
