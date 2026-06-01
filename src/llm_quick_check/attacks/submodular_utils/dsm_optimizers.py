@@ -91,7 +91,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
             L = max(L, 1e-12) # L < 1e-12 shouldn't happen unless F = 0 but just in case
         elif L == "normalize":
             normalize = True
-            L = 100.0 #just testing what happens if we use smaller step size when initializing from GCG sol
+            L = 1.0 
         elif L == "polyak":
             polyak = True
             max_duality_gap = 0.0
