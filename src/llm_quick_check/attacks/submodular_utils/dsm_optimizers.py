@@ -91,12 +91,11 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
             L = max(L, 1e-12) # L < 1e-12 shouldn't happen unless F = 0 but just in case
         elif L == "normalize":
             normalize = True
-            L = 1.0 
         elif L == "polyak":
             polyak = True
             max_duality_gap = 0.0
         else:
-            raise ValueError("If L is a string, it must be either 'singletons' or 'normalize'.")
+            raise ValueError("If L is a string, it must be 'singletons' or 'normalize' or 'polyak'.")
     else:
         assert L > 0, "Lipschitz constant L must be positive"
 
@@ -151,22 +150,21 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         
         time_start = time.time()
         if iter < num_steps: # no need to update in last iteration
-            if polyak:
+            if polyak or normalize:
                 subgradient_norm = torch.linalg.vector_norm(subgradient.float(), ord=2).item()
-                max_duality_gap = max(max_duality_gap, duality_gap)
-                eta = (continuous_obj_values[iter] - max_duality_gap) / subgradient_norm**2
-            else: #TODO: move subgradient_norm computation to be done for both polyak and normalize, and set eta to 1/norm if normalize
-                if normalize:
-                    subgradient_norm = torch.linalg.vector_norm(subgradient.float(), ord=2).item()
-                    if subgradient_norm < 1e-12:
-                        logging.info(f"Subgradient norm {subgradient_norm:.4f} < 1e-12.")
-                        #TODO: if F is submodular we should stop. Otherwise still stop?
-                        if gap_tol is not None:
-                            break
-                    subgradient /= max(subgradient_norm, 1e-12)
-            
-            eta = D / (L * sqrt(iter + 1))
-            # TODO: add Polyak step (to use only in submodular case - again not sure it works for non-submodular)
+                if subgradient_norm < 1e-12:
+                    logging.info(f"Subgradient norm {subgradient_norm:.4f} < 1e-12.")
+                    #TODO: if F is submodular we should stop. Otherwise still stop?
+                    if gap_tol is not None:
+                        break
+                if polyak:
+                    max_duality_gap = max(max_duality_gap, duality_gap)
+                    eta = (continuous_obj_values[iter] - max_duality_gap) / max(subgradient_norm, 1e-12)**2
+                else: 
+                    eta = 1 / max(subgradient_norm, 1e-12)
+            else:
+                eta = D / (L * sqrt(iter + 1))
+
             X = X - eta * subgradient 
             X = torch.clamp(X, min=0, max=1)
 
