@@ -290,19 +290,19 @@ class DSMAttack(Attack):
             dca_config = self.config.dca_config
             if dca_config.alpha == "alpha_zero":
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
-                alpha, flops_alpha_zero = F_set_batch.alpha_zero_bound(F_singleton_vals)
+                alphas, flops_alpha_zero = F_set_batch.alpha_zero_bound(F_singleton_vals)
                 L_F, _ = F_set_batch.singletons_L_bound(F_singleton_vals) # flops=0 when singleton_vals are provided
             else:
-                alpha = dca_config.alpha
+                alphas = dca_config.alpha
 
-            logging.info(f"DR-submodular decomposition using alpha: {alpha:.4f}")
+            logging.info(f"DR-submodular decomposition using alpha {alphas.size()} values")
 
             # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
             # decompose F into the difference of two DR-submodular functions G and H
             # TODO: add check that F(x) >= -alpha/4 whenever we evaluate F(x) and keep track of the largest F(x) we see to potentially lower alpha 
-            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, alpha, device)
+            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, alphas, device)
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
             if dca_config.alpha == "alpha_zero" and dca_config.L_G == "singletons":

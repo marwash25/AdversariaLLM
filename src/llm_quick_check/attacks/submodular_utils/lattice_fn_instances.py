@@ -155,17 +155,17 @@ class LatticeFnWithModReduction(LatticeFunction):
         return Fvalues, 0
 
 
-def DR_submodular_decomposition(F_batch: LatticeFunction, alpha: float, device: torch.device) -> Tuple[LatticeFunction, LatticeFunction]:
+def DR_submodular_decomposition(F_batch: LatticeFunction, alphas: Tensor, device: torch.device) -> Tuple[LatticeFunction, LatticeFunction]:
     """Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H: 
-    F = G - H, with G = F + H and H = - alpha * H' where H' = - 0.5 * x^T J x and J is the matrix of all ones. 
+    F = G - H, with G = F + H and H = 0.5 * x^T Q x where Q = alphas if alphas is a matrix or Q = alphas * 11^T if alphas is a scalar.
     F(x + a_ie_i) - F(x) - F(x + a_ie_i + a_je_j) + F(x + a_je_j) >= \alpha for all i, j in [n] and all a_i, a_j in [0,1].
     """
-    if alpha >= 0: # alpha == 0 is useful to test if dca correctly reduces to its submin inner solver in this case
-        logging.info("alpha >= 0 implies F is already DR-submodular, returning F as G and zero lattice function as H")
+    if alphas.min().item() >= 0: # alphas == 0 is useful to test if dca correctly reduces to its submin inner solver in this case
+        logging.info("alphas >= 0 implies F is already DR-submodular, returning F as G and zero lattice function as H")
         H_batch = make_zero_lattice_fn(F_batch.k, F_batch.n)
         return F_batch, H_batch
-    
-    H_batch = QuadraticFn(torch.tensor(alpha, device=device), F_batch.k, F_batch.n)
+        
+    H_batch = QuadraticFn(alphas, F_batch.k, F_batch.n)
     G_batch = LinearCombinationLatticeFn([F_batch, H_batch], [1.0, 1.0])
     return G_batch, H_batch
    
