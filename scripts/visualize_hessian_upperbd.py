@@ -6,16 +6,16 @@ or rank plots.
 1) In memory:
 
     sys.path.insert(0, "scripts")
-    from visualize_alpha_zero_cross import plot_precomputed_cross
+    from visualize_hessian_upperbd import plot_precomputed_cross
     plot_precomputed_cross(normalized_cross_vals, raw=cross_vals, out_path="cross.png", style="heatmap")
 
 2) From ``hessian_upperbd_at_zero(..., debug_save_cross="bounds.pt")``:
 
-    python scripts/visualize_alpha_zero_cross.py --precomputed-pt bounds.pt --out cross.png
+    python scripts/visualize_hessian_upperbd.py --precomputed-pt bounds.pt --out cross.png
 
 3) Toy demo:
 
-    PYTHONPATH=src python scripts/visualize_alpha_zero_cross.py --out cross_vis.png
+    PYTHONPATH=src python scripts/visualize_hessian_upperbd.py --out cross_vis.png
 """
 from __future__ import annotations
 
@@ -229,8 +229,8 @@ def _run_toy_demo(out: Path, n: int, k: int, style: PlotStyle) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Plot alpha_zero cross (heatmap or rank).")
-    p.add_argument("--out", type=Path, default=ROOT / "alpha_zero_cross_demo.png")
+    p = argparse.ArgumentParser(description="Plot hessian_upperbd debug saves (heatmap or rank).")
+    p.add_argument("--out", type=Path, default=ROOT / "hessian_upperbd_demo.png")
     p.add_argument("--precomputed-pt", type=Path, default=None, help="debug_save_cross .pt dict")
     p.add_argument("--suptitle", type=str, default="")
     p.add_argument("--style", choices=("heatmap", "rank", "both"), default="heatmap")

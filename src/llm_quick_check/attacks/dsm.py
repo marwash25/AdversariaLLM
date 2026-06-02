@@ -1,6 +1,7 @@
 """Difference of submodular minimization (DSM) attack"""
 import copy
 import math
+import os
 import time
 import logging
 import gc
@@ -21,7 +22,7 @@ from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decompo
 @dataclass
 class DCAConfig:
     """Config for the DCA optimizer."""
-    alpha: float | Literal["alpha_zero"] = "alpha_zero" # runs PGM in that case
+    hessian_upperbd: float | Literal["hessian_upperbd_at_zero"] = "hessian_upperbd_at_zero" # runs PGM in that case
     outer_tol: float = 1e-5
     inner_gap_tol: float = 1e-4
     # num_outer_steps: will be set to num_steps / num_inner_steps 
@@ -288,28 +289,40 @@ class DSMAttack(Attack):
 
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
-            if dca_config.alpha == "alpha_zero":
+            if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
-                alphas, flops_alpha_zero = F_set_batch.alpha_zero_bound(F_singleton_vals)
-                L_F, _ = F_set_batch.singletons_L_bound(F_singleton_vals) # flops=0 when singleton_vals are provided
-            else:
-                alphas = dca_config.alpha
+                if os.path.exists("hessian_upperbd_at_zero.pt"):
+                    logging.info(f"Loading Hessian upper bound at zero from hessian_upperbd_at_zero.pt")
+                    cache = torch.load("hessian_upperbd_at_zero.pt", map_location=device)
+                    hessian_upperbd = cache["hessian_upperbd"].to(device)
+                    flops_hessian_bd = cache["flops"]
+                    time_hessian_bd = cache["time_taken"]
+                else:
+                    logging.info("Computing Hessian upper bound at zero and saving to hessian_upperbd_at_zero.pt")
+                    hessian_upperbd, flops_hessian_bd, time_taken = F_set_batch.hessian_upperbd_at_zero(F_singleton_vals, debug_save_cross="hessian_upperbd_at_zero.pt")
+                    logging.info(f"Time taken: {time_taken}")
+                    time_hessian_bd = 0 # time already included      
 
-            logging.info(f"DR-submodular decomposition using alpha {alphas.size()} values")
+                L_F, _ = F_set_batch.singletons_L_bound(F_singleton_vals) # flops=0 when singleton_vals are provided
+                logging.info(f"DR-submodular decomposition using Hessian upper bound at zero") 
+            else:
+                hessian_upperbd = dca_config.hessian_upperbd
+                logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}") 
+
+            
 
             # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
             # decompose F into the difference of two DR-submodular functions G and H
-            # TODO: add check that F(x) >= -alpha/4 whenever we evaluate F(x) and keep track of the largest F(x) we see to potentially lower alpha 
-            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, alphas, device)
+            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, hessian_upperbd, device)
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
-            if dca_config.alpha == "alpha_zero" and dca_config.L_G == "singletons":
-                L_H, flops_L_H = H_set_batch.singletons_L_bound() #TODO: add flops_L_H, flops_alpha_zero, flops_F_singletons to flops count of first step
+            if dca_config.hessian_upperbd == "hessian_upperbd_at_zero" and dca_config.L_G == "singletons":
+                L_H, flops_L_H = H_set_batch.singletons_L_bound() #TODO: add flops_L_H, flops_hessian_bd, flops_F_singletons to flops count of first step?
                 L_G = L_F + L_H
             else:
-                L_G = dca_config.L_G #TODO: if we keep "alpha_zero" move L_G computation here in all cases
+                L_G = dca_config.L_G #TODO: if we keep "hessian_upperbd_at_zero" move L_G computation here in all cases
             
             # run DCA with initial optim_ids as initial solution
             discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, discrete_sols_filtered, times, flops, \
@@ -427,7 +440,7 @@ class DSMAttack(Attack):
         run_result = SingleAttackRunResult(
             original_prompt=conversation,
             steps=steps_results,
-            total_time=t_end - t_start,
+            total_time=t_end - t_start + time_hessian_bd,
         )
         return run_result
 

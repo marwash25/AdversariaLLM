@@ -8,6 +8,7 @@ from typing import Callable, List, Optional, Tuple, Union
 from torch import Tensor
 from math import log2, ceil, inf
 import logging
+import time
 from .lattice_functions import CallableLatticeFunction, LatticeFunction, SequentialLatticeFunction
 
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
@@ -284,7 +285,7 @@ class SetFnReduction():
     def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
         return self.set_fn(rows_list, cols_list)
 
-    def set_fn(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:  # used in singleton_L_bound
+    def set_fn(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:  # used in singleton_L_upperbd
         """Batched version of F_set: 2^([n] x [b]) -> R: Compute F_set(S^i) for the set
         S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
         """
@@ -419,17 +420,25 @@ class SetFnReduction():
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
 
-    def alpha_zero_bound(self, singleton_vals: Optional[Tensor] = None, debug_save_cross: Optional[str] = None) -> Tuple[Tensor, int]:
-        """Compute heuristic bounds alpha_{i1, i2}(emptyset) on alpha_{i1, i2}'s for all i1, i2 in [n].
+    def hessian_upperbd_at_zero(self, singleton_vals: Optional[Tensor] = None, debug_save_cross: Optional[str] = None) -> Tuple[Tensor, int]:
+        """Compute an approximate upper bound on the "Hessian" of F at 0:
 
-        alpha_{i1, i2} = min_{S} alpha_{i1, i2}(S) = min_{S, j1, j2} (F_set(v1 | S) - F_set(v1 | S + {v2})) / (weights[j1] * weights[j2])
-        for v1 = (i1, j1), v2 = (i2, j2) with v1 != v2, so
-        alpha_{i1, i2}(emptyset) = min_{j1, j2} (F_set(v1) + F_set(v2) - F_set({v1, v2})) / (weights[j1] * weights[j2]).
+        max_{a_i1, a_i2 in V^n} ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) / (a_i1 a_i2)
+        for all i1, i2 in [n]. I'm calling this a Hessian bound because if F is differentiable, taking a_i1, a_i2 -> 0, gives  
+        ∇^2F(x)_{i1, i2}. This costs O(n^2 k^2) evaluations of F. 
+
+        So we instead consider the maximum over only weights of the map a_j1 = weights[j1], a_j2 = weights[j2], i.e.,  
+        Q_{i1, i2} = max_{j1, j2 in [b]} ((F(a_j1 e_i1 + a_j2 e_i2) - F(a_j2 e_i2)) - (F(a_j1 e_i1) - F(0))) / (a_j1 a_j2)
+                   = max_{j1, j2 in [b]} (F_set({v1, v2}) - F_set(v1) - F_set(v2)) / (a_j1 a_j2) where v1 = (i1, j1), v2 = (i2, j2),
+        since F is normalized. This costs O(n^2 b^2) evaluations of F_set / F.
+
+        TODO: can we show that the two are equivalent when using Ene's reduction?
 
         Returns:
-            alpha_mat: symmetric (n, n) tensor with alpha_mat[i1, i2] = alpha_{i1, i2}(emptyset).
+            hessian_upperbd: symmetric (n, n) tensor Q
             flops: flop count for singleton and pair evaluations.
         """
+        t_start = time.time()
         nb = self.n * self.b
         if nb < 2:
             return torch.zeros((self.n, self.n), device=self.device, dtype=torch.float32), 0
@@ -441,31 +450,34 @@ class SetFnReduction():
         j1, j2 = cols[0], cols[1]
         singleton_mat = singleton_vals.view(self.n, self.b)
         w = self.map.weights
-        cross = singleton_mat[i1, j1] + singleton_mat[i2, j2] - pair_vals
-        cross_normalized = cross / (w[j1] * w[j2])
+        cross_vals = pair_vals - singleton_mat[i1, j1] - singleton_mat[i2, j2]
+        normalized_cross_vals = cross_vals / (w[j1] * w[j2])
 
-        alpha_flat = torch.full((self.n * self.n,), float("inf"), device=self.device, dtype=cross.dtype)
-        alpha_flat.scatter_reduce_(0, i1 * self.n + i2, cross_normalized, reduce="amin", include_self=True)
-        alpha_mat = alpha_flat.view(self.n, self.n)
-        alpha_mat = torch.minimum(alpha_mat, alpha_mat.mT) # copy values of alpha_{i1, i2} to alpha_{i2, i1} 
+        hessian_upperbd_flat = torch.full((self.n * self.n,), -float("inf"), device=self.device, dtype=cross_vals.dtype)
+        hessian_upperbd_flat.scatter_reduce_(0, i1 * self.n + i2, normalized_cross_vals, reduce="amax", include_self=True)
+        hessian_upperbd = hessian_upperbd_flat.view(self.n, self.n)
+        hessian_upperbd = torch.maximum(hessian_upperbd, hessian_upperbd.mT) # copy values of Q_{i1, i2} to Q_{i2, i1} 
 
-        min_alpha = alpha_mat.min().item()
-        logging.info(f"min_cross: {cross.min().item()}") # -0.51898 for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors 
-        logging.info(f"min_alpha: {min_alpha}") # becomes -0.07127
+        hessian_max = hessian_upperbd_flat.max().item() 
+        logging.info(f"cross_vals_max: {cross_vals.max().item()}") # 0.51898 for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors 
+        logging.info(f"hessian_max: {hessian_max}") # becomes 0.07127
 
+        flops = flops_singletons + flops_pairs
+        time_taken = time.time() - t_start
         if debug_save_cross is not None:
             torch.save(
                 {
-                    "raw": cross.detach().cpu(),
-                    "cross_normalized": cross_normalized.detach().cpu(),
-                    "alpha_mat": alpha_mat.detach().cpu(),
+                    "cross_vals": cross_vals.detach().cpu(),
+                    "normalized_cross_vals": normalized_cross_vals.detach().cpu(),
+                    "hessian_upperbd": hessian_upperbd.detach().cpu(),
                     "n": self.n,
                     "b": self.b,
-                    "nb": nb,
+                    "flops": flops,
+                    "time_taken": time_taken
                 },
                 debug_save_cross,
             )
-        return alpha_mat, flops_singletons + flops_pairs
+        return hessian_upperbd, flops, time_taken
 
     def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None) -> float:
         """Evaluate the Lovasz extension f_L of F_set at X: f_L(X) = <X, subgradient>
