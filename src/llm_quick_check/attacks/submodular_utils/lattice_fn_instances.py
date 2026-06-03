@@ -157,8 +157,8 @@ class LatticeFnWithModReduction(LatticeFunction):
 
 def DR_submodular_decomposition(F_batch: LatticeFunction, hessian_upperbd: Tensor) -> Tuple[LatticeFunction, LatticeFunction]:
     """Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H: 
-    F = G - H, with G = F + H and H = 0.5 * x^T Q x where Q = hessian_upperbd if hessian_upperbd is a matrix 
-    or Q = hessian_upperbd * 11^T if it is a scalar.
+    F = G - H, with G = F + H and H = 0.5 * x^T Q x where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix 
+    or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar.
     ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2] (<= -alpha in DSMin paper)
     for all a_i1, a_i2 in V^n, i1, i2 in [n]. 
     """
@@ -167,7 +167,7 @@ def DR_submodular_decomposition(F_batch: LatticeFunction, hessian_upperbd: Tenso
         H_batch = make_zero_lattice_fn(F_batch.k, F_batch.n)
         return F_batch, H_batch
         
-    H_batch = QuadraticFn(hessian_upperbd, F_batch.k, F_batch.n)
+    H_batch = QuadraticFn(-torch.clamp(hessian_upperbd, min=0), F_batch.k, F_batch.n) 
     G_batch = LinearCombinationLatticeFn([F_batch, H_batch], [1.0, 1.0])
     return G_batch, H_batch
    
