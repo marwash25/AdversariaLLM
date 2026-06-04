@@ -23,6 +23,7 @@ from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decompo
 class DCAConfig:
     """Config for the DCA optimizer."""
     hessian_upperbd: float | Literal["hessian_upperbd_at_zero"] = "hessian_upperbd_at_zero" # runs PGM in that case
+    dsm_cache_dir: str | None = None
     outer_tol: float = 1e-5
     inner_gap_tol: float = 1e-4
     # num_outer_steps: will be set to num_steps / num_inner_steps 
@@ -214,11 +215,11 @@ class DSMAttack(Attack):
 
         runs = []
         for idx, conversation in enumerate(conversations):
-            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx]))
+            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx], idx))
 
         return AttackResult(runs=runs)
 
-    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask) -> SingleAttackRunResult:
+    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask, idx) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
         #TODO: add early stopping if exact match found as done in GCG.
         #TODO: move things like building loss_fn, filter_fn, initialization to separate functions
@@ -291,15 +292,17 @@ class DSMAttack(Attack):
             dca_config = self.config.dca_config
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
-                if os.path.exists("hessian_upperbd_at_zero.pt"):
-                    logging.info(f"Loading Hessian upper bound at zero from hessian_upperbd_at_zero.pt")
-                    cache = torch.load("hessian_upperbd_at_zero.pt", map_location=device)
+                model_name_safe = model.name_or_path.replace("/", "-")
+                save_file = f"{dca_config.dsm_cache_dir}/{model_name_safe}/hessian_upperbd_at_zero_{idx}.pt"
+                if os.path.exists(save_file):
+                    logging.info(f"Loading Hessian upper bound at zero from {save_file}")
+                    cache = torch.load(save_file, map_location=device)
                     hessian_upperbd = cache["hessian_upperbd"].to(device)
                     flops_hessian_bd = cache["flops"]
                     time_hessian_bd = cache["time_taken"]
                 else:
-                    logging.info("Computing Hessian upper bound at zero and saving to hessian_upperbd_at_zero.pt")
-                    hessian_upperbd, flops_hessian_bd, time_taken = F_set_batch.hessian_upperbd_at_zero(F_singleton_vals, debug_save_cross="hessian_upperbd_at_zero.pt")
+                    logging.info(f"Computing Hessian upper bound at zero and saving to {save_file}")
+                    hessian_upperbd, flops_hessian_bd, time_taken = F_set_batch.hessian_upperbd_at_zero(F_singleton_vals, save_file=save_file)
                     logging.info(f"Time taken: {time_taken}")
                     time_hessian_bd = 0 # time already included      
 
@@ -310,20 +313,24 @@ class DSMAttack(Attack):
                 logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}") 
 
             
-
             # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
             # decompose F into the difference of two DR-submodular functions G and H
-            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, hessian_upperbd, device)
+            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, hessian_upperbd)
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
-            if dca_config.hessian_upperbd == "hessian_upperbd_at_zero" and dca_config.L_G == "singletons":
-                L_H, flops_L_H = H_set_batch.singletons_L_bound() #TODO: add flops_L_H, flops_hessian_bd, flops_F_singletons to flops count of first step?
-                L_G = L_F + L_H
-            else:
-                L_G = dca_config.L_G #TODO: if we keep "hessian_upperbd_at_zero" move L_G computation here in all cases
-            
+            # TODO: clean this up 
+            # if dca_config.hessian_upperbd == "hessian_upperbd_at_zero" and dca_config.L_G == "singletons":
+            #     L_H, flops_L_H = H_set_batch.singletons_L_bound() #TODO: add flops_L_H, flops_hessian_bd, flops_F_singletons to flops count of first step?
+            #     L_G = L_F + L_H
+            # else:
+            #     L_G = dca_config.L_G #TODO: if we keep "hessian_upperbd_at_zero" move L_G computation here in all cases
+            # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = H((k-1) 1) where k = valid_vocab_size
+            H_max, flops_L_H= H_batch(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
+            L_H = -H_max.item()
+            L_G = L_F + L_H
+
             # run DCA with initial optim_ids as initial solution
             discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, discrete_sols_filtered, times, flops, \
             inner_discrete_values, inner_discrete_values_filtered, inner_continuous_values, inner_duality_gaps, inner_times, inner_flops = \
@@ -411,7 +418,7 @@ class DSMAttack(Attack):
             f"Generation time: {gen_time_total:.2f}s."
         )
 
-        t_end = time.time()
+        t_end = time.time() 
 
         # --- Assemble Results ---
         # model_completions, model_input, and model_input_tokens have only valid steps aligned with optim_strings
@@ -440,7 +447,7 @@ class DSMAttack(Attack):
         run_result = SingleAttackRunResult(
             original_prompt=conversation,
             steps=steps_results,
-            total_time=t_end - t_start + time_hessian_bd,
+            total_time=t_end - t_start + time_hessian_bd if self.config.optimizer == "dca" else 0,
         )
         return run_result
 

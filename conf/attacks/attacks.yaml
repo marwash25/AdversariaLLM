@@ -402,6 +402,7 @@ dsm:
   optimizer: "dca" # "pgm" or "dca"
   dca_config:
     hessian_upperbd: "hessian_upperbd_at_zero" # this is -alpha in DSMin paper # sanity check that DCA basically reduces to PGM when hessian_upperbd = 0
+    dsm_cache_dir: ${root_dir}/src/llm_quick_check/attacks/dsm_cache/ # place to store cached hessian upper bounds at zero 
     outer_tol: 1e-5
     inner_gap_tol: 1e-4
     # num_outer_steps: will be set to num_steps / num_inner_steps # for now 1

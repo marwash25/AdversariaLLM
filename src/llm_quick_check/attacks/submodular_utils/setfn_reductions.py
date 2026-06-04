@@ -420,7 +420,7 @@ class SetFnReduction():
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
 
-    def hessian_upperbd_at_zero(self, singleton_vals: Optional[Tensor] = None, debug_save_cross: Optional[str] = None) -> Tuple[Tensor, int]:
+    def hessian_upperbd_at_zero(self, singleton_vals: Optional[Tensor] = None, save_file: Optional[str] = None) -> Tuple[Tensor, int]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
         max_{a_i1, a_i2 in V^n} ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) / (a_i1 a_i2)
@@ -464,7 +464,7 @@ class SetFnReduction():
 
         flops = flops_singletons + flops_pairs
         time_taken = time.time() - t_start
-        if debug_save_cross is not None:
+        if save_file is not None:
             torch.save(
                 {
                     "cross_vals": cross_vals.detach().cpu(),
@@ -475,7 +475,7 @@ class SetFnReduction():
                     "flops": flops,
                     "time_taken": time_taken
                 },
-                debug_save_cross,
+                save_file,
             )
         return hessian_upperbd, flops, time_taken
 
