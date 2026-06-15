@@ -122,8 +122,8 @@ def plot_precomputed_cross(
             if nbr != nbc:
                 raise ValueError(f"raw implies nb={nbr} but cross implies nb={nbc}")
             fig, axes = plt.subplots(1, 2, figsize=(12, 5.2))
-            _plot_heatmap_ax(axes[0], Mr, "Raw: F(v1)+F(v2)−F({v1,v2})", grid_b=grid_b)
-            _plot_heatmap_ax(axes[1], Mc, "cross (e.g. ÷ w[j1]w[j2])", grid_b=grid_b)
+            _plot_heatmap_ax(axes[0], Mr, "Raw: F({v1,v2})−F(v1)−F(v2)", grid_b=grid_b)
+            _plot_heatmap_ax(axes[1], Mc, "normalized cross (÷ w[j1]w[j2])", grid_b=grid_b)
         else:
             fig, ax = plt.subplots(1, 1, figsize=(6.5, 5.5))
             _plot_heatmap_ax(ax, Mc, "cross", grid_b=grid_b)
@@ -132,8 +132,8 @@ def plot_precomputed_cross(
     def _ranks() -> plt.Figure:
         if raw is not None:
             fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-            _plot_rank_values(axes[0], raw, color="steelblue", title="Raw", ylabel="value")
-            _plot_rank_values(axes[1], cross, color="seagreen", title="cross", ylabel="value")
+            _plot_rank_values(axes[0], raw, color="steelblue", title="cross_vals", ylabel="value")
+            _plot_rank_values(axes[1], cross, color="seagreen", title="normalized cross", ylabel="value")
         else:
             fig, ax = plt.subplots(1, 1, figsize=(6, 4))
             _plot_rank_values(ax, cross, color="seagreen", title="cross", ylabel="value")
@@ -148,10 +148,10 @@ def plot_precomputed_cross(
         if raw is not None:
             Mr, _ = pairwise_upper_vec_to_symmetric_matrix(raw)
             fig, axes = plt.subplots(2, 2, figsize=(12, 9))
-            _plot_heatmap_ax(axes[0, 0], Mr, "Raw (heatmap)", grid_b=grid_b)
-            _plot_heatmap_ax(axes[0, 1], Mc, "cross (heatmap)", grid_b=grid_b)
-            _plot_rank_values(axes[1, 0], raw, color="steelblue", title="Raw (rank)", ylabel="value")
-            _plot_rank_values(axes[1, 1], cross, color="seagreen", title="cross (rank)", ylabel="value")
+            _plot_heatmap_ax(axes[0, 0], Mr, "F({v1,v2})−F(v1)−F(v2) (heatmap)", grid_b=grid_b)
+            _plot_heatmap_ax(axes[0, 1], Mc, "normalized cross (heatmap)", grid_b=grid_b)
+            _plot_rank_values(axes[1, 0], raw, color="steelblue", title="cross_vals (rank)", ylabel="value")
+            _plot_rank_values(axes[1, 1], cross, color="seagreen", title="normalized cross (rank)", ylabel="value")
         else:
             fig, axes = plt.subplots(2, 1, figsize=(7, 8.5))
             _plot_heatmap_ax(axes[0], Mc, "cross (heatmap)", grid_b=grid_b)
@@ -209,17 +209,17 @@ def _run_toy_demo(out: Path, n: int, k: int, style: PlotStyle) -> None:
 
     singleton_vals, _ = red.eval_singletons()
     pair_vals, rows, cols, _ = red.eval_all_pairs()
-    flat_v1 = rows[0] * red.b + cols[0]
-    flat_v2 = rows[1] * red.b + cols[1]
+    i1, i2 = rows[0], rows[1]
     j1, j2 = cols[0], cols[1]
+    singleton_mat = singleton_vals.view(red.n, red.b)
     w = red.map.weights
-    raw = singleton_vals[flat_v1] + singleton_vals[flat_v2] - pair_vals
-    denom = (w[j1] * w[j2]).to(dtype=raw.dtype, device=raw.device)
-    cross_n = raw / denom
+    cross_vals = pair_vals - singleton_mat[i1, j1] - singleton_mat[i2, j2]
+    denom = (w[j1] * w[j2]).to(dtype=cross_vals.dtype, device=cross_vals.device)
+    cross_n = cross_vals / denom
 
     path = plot_precomputed_cross(
         cross_n,
-        raw=raw,
+        raw=cross_vals,
         out_path=out,
         suptitle=f"Toy BinarySubmodularSetFnReduction n={n}, k={k}, b={red.b}, num_pairs={cross_n.numel()}",
         style=style,
