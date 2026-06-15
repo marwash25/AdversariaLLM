@@ -7,7 +7,9 @@ import logging
 import gc
 import matplotlib.pyplot as plt
 from typing import List, Tuple, Callable, Any, Literal
+import numpy as np
 import torch
+from scipy.optimize import linprog
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass, field
@@ -16,7 +18,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix, with_max_batchsize
 from ..types import Conversation
-from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decomposition, SetFnReduction, pgm_lovasz, dca_dsm
+from .submodular_utils import EneSubmodularSetFnReduction, EneReductionMap, DR_submodular_decomposition, SetFnReduction, pgm_lovasz, dca_dsm
 
 
 @dataclass
@@ -197,7 +199,82 @@ def compute_loss_with_max_batchsize(
     return loss, flops.sum().item()
 
 
+def _find_embeddings_dual_cone_w(
+    model: PreTrainedModel,
+    valid_token_ids: Tensor,
+    save_file: str | None = None,
+) -> Tuple[Tensor | None, float | None]:
+    """Find a vector w in [-1, 1]^d in the interior of the dual cone of differences 
+    of embedding vectors corresponding to Ene map weights.
 
+    Let \U =  {E_{i + weights[j]}  - E_i : i in V, j in [b]} where E_i is the i-th row of the
+    model embedding matrix (restricted to valid_token_ids) and weights are the Ene map weights. 
+    Solve the LP problem:
+
+        max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t
+
+    where U is the matrix with rows the vectors in \U.
+
+    If save_file is set, writes w_opt and t_opt to that path.
+    """
+    embedding_layer = model.get_input_embeddings()
+    embedding_matrix = embedding_layer.weight[valid_token_ids].detach().float().cpu().numpy()
+    if hasattr(embedding_layer, "embed_scale"):
+        embedding_matrix = embedding_matrix * float(embedding_layer.embed_scale.cpu())
+
+    valid_vocab_size, d = embedding_matrix.shape
+    ene_map = EneReductionMap(valid_vocab_size, 1, model.device)
+    weights = np.unique(ene_map.weights.cpu().numpy().astype(np.int64))
+
+    i_idx, j_idx = np.meshgrid(np.arange(valid_vocab_size),np.arange(weights.shape[0]),indexing="ij")
+    i_next = i_idx + weights[j_idx]
+    valid_mask = i_next < valid_vocab_size
+    U = embedding_matrix[i_next[valid_mask]] - embedding_matrix[i_idx[valid_mask]]
+    num_pairs = U.shape[0]
+    # # Build A_ub row-by-row (one Ene weight at a time) to avoid meshgrid and the
+    # # two large fancy-index copies from embedding_matrix[i_next[mask]] - embedding_matrix[i_idx[mask]].
+    # num_pairs = int(np.sum(valid_vocab_size - weights[weights < valid_vocab_size]))
+    # A_ub = np.empty((num_pairs, d + 1), dtype=np.float64)
+    # offset = 0
+    # for w in weights:
+    #     n = valid_vocab_size - int(w)
+    #     if n <= 0:
+    #         continue
+    #     i = np.arange(n, dtype=np.int64)
+    #     A_ub[offset : offset + n, :d] = embedding_matrix[i] - embedding_matrix[i + w]
+    #     A_ub[offset : offset + n, d] = 1.0
+    #     offset += n
+    # del embedding_matrix
+
+    logging.info(
+        f"Solving LP with {d + 1} variables and {num_pairs} constraints"
+    )
+    # Variables are [w_0, ..., w_{d-1}, t]. Maximize t <=> minimize -t.
+    c = np.zeros(d + 1, dtype=np.float64)
+    c[-1] = -1.0
+    A_ub = np.hstack([-U, np.ones((num_pairs, 1), dtype=np.float64)])
+    b_ub = np.zeros(num_pairs, dtype=np.float64)
+    bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
+
+    result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    if not result.success:
+        logging.warning(f"LP failed: {result.message}")
+        return None, None
+
+    t_opt = float(-result.fun)
+    assert t_opt >= 0.0, "t* should be non-negative."
+    w_opt = torch.tensor(result.x[:-1], dtype=torch.float32, device=model.device)
+    if t_opt == 0.0:
+        logging.info("Did not find w in the interior of the dual cone, t* = 0.0.")
+    else:
+        logging.info(f"Found w in the interior of the dual cone with t* = {t_opt:.6g}.")
+    if save_file is not None:
+        os.makedirs(os.path.dirname(save_file), exist_ok=True)
+        torch.save(
+            {"w_opt": w_opt.cpu(), "t_opt": t_opt},
+            save_file,
+        )
+    return w_opt, t_opt
 
 class DSMAttack(Attack):
     def __init__(self, config: DSMConfig):
@@ -212,6 +289,20 @@ class DSMAttack(Attack):
 
         # --- Build Valid Vocab ---
         self._build_valid_vocab(tokenizer, model)
+
+        if self.config.optimizer == "dca":
+            model_name_safe = model.name_or_path.replace("/", "-")
+            save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w"
+            if os.path.exists(save_file):
+                logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
+                cache = torch.load(save_file, map_location=model.device)
+                self._embeddings_dual_cone_w = cache["w_opt"].to(model.device) 
+                self._embeddings_dual_cone_t = cache["t_opt"]
+            else:
+                logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_file}")
+                self._embeddings_dual_cone_w, self._embeddings_dual_cone_t = _find_embeddings_dual_cone_w(
+                    model, self.valid_token_ids, save_file=save_file
+                )
 
         runs = []
         for idx, conversation in enumerate(conversations):
@@ -291,6 +382,7 @@ class DSMAttack(Attack):
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
+                logging.info(f"DR-submodular decomposition using Hessian upper bound at zero") 
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
                 model_name_safe = model.name_or_path.replace("/", "-")
                 save_file = f"{dca_config.dsm_cache_dir}/{model_name_safe}/hessian_upperbd_at_zero_{idx}.pt"
@@ -307,7 +399,6 @@ class DSMAttack(Attack):
                     time_hessian_bd = 0 # time already included      
 
                 L_F, _ = F_set_batch.singletons_L_bound(F_singleton_vals) # flops=0 when singleton_vals are provided
-                logging.info(f"DR-submodular decomposition using Hessian upper bound at zero") 
             else:
                 hessian_upperbd = dca_config.hessian_upperbd
                 logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}") 

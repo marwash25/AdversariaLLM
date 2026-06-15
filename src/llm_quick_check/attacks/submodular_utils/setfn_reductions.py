@@ -423,7 +423,7 @@ class SetFnReduction():
     def hessian_upperbd_at_zero(self, singleton_vals: Optional[Tensor] = None, save_file: Optional[str] = None) -> Tuple[Tensor, int]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
-        max_{a_i1, a_i2 in V^n} ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) / (a_i1 a_i2)
+        max_{a_i1, a_i2 in V} ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) / (a_i1 a_i2)
         for all i1, i2 in [n]. I'm calling this a Hessian bound because if F is differentiable, taking a_i1, a_i2 -> 0, gives  
         ∇^2F(x)_{i1, i2}. This costs O(n^2 k^2) evaluations of F. 
 
@@ -433,7 +433,7 @@ class SetFnReduction():
         since F is normalized. This costs O(n^2 b^2) evaluations of F_set / F.
 
         TODO: can we show that the two are equivalent when using Ene's reduction?
-
+        TODO: modify this to only consider unique weights (Ene duplicates some weights), also modify eval_all_pairs accordingly.
         Returns:
             hessian_upperbd: symmetric (n, n) tensor Q
             flops: flop count for singleton and pair evaluations.
@@ -467,9 +467,9 @@ class SetFnReduction():
         if save_file is not None:
             torch.save(
                 {
-                    "cross_vals": cross_vals.detach().cpu(),
-                    "normalized_cross_vals": normalized_cross_vals.detach().cpu(),
-                    "hessian_upperbd": hessian_upperbd.detach().cpu(),
+                    "cross_vals": cross_vals.cpu(),
+                    "normalized_cross_vals": normalized_cross_vals.cpu(),
+                    "hessian_upperbd": hessian_upperbd.cpu(),
                     "n": self.n,
                     "b": self.b,
                     "flops": flops,
