@@ -19,3 +19,6 @@ embeddings/
 uv.lock
 .python-version
 .specstory
+.cursorindexingignore
+.cursor/
+*.pt
