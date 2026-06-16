@@ -207,13 +207,11 @@ def _find_embeddings_dual_cone_w(
     """Find a vector w in [-1, 1]^d in the interior of the dual cone of differences 
     of embedding vectors corresponding to Ene map weights.
 
-    Let \U =  {E_{i + weights[j]}  - E_i : i in V, j in [b]} where E_i is the i-th row of the
-    model embedding matrix (restricted to valid_token_ids) and weights are the Ene map weights. 
-    Solve the LP problem:
+    Let U be the matrix with rows {E_{i + weights[j]} - E_i : i in V, j in [b']} where 
+    E_i is the i-th row of the model embedding matrix (restricted to valid_token_ids) 
+    and weights are the unique Ene map weights. Solve the LP problem:
 
         max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t
-
-    where U is the matrix with rows the vectors in \U.
 
     If save_file is set, writes w_opt and t_opt to that path.
     """
@@ -222,40 +220,33 @@ def _find_embeddings_dual_cone_w(
     if hasattr(embedding_layer, "embed_scale"):
         embedding_matrix = embedding_matrix * float(embedding_layer.embed_scale.cpu())
 
-    valid_vocab_size, d = embedding_matrix.shape
-    ene_map = EneReductionMap(valid_vocab_size, 1, model.device)
+    k, d = embedding_matrix.shape
+    ene_map = EneReductionMap(k, 1, model.device)
     weights = np.unique(ene_map.weights.cpu().numpy().astype(np.int64))
 
-    i_idx, j_idx = np.meshgrid(np.arange(valid_vocab_size),np.arange(weights.shape[0]),indexing="ij")
-    i_next = i_idx + weights[j_idx]
-    valid_mask = i_next < valid_vocab_size
-    U = embedding_matrix[i_next[valid_mask]] - embedding_matrix[i_idx[valid_mask]]
-    num_pairs = U.shape[0]
-    # # Build A_ub row-by-row (one Ene weight at a time) to avoid meshgrid and the
-    # # two large fancy-index copies from embedding_matrix[i_next[mask]] - embedding_matrix[i_idx[mask]].
-    # num_pairs = int(np.sum(valid_vocab_size - weights[weights < valid_vocab_size]))
-    # A_ub = np.empty((num_pairs, d + 1), dtype=np.float64)
-    # offset = 0
-    # for w in weights:
-    #     n = valid_vocab_size - int(w)
-    #     if n <= 0:
-    #         continue
-    #     i = np.arange(n, dtype=np.int64)
-    #     A_ub[offset : offset + n, :d] = embedding_matrix[i] - embedding_matrix[i + w]
-    #     A_ub[offset : offset + n, d] = 1.0
-    #     offset += n
-    # del embedding_matrix
+    # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
+    # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0, 
+    # bounds = [-1, 1]^d x [0, None]. Build A_ub row-by-row to avoid OOM error.
+    # For each weight a = weights[j], there's k - a valid pairs (i, i + a) 
+    num_pairs = np.sum(k - weights)
+    A_ub = np.empty((num_pairs, d + 1), dtype=np.float64)
+    offset = 0
+    for a in weights:
+        i_max = k - a
+        i = np.arange(i_max, dtype=np.int64)
+        A_ub[offset : offset + i_max, :d] = embedding_matrix[i] - embedding_matrix[i + a]
+        A_ub[offset : offset + i_max, d] = 1.0
+        offset += i_max
+    del embedding_matrix
+    
+    c = np.zeros(d + 1, dtype=np.float64)
+    c[-1] = -1.0
+    b_ub = np.zeros(num_pairs, dtype=np.float64)
+    bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
 
     logging.info(
         f"Solving LP with {d + 1} variables and {num_pairs} constraints"
     )
-    # Variables are [w_0, ..., w_{d-1}, t]. Maximize t <=> minimize -t.
-    c = np.zeros(d + 1, dtype=np.float64)
-    c[-1] = -1.0
-    A_ub = np.hstack([-U, np.ones((num_pairs, 1), dtype=np.float64)])
-    b_ub = np.zeros(num_pairs, dtype=np.float64)
-    bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
-
     result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
     if not result.success:
         logging.warning(f"LP failed: {result.message}")
