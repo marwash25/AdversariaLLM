@@ -204,12 +204,12 @@ def _find_embeddings_dual_cone_w(
     valid_token_ids: Tensor,
     save_file: str | None = None,
 ) -> Tuple[Tensor | None, float | None]:
-    """Find a vector w in [-1, 1]^d in the interior of the dual cone of differences 
-    of embedding vectors corresponding to Ene map weights.
+    """Find a vector w in [-1, 1]^d in the interior of the dual cone of differences of
+    adjacent embedding vectors.
 
-    Let U be the matrix with rows {E_{i + weights[j]} - E_i : i in V, j in [b']} where 
+    Let U be the matrix with rows {E_{i + 1} - E_i : i in V} where 
     E_i is the i-th row of the model embedding matrix (restricted to valid_token_ids) 
-    and weights are the unique Ene map weights. Solve the LP problem:
+    Solve the LP problem:
 
         max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t
 
@@ -221,33 +221,24 @@ def _find_embeddings_dual_cone_w(
         embedding_matrix = embedding_matrix * float(embedding_layer.embed_scale.cpu())
 
     k, d = embedding_matrix.shape
-    ene_map = EneReductionMap(k, 1, model.device)
-    weights = np.unique(ene_map.weights.cpu().numpy().astype(np.int64))
 
     # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
     # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0, 
-    # bounds = [-1, 1]^d x [0, None]. Build A_ub row-by-row to avoid OOM error.
-    # For each weight a = weights[j], there's k - a valid pairs (i, i + a) 
-    num_pairs = np.sum(k - weights)
-    A_ub = np.empty((num_pairs, d + 1), dtype=np.float64)
-    offset = 0
-    for a in weights:
-        i_max = k - a
-        i = np.arange(i_max, dtype=np.int64)
-        A_ub[offset : offset + i_max, :d] = embedding_matrix[i] - embedding_matrix[i + a]
-        A_ub[offset : offset + i_max, d] = 1.0
-        offset += i_max
+    # bounds = [-1, 1]^d x [0, None]. 
+    A_ub = np.empty((k-1, d + 1), dtype=np.float32)
+    A_ub[:, :d] = embedding_matrix[:-1] - embedding_matrix[1:]
+    A_ub[:, d] = 1.0
     del embedding_matrix
     
-    c = np.zeros(d + 1, dtype=np.float64)
+    c = np.zeros(d + 1, dtype=np.float32)
     c[-1] = -1.0
-    b_ub = np.zeros(num_pairs, dtype=np.float64)
+    b_ub = np.zeros(k-1, dtype=np.float32)
     bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
 
     logging.info(
-        f"Solving LP with {d + 1} variables and {num_pairs} constraints"
+        f"Solving LP with {d + 1} variables and {k-1} constraints"
     )
-    result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs", options={"disp": True}) # set disp to False when done debugging
     if not result.success:
         logging.warning(f"LP failed: {result.message}")
         return None, None
