@@ -33,8 +33,6 @@ class DCAConfig:
     inner_solver: str = "pgm"
     tie_break: Literal["random"] | None = None  
     # TODO: might want to also try using random tie breaking in PGM when used as inner solver, can potentially speed it up?
-    L_G: float | Literal["singletons"] = "singletons" 
-
 
 @dataclass
 class PGMConfig:
@@ -387,9 +385,10 @@ class DSMAttack(Attack):
                     logging.info(f"Time taken: {time_taken}")
                     time_hessian_bd = 0 # time already included      
 
-                L_F, _ = F_set_batch.singletons_L_bound(F_singleton_vals) # flops=0 when singleton_vals are provided
+                L_F, flops_L_F = F_set_batch.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
             else:
                 hessian_upperbd = dca_config.hessian_upperbd
+                L_F, flops_L_F = F_set_batch.singletons_L_bound() 
                 logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}") 
 
             
@@ -400,13 +399,9 @@ class DSMAttack(Attack):
             G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, hessian_upperbd)
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
-            # TODO: clean this up 
-            # if dca_config.hessian_upperbd == "hessian_upperbd_at_zero" and dca_config.L_G == "singletons":
-            #     L_H, flops_L_H = H_set_batch.singletons_L_bound() #TODO: add flops_L_H, flops_hessian_bd, flops_F_singletons to flops count of first step?
-            #     L_G = L_F + L_H
-            # else:
-            #     L_G = dca_config.L_G #TODO: if we keep "hessian_upperbd_at_zero" move L_G computation here in all cases
-            # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = H((k-1) 1) where k = valid_vocab_size
+      
+            # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = - H((k-1) 1) where k = valid_vocab_size
+            # TODO: add flops_L_H, flops_L_F, flops_hessian_bd, flops_F_singletons to flops count of first step?
             H_max, flops_L_H= H_batch(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
             L_H = -H_max.item()
             L_G = L_F + L_H
