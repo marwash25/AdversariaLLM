@@ -250,10 +250,17 @@ def _find_embeddings_dual_cone_w(
         logging.info("Did not find w in the interior of the dual cone, t* = 0.0.")
     else:
         logging.info(f"Found w in the interior of the dual cone with t* = {t_opt:.6g}.")
+
+    lambdas = - result.ineqlin.marginals # dual variables / Lagrange multipliers
+    if not (lambdas >= 0.0).all():
+        logging.warning(f"Lambdas are not non-negative.")
+    if abs(lambdas.sum() - 1.0) > 1e-12:
+        logging.warning(f"Lambdas do not sum to 1.")
+    
     if save_file is not None:
         os.makedirs(os.path.dirname(save_file), exist_ok=True)
         torch.save(
-            {"w_opt": w_opt.cpu(), "t_opt": t_opt},
+            {"w_opt": w_opt.cpu(), "t_opt": t_opt, "result": result},
             save_file,
         )
     return w_opt, t_opt
@@ -277,7 +284,7 @@ class DSMAttack(Attack):
             save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w"
             if os.path.exists(save_file):
                 logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
-                cache = torch.load(save_file, map_location=model.device)
+                cache = torch.load(save_file, weights_only=False)
                 self._embeddings_dual_cone_w = cache["w_opt"].to(model.device) 
                 self._embeddings_dual_cone_t = cache["t_opt"]
             else:

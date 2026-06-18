@@ -432,8 +432,8 @@ class SetFnReduction():
                    = max_{j1, j2 in [b]} (F_set({v1, v2}) - F_set(v1) - F_set(v2)) / (a_j1 a_j2) where v1 = (i1, j1), v2 = (i2, j2),
         since F is normalized. This costs O(n^2 b^2) evaluations of F_set / F.
 
-        TODO: can we show that the two are equivalent when using Ene's reduction?
-        TODO: modify this to only consider unique weights (Ene duplicates some weights), also modify eval_all_pairs accordingly.
+        TODO: modify this to only consider a_j1 = a_j2 = 1 (it's enough, see corollary 2.3 in our continuous submodular notes), 
+        also modify eval_all_pairs accordingly. This reduces the cost to O(n^2) evaluations of F_set / F.0
         Returns:
             hessian_upperbd: symmetric (n, n) tensor Q
             flops: flop count for singleton and pair evaluations.
