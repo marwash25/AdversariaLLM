@@ -196,6 +196,27 @@ def compute_loss_with_max_batchsize(
         loss, flops = compute_loss_fn(attack_ids)
     return loss, flops.sum().item()
 
+def _find_min_gap_permutation(embedding_matrix: np.ndarray) -> Tuple[np.ndarray, float]:
+    r"""Sort rows of embedding matrix based on their jth coordinate in non-decreasing order, 
+    for j \in [d] with the largest minimal gap between adjacent rows, i.e.,  
+    \max_{j \in [d]} \min_{i \in [k-1]} (E_{\sigma^j_{i+1}, j} - E_{\sigma^j_i, j}), 
+    where \sigma^j is such that E_{\sigma_k, j} \geq \ldots \geq E_{\sigma_0, j}.
+    Return reordered embedding matrix and the corresponding permutation.
+    """
+    k, d = embedding_matrix.shape
+    max_min_gap = -np.inf
+    best_perm = np.arange(k)
+    for j in range(d):
+        perm = np.argsort(embedding_matrix[:, j], kind="mergesort")
+        gaps = np.diff(embedding_matrix[perm, j])
+        min_gap = gaps.min()
+        if min_gap > max_min_gap:
+            max_min_gap = min_gap
+            best_perm = perm
+    logging.info(f"Max min gap: {max_min_gap:.6g}")
+
+    return best_perm, max_min_gap
+
 
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
@@ -213,11 +234,16 @@ def _find_embeddings_dual_cone_w(
 
     If save_file is set, writes w_opt and t_opt to that path.
     """
+    # TODO: we first need to reorder the embeddings then find w 
+    
     embedding_layer = model.get_input_embeddings()
     embedding_matrix = embedding_layer.weight[valid_token_ids].detach().float().cpu().numpy()
     if hasattr(embedding_layer, "embed_scale"):
         embedding_matrix = embedding_matrix * float(embedding_layer.embed_scale.cpu())
 
+    perm, max_min_gap = _find_min_gap_permutation(embedding_matrix)
+    
+    embedding_matrix = embedding_matrix[perm]
     k, d = embedding_matrix.shape
 
     # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
@@ -243,6 +269,7 @@ def _find_embeddings_dual_cone_w(
 
     t_opt = float(-result.fun)
     assert t_opt >= 0.0, "t* should be non-negative."
+    assert t_opt >= max_min_gap, "t* should be greater than or equal to the max min gap."
     w_opt = torch.tensor(result.x[:-1], dtype=torch.float32, device=model.device)
     if t_opt == 0.0:
         logging.info("Did not find w in the interior of the dual cone, t* = 0.0.")
@@ -258,10 +285,10 @@ def _find_embeddings_dual_cone_w(
     if save_file is not None:
         os.makedirs(os.path.dirname(save_file), exist_ok=True)
         torch.save(
-            {"w_opt": w_opt.cpu(), "t_opt": t_opt, "result": result},
+            {"w_opt": w_opt.cpu(), "t_opt": t_opt, "result": result, "perm": perm, "max_min_gap": max_min_gap},
             save_file,
         )
-    return w_opt, t_opt
+    return w_opt, t_opt, perm
 
 class DSMAttack(Attack):
     def __init__(self, config: DSMConfig):
@@ -290,6 +317,7 @@ class DSMAttack(Attack):
                 self._embeddings_dual_cone_w, self._embeddings_dual_cone_t = _find_embeddings_dual_cone_w(
                     model, self.valid_token_ids, save_file=save_file
                 )
+
 
         runs = []
         for idx, conversation in enumerate(conversations):
