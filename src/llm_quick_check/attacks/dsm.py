@@ -206,6 +206,7 @@ def _find_min_gap_permutation(embedding_matrix: np.ndarray) -> Tuple[np.ndarray,
     k, d = embedding_matrix.shape
     max_min_gap = -np.inf
     best_perm = np.arange(k)
+    best_j = None
     for j in range(d):
         perm = np.argsort(embedding_matrix[:, j], kind="mergesort")
         gaps = np.diff(embedding_matrix[perm, j])
@@ -213,10 +214,36 @@ def _find_min_gap_permutation(embedding_matrix: np.ndarray) -> Tuple[np.ndarray,
         if min_gap > max_min_gap:
             max_min_gap = min_gap
             best_perm = perm
-    logging.info(f"Max min gap: {max_min_gap:.6g}")
+            best_j = j
+    logging.info(f"Max min gap: {max_min_gap:.6g}, achieved at j = {best_j}")
 
     return best_perm, max_min_gap
 
+def _randomly_permute_embeddings(embedding_matrix: np.ndarray) -> np.ndarray:
+    """
+    Generate a random unit vector w in R^d, and permute the rows of the embedding matrix 
+    according to the non-decreasing order of their projections onto w.
+    """
+    k, d = embedding_matrix.shape
+    rng = np.random.default_rng()
+    max_retries = 1 # TODO: increase when done debugging
+    for _ in range(max_retries):
+        w = rng.standard_normal(d)
+        w /= np.linalg.norm(w)
+        projections = embedding_matrix @ w
+        if np.unique(projections).shape[0] == k:
+            logging.info(f"Found a random direction w with distinct projections for all {k} rows.")
+            break
+    else:
+        raise ValueError(
+            f"Could not find a random direction w with distinct projections for all {k} rows "
+            f"after {max_retries} attempts."
+        )
+    
+    perm = np.argsort(projections, kind="mergesort")
+    min_gap = np.min(np.diff(projections[perm]))
+    logging.info(f"Min gap achieved with w: {min_gap:.6g}")
+    return perm, min_gap
 
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
@@ -241,10 +268,16 @@ def _find_embeddings_dual_cone_w(
     if hasattr(embedding_layer, "embed_scale"):
         embedding_matrix = embedding_matrix * float(embedding_layer.embed_scale.cpu())
 
-    perm, max_min_gap = _find_min_gap_permutation(embedding_matrix)
-    
-    embedding_matrix = embedding_matrix[perm]
     k, d = embedding_matrix.shape
+    # n_unique_rows = np.unique(embedding_matrix, axis=0).shape[0]
+    # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
+
+    # perm, max_min_gap = _find_min_gap_permutation(embedding_matrix)
+    perm, min_gap =_randomly_permute_embeddings(embedding_matrix)
+    embedding_matrix = embedding_matrix[perm]
+
+    # We can simply use random w, but probably better to use w that maximizes the min gap 
+    # for this permuted embedding matrix. TODO: test if this is actually better.
 
     # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
     # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0, 
@@ -317,7 +350,7 @@ class DSMAttack(Attack):
                 self._embeddings_dual_cone_w, self._embeddings_dual_cone_t = _find_embeddings_dual_cone_w(
                     model, self.valid_token_ids, save_file=save_file
                 )
-
+        import sys; sys.exit(0) # remove when done debugging _find_embeddings_dual_cone_w
 
         runs = []
         for idx, conversation in enumerate(conversations):
