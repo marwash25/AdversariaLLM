@@ -226,7 +226,7 @@ def _randomly_permute_embeddings(embedding_matrix: np.ndarray) -> np.ndarray:
     """
     k, d = embedding_matrix.shape
     rng = np.random.default_rng()
-    max_retries = 1 # TODO: increase when done debugging
+    max_retries = 1 # increase if needed
     for _ in range(max_retries):
         w = rng.standard_normal(d)
         w /= np.linalg.norm(w)
@@ -243,11 +243,12 @@ def _randomly_permute_embeddings(embedding_matrix: np.ndarray) -> np.ndarray:
     perm = np.argsort(projections, kind="mergesort")
     min_gap = np.min(np.diff(projections[perm]))
     logging.info(f"Min gap achieved with w: {min_gap:.6g}")
-    return perm, min_gap
+    return w, perm, min_gap
 
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
+    solve_lp: bool = False,
     save_file: str | None = None,
 ) -> Tuple[Tensor | None, float | None]:
     """Find a vector w in [-1, 1]^d in the interior of the dual cone of differences of
@@ -261,8 +262,6 @@ def _find_embeddings_dual_cone_w(
 
     If save_file is set, writes w_opt and t_opt to that path.
     """
-    # TODO: we first need to reorder the embeddings then find w 
-    
     embedding_layer = model.get_input_embeddings()
     embedding_matrix = embedding_layer.weight[valid_token_ids].detach().float().cpu().numpy()
     if hasattr(embedding_layer, "embed_scale"):
@@ -272,56 +271,65 @@ def _find_embeddings_dual_cone_w(
     # n_unique_rows = np.unique(embedding_matrix, axis=0).shape[0]
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
-    # perm, max_min_gap = _find_min_gap_permutation(embedding_matrix)
-    perm, min_gap =_randomly_permute_embeddings(embedding_matrix)
+    # perm, min_gap = _find_min_gap_permutation(embedding_matrix)
+    w, perm, min_gap =_randomly_permute_embeddings(embedding_matrix)
     embedding_matrix = embedding_matrix[perm]
+    inv_perm = np.empty(k, dtype=int)
+    inv_perm[perm] = np.arange(k)   # inverse permutation
 
     # We can simply use random w, but probably better to use w that maximizes the min gap 
-    # for this permuted embedding matrix. TODO: test if this is actually better.
+    # for this permuted embedding matrix. 
+    # LP took > 3hrs to solve, so for now let's use random w.
+    # TODO: can try to solve problem with SVM instead of LP
 
-    # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
-    # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0, 
-    # bounds = [-1, 1]^d x [0, None]. 
-    A_ub = np.empty((k-1, d + 1), dtype=np.float32)
-    A_ub[:, :d] = embedding_matrix[:-1] - embedding_matrix[1:]
-    A_ub[:, d] = 1.0
-    del embedding_matrix
-    
-    c = np.zeros(d + 1, dtype=np.float32)
-    c[-1] = -1.0
-    b_ub = np.zeros(k-1, dtype=np.float32)
-    bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
+    if solve_lp:
+        # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
+        # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0, 
+        # bounds = [-1, 1]^d x [0, None]. 
+        A_ub = np.empty((k-1, d + 1), dtype=np.float32)
+        A_ub[:, :d] = embedding_matrix[:-1] - embedding_matrix[1:]
+        A_ub[:, d] = 1.0
+        del embedding_matrix
+        
+        c = np.zeros(d + 1, dtype=np.float32)
+        c[-1] = -1.0
+        b_ub = np.zeros(k-1, dtype=np.float32)
+        bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
 
-    logging.info(
-        f"Solving LP with {d + 1} variables and {k-1} constraints"
-    )
-    result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs", options={"disp": True}) # set disp to False when done debugging
-    if not result.success:
-        logging.warning(f"LP failed: {result.message}")
-        return None, None
-
-    t_opt = float(-result.fun)
-    assert t_opt >= 0.0, "t* should be non-negative."
-    assert t_opt >= max_min_gap, "t* should be greater than or equal to the max min gap."
-    w_opt = torch.tensor(result.x[:-1], dtype=torch.float32, device=model.device)
-    if t_opt == 0.0:
-        logging.info("Did not find w in the interior of the dual cone, t* = 0.0.")
-    else:
-        logging.info(f"Found w in the interior of the dual cone with t* = {t_opt:.6g}.")
-
-    lambdas = - result.ineqlin.marginals # dual variables / Lagrange multipliers
-    if not (lambdas >= 0.0).all():
-        logging.warning(f"Lambdas are not non-negative.")
-    if abs(lambdas.sum() - 1.0) > 1e-12:
-        logging.warning(f"Lambdas do not sum to 1.")
-    
-    if save_file is not None:
-        os.makedirs(os.path.dirname(save_file), exist_ok=True)
-        torch.save(
-            {"w_opt": w_opt.cpu(), "t_opt": t_opt, "result": result, "perm": perm, "max_min_gap": max_min_gap},
-            save_file,
+        logging.info(
+            f"Solving LP with {d + 1} variables and {k-1} constraints"
         )
-    return w_opt, t_opt, perm
+        result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs", options={"disp": True}) # set disp to False when done debugging
+        if not result.success:
+            logging.warning(f"LP failed: {result.message}")
+            return None, None
+
+        t_opt = float(-result.fun)
+        assert t_opt >= 0.0, "t* should be non-negative."
+        assert t_opt >= min_gap, "t* should be greater than or equal to the min gap."
+        w_opt = torch.tensor(result.x[:-1], dtype=torch.float32, device=model.device)
+        if t_opt == 0.0:
+            logging.info("Did not find w in the interior of the dual cone, t* = 0.0.")
+        else:
+            logging.info(f"Found w in the interior of the dual cone with t* = {t_opt:.6g}.")
+
+        lambdas = - result.ineqlin.marginals # dual variables / Lagrange multipliers
+        if not (lambdas >= 0.0).all():
+            logging.warning(f"Lambdas are not non-negative.")
+        if abs(lambdas.sum() - 1.0) > 1e-12:
+            logging.warning(f"Lambdas do not sum to 1.")
+        
+        if save_file is not None:
+            os.makedirs(os.path.dirname(save_file), exist_ok=True)
+            torch.save(
+                {"w_opt": w_opt.cpu(), "t_opt": t_opt, "result": result, "perm": perm, "min_gap": min_gap},
+                save_file,
+            )
+    else:
+        w_opt = w
+        t_opt = min_gap
+    
+    return w_opt, t_opt, perm, inv_perm
 
 class DSMAttack(Attack):
     def __init__(self, config: DSMConfig):
@@ -345,12 +353,14 @@ class DSMAttack(Attack):
                 cache = torch.load(save_file, weights_only=False)
                 self._embeddings_dual_cone_w = cache["w_opt"].to(model.device) 
                 self._embeddings_dual_cone_t = cache["t_opt"]
+                self._embeddings_perm = cache["perm"]
+                self._embeddings_inv_perm = cache["inv_perm"]
             else:
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_file}")
-                self._embeddings_dual_cone_w, self._embeddings_dual_cone_t = _find_embeddings_dual_cone_w(
+                self._embeddings_dual_cone_w, self._embeddings_dual_cone_t, self._embeddings_perm, self._embeddings_inv_perm = _find_embeddings_dual_cone_w(
                     model, self.valid_token_ids, save_file=save_file
                 )
-        import sys; sys.exit(0) # remove when done debugging _find_embeddings_dual_cone_w
+            
 
         runs = []
         for idx, conversation in enumerate(conversations):
@@ -374,20 +384,24 @@ class DSMAttack(Attack):
         # Initialize with the token ids of optim_str_init
         # TODO: experiment with different initial solutions (see notes.md)
         optim_ids_init = tokens[attack_mask].detach().clone().unsqueeze(0) # (1, n_optim_tokens)
-        optim_ids_reduced = self.valid_token_id_to_reduced_idx[optim_ids_init]
-        invalid_optim_ids = optim_ids_init[optim_ids_reduced == -1]
+        reduced_ids_init = self.valid_token_id_to_reduced_idx[optim_ids_init]
+        invalid_optim_ids = optim_ids_init[reduced_ids_init == -1]
         if invalid_optim_ids.numel() > 0:
             raise ValueError(
                 f"Initial attack ids contains {invalid_optim_ids.numel()} not allowed token id(s) "
                 f"e.g. {invalid_optim_ids[:5].tolist()}."
             )
-    
+
+        # apply inverse embedding permutation to reduced initial attack ids
+        inv_perm_ids_init = self._embeddings_inv_perm[reduced_ids_init]
 
         # define loss_fn over V^n where V = {0, 1, ..., valid_vocab_size - 1} and n = n_optim_tokens
+        # on permuted embedding matrix. Need to apply embeddings_perm (defined on V^n, so should be applied first)  
+        # and map back to original token ids
         loss_fn = lambda attack_ids: compute_loss_with_max_batchsize(
-            model, self.valid_token_ids[attack_ids], tokens, target_mask, attack_mask, self.config.lm_reg_weight
+            model, self.valid_token_ids[self._embeddings_perm[attack_ids]], tokens, target_mask, attack_mask, self.config.lm_reg_weight
         )
-        zero_attack_ids = torch.zeros_like(optim_ids_reduced)
+        zero_attack_ids = torch.zeros_like(inv_perm_ids_init)
         F_0, F_0_flops = loss_fn(zero_attack_ids)
         logging.info(f"Loss at zero F(0): {F_0.item():.4f}")
         # normalize F(0) = 0
@@ -400,7 +414,7 @@ class DSMAttack(Attack):
         filter_zero = False
         if self.config.filter_ids: 
             if self.config.placement == "suffix":
-                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[attack_ids].cpu()]], False)
+                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[self._embeddings_perm[attack_ids]].cpu()]], False)
                 # check if zero_attack_ids is reachable
                 retained_idx = filter_fn(zero_attack_ids)
                 if not retained_idx:
@@ -418,7 +432,7 @@ class DSMAttack(Attack):
             _, _, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, \
             times, flops = pgm_lovasz(
                 F_set_batch,
-                optim_ids_reduced,
+                inv_perm_ids_init,
                 self.config.num_steps,
                 self.config.pgm_config.L,
                 tie_break=self.config.pgm_config.tie_break,
@@ -474,7 +488,7 @@ class DSMAttack(Attack):
                 F_set_batch,
                 G_set_batch,
                 H_set_batch,
-                optim_ids_reduced,
+                inv_perm_ids_init,
                 num_outer_steps,
                 dca_config.num_inner_steps,
                 dca_config.inner_solver,
@@ -503,7 +517,7 @@ class DSMAttack(Attack):
         flops[valid_idx[0]] += F_0_flops
 
         # map back to original token ids and decode to strings
-        optim_ids = self.valid_token_ids[discrete_sols_filtered]
+        optim_ids = self.valid_token_ids[self._embeddings_perm[discrete_sols_filtered]]
         optim_strings = tokenizer.batch_decode(optim_ids.cpu())  # decode handles batching in v5.3+, keeping batch_decode to support older versions
         losses = [val + F_0.item() for val in discrete_obj_values_filtered]
         unfiltered_losses = [val + F_0.item() for val in discrete_obj_values]
