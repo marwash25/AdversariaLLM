@@ -420,20 +420,22 @@ class SetFnReduction():
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
 
-    def hessian_upperbd_at_zero(self, singleton_vals: Optional[Tensor] = None, save_file: Optional[str] = None) -> Tuple[Tensor, int]:
+    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Optional[Tensor] = None, save_file: Optional[str] = None) -> Tuple[Tensor, int]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
-        max_{a_i1, a_i2 in V} ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) / (a_i1 a_i2)
-        for all i1, i2 in [n]. I'm calling this a Hessian bound because if F is differentiable, taking a_i1, a_i2 -> 0, gives  
-        ∇^2F(x)_{i1, i2}. This costs O(n^2 k^2) evaluations of F. 
+        We want to compute:
+        max_{x, a_i1, a_i2} ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) / (a_i1 a_i2)
+        for all i1, i2 in [n]. This can be viewed as a discrete Hessian bound because if F is differentiable, taking a_i1, a_i2 -> 0, 
+        gives ∇^2F(x)_{i1, i2}. It's enough to consider a_j1 = a_j2 = 1 (max is reached there), but since we're only computing
+        the bound at x=0, that's not enough. Bound at x=0 costs O(n^2 k^2) evaluations of F. 
 
-        So we instead consider the maximum over only weights of the map a_j1 = weights[j1], a_j2 = weights[j2], i.e.,  
+        We instead consider the maximum over only weights of the map a_j1 = weights[j1], a_j2 = weights[j2], i.e.,  
         Q_{i1, i2} = max_{j1, j2 in [b]} ((F(a_j1 e_i1 + a_j2 e_i2) - F(a_j2 e_i2)) - (F(a_j1 e_i1) - F(0))) / (a_j1 a_j2)
                    = max_{j1, j2 in [b]} (F_set({v1, v2}) - F_set(v1) - F_set(v2)) / (a_j1 a_j2) where v1 = (i1, j1), v2 = (i2, j2),
         since F is normalized. This costs O(n^2 b^2) evaluations of F_set / F.
 
-        TODO: modify this to only consider a_j1 = a_j2 = 1 (it's enough, see corollary 2.3 in our continuous submodular notes), 
-        also modify eval_all_pairs accordingly. This reduces the cost to O(n^2) evaluations of F_set / F.0
+        If normalized is False, don't normalize by a_j1 a_j2.
+
         Returns:
             hessian_upperbd: symmetric (n, n) tensor Q
             flops: flop count for singleton and pair evaluations.
@@ -454,7 +456,11 @@ class SetFnReduction():
         normalized_cross_vals = cross_vals / (w[j1] * w[j2])
 
         hessian_upperbd_flat = torch.full((self.n * self.n,), -float("inf"), device=self.device, dtype=cross_vals.dtype)
-        hessian_upperbd_flat.scatter_reduce_(0, i1 * self.n + i2, normalized_cross_vals, reduce="amax", include_self=True)
+        if normalized:
+            hessian_upperbd_flat.scatter_reduce_(0, i1 * self.n + i2, normalized_cross_vals, reduce="amax", include_self=True)
+        else:
+            hessian_upperbd_flat.scatter_reduce_(0, i1 * self.n + i2, cross_vals, reduce="amax", include_self=True)   
+            
         hessian_upperbd = hessian_upperbd_flat.view(self.n, self.n)
         hessian_upperbd = torch.maximum(hessian_upperbd, hessian_upperbd.mT) # copy values of Q_{i1, i2} to Q_{i2, i1} 
 
