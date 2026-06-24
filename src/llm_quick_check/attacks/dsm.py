@@ -196,7 +196,8 @@ def compute_loss_with_max_batchsize(
         loss, flops = compute_loss_fn(attack_ids)
     return loss, flops.sum().item()
 
-def _find_min_gap_permutation(embedding_matrix: np.ndarray) -> Tuple[np.ndarray, float]:
+
+def _find_min_gap_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
     r"""Sort rows of embedding matrix based on their jth coordinate in non-decreasing order, 
     for j \in [d] with the largest minimal gap between adjacent rows, i.e.,  
     \max_{j \in [d]} \min_{i \in [k-1]} (E_{\sigma^j_{i+1}, j} - E_{\sigma^j_i, j}), 
@@ -204,13 +205,13 @@ def _find_min_gap_permutation(embedding_matrix: np.ndarray) -> Tuple[np.ndarray,
     Return reordered embedding matrix and the corresponding permutation.
     """
     k, d = embedding_matrix.shape
-    max_min_gap = -np.inf
-    best_perm = np.arange(k)
+    max_min_gap = -float("inf")
+    best_perm = torch.arange(k, device=embedding_matrix.device)
     best_j = None
     for j in range(d):
-        perm = np.argsort(embedding_matrix[:, j], kind="mergesort")
-        gaps = np.diff(embedding_matrix[perm, j])
-        min_gap = gaps.min()
+        perm = embedding_matrix[:, j].argsort(stable=True)
+        gaps = embedding_matrix[perm, j].diff()
+        min_gap = gaps.min().item()
         if min_gap > max_min_gap:
             max_min_gap = min_gap
             best_perm = perm
@@ -219,19 +220,19 @@ def _find_min_gap_permutation(embedding_matrix: np.ndarray) -> Tuple[np.ndarray,
 
     return best_perm, max_min_gap
 
-def _randomly_permute_embeddings(embedding_matrix: np.ndarray) -> np.ndarray:
+
+def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float]:
     """
     Generate a random unit vector w in R^d, and permute the rows of the embedding matrix 
     according to the non-decreasing order of their projections onto w.
     """
     k, d = embedding_matrix.shape
-    rng = np.random.default_rng()
-    max_retries = 1 # increase if needed
+    max_retries = 1  # increase if needed
     for _ in range(max_retries):
-        w = rng.standard_normal(d)
-        w /= np.linalg.norm(w)
+        w = torch.randn(d, dtype=embedding_matrix.dtype, device=embedding_matrix.device)
+        w = w / w.norm()
         projections = embedding_matrix @ w
-        if np.unique(projections).shape[0] == k:
+        if projections.unique().numel() == k:
             logging.info(f"Found a random direction w with distinct projections for all {k} rows.")
             break
     else:
@@ -239,9 +240,9 @@ def _randomly_permute_embeddings(embedding_matrix: np.ndarray) -> np.ndarray:
             f"Could not find a random direction w with distinct projections for all {k} rows "
             f"after {max_retries} attempts."
         )
-    
-    perm = np.argsort(projections, kind="mergesort")
-    min_gap = np.min(np.diff(projections[perm]))
+
+    perm = projections.argsort(stable=True)
+    min_gap = projections[perm].diff().min().item()
     logging.info(f"Min gap achieved with w: {min_gap:.6g}")
     return w, perm, min_gap
 
@@ -250,7 +251,7 @@ def _find_embeddings_dual_cone_w(
     valid_token_ids: Tensor,
     solve_lp: bool = False,
     save_file: str | None = None,
-) -> Tuple[Tensor | None, float | None]:
+) -> Tuple[Tensor, float, Tensor, Tensor]:
     """Find a vector w in [-1, 1]^d in the interior of the dual cone of differences of
     adjacent embedding vectors.
 
@@ -263,7 +264,7 @@ def _find_embeddings_dual_cone_w(
     If save_file is set, writes w_opt and t_opt to that path.
     """
     embedding_layer = model.get_input_embeddings()
-    embedding_matrix = embedding_layer.weight[valid_token_ids].detach().float().cpu().numpy()
+    embedding_matrix = embedding_layer.weight[valid_token_ids].detach().float().cpu()
     if hasattr(embedding_layer, "embed_scale"):
         embedding_matrix = embedding_matrix * float(embedding_layer.embed_scale.cpu())
 
@@ -272,10 +273,11 @@ def _find_embeddings_dual_cone_w(
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
     # perm, min_gap = _find_min_gap_permutation(embedding_matrix)
-    w, perm, min_gap =_randomly_permute_embeddings(embedding_matrix)
+    w, perm, min_gap = _randomly_permute_embeddings(embedding_matrix)
     embedding_matrix = embedding_matrix[perm]
-    inv_perm = np.empty(k, dtype=int)
-    inv_perm[perm] = np.arange(k)   # inverse permutation
+    perm = perm.to(device=model.device)
+    inv_perm = torch.empty_like(perm)
+    inv_perm[perm] = torch.arange(k, device=model.device)
 
     # We can simply use random w, but probably better to use w that maximizes the min gap 
     # for this permuted embedding matrix. 
@@ -283,6 +285,7 @@ def _find_embeddings_dual_cone_w(
     # TODO: can try to solve problem with SVM instead of LP
 
     if solve_lp:
+        embedding_matrix = embedding_matrix.numpy()
         # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
         # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0, 
         # bounds = [-1, 1]^d x [0, None]. 
@@ -293,40 +296,40 @@ def _find_embeddings_dual_cone_w(
         
         c = np.zeros(d + 1, dtype=np.float32)
         c[-1] = -1.0
-        b_ub = np.zeros(k-1, dtype=np.float32)
+        b_ub = np.zeros(k - 1, dtype=np.float32)
         bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
 
         logging.info(
             f"Solving LP with {d + 1} variables and {k-1} constraints"
         )
-        result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs", options={"disp": True}) # set disp to False when done debugging
-        if not result.success:
-            logging.warning(f"LP failed: {result.message}")
-            return None, None
+        lp_result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs", options={"disp": True})  # set disp to False when done debugging
+        if not lp_result.success:
+            raise RuntimeError(f"LP failed: {lp_result.message}")
 
-        t_opt = float(-result.fun)
+        t_opt = float(-lp_result.fun)
         assert t_opt >= 0.0, "t* should be non-negative."
         assert t_opt >= min_gap, "t* should be greater than or equal to the min gap."
-        w_opt = torch.tensor(result.x[:-1], dtype=torch.float32, device=model.device)
+        w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float32, device=model.device)
         if t_opt == 0.0:
             logging.info("Did not find w in the interior of the dual cone, t* = 0.0.")
         else:
             logging.info(f"Found w in the interior of the dual cone with t* = {t_opt:.6g}.")
 
-        lambdas = - result.ineqlin.marginals # dual variables / Lagrange multipliers
+        lambdas = -lp_result.ineqlin.marginals  # dual variables / Lagrange multipliers
         if not (lambdas >= 0.0).all():
-            logging.warning(f"Lambdas are not non-negative.")
+            logging.warning("Lambdas are not non-negative.")
         if abs(lambdas.sum() - 1.0) > 1e-12:
             logging.warning(f"Lambdas do not sum to 1.")
         
         if save_file is not None:
             os.makedirs(os.path.dirname(save_file), exist_ok=True)
             torch.save(
-                {"w_opt": w_opt.cpu(), "t_opt": t_opt, "result": result, "perm": perm, "min_gap": min_gap},
+                {"w_opt": w_opt, "t_opt": t_opt, "lp_result": lp_result, "perm": perm, "inv_perm": inv_perm, "min_gap": min_gap},
                 save_file,
             )
     else:
-        w_opt = w
+        #TODO: do we also want to save results in this case?
+        w_opt = w.to(device=model.device)
         t_opt = min_gap
     
     return w_opt, t_opt, perm, inv_perm
@@ -350,8 +353,8 @@ class DSMAttack(Attack):
             save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w"
             if os.path.exists(save_file):
                 logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
-                cache = torch.load(save_file, weights_only=False)
-                self._embeddings_dual_cone_w = cache["w_opt"].to(model.device) 
+                cache = torch.load(save_file,  map_location=model.device, weights_only=False)
+                self._embeddings_dual_cone_w = cache["w_opt"]
                 self._embeddings_dual_cone_t = cache["t_opt"]
                 self._embeddings_perm = cache["perm"]
                 self._embeddings_inv_perm = cache["inv_perm"]
@@ -360,6 +363,11 @@ class DSMAttack(Attack):
                 self._embeddings_dual_cone_w, self._embeddings_dual_cone_t, self._embeddings_perm, self._embeddings_inv_perm = _find_embeddings_dual_cone_w(
                     model, self.valid_token_ids, save_file=save_file
                 )
+        else:
+            # define identity embedding permutation to be used by PGM
+            # TODO: it's interesting to check if PGM performs better with DCA's embedding permutation.
+            self._embeddings_perm  = torch.arange(self.valid_vocab_size, device=model.device)
+            self._embeddings_inv_perm = torch.arange(self.valid_vocab_size, device=model.device)
             
 
         runs = []
@@ -451,7 +459,7 @@ class DSMAttack(Attack):
                 if os.path.exists(save_file):
                     logging.info(f"Loading Hessian upper bound at zero from {save_file}")
                     cache = torch.load(save_file, map_location=device)
-                    hessian_upperbd = cache["hessian_upperbd"].to(device)
+                    hessian_upperbd = cache["hessian_upperbd"]
                     flops_hessian_bd = cache["flops"]
                     time_hessian_bd = cache["time_taken"]
                 else:
