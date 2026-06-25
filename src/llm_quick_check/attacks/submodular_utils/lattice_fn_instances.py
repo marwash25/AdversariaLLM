@@ -70,18 +70,18 @@ class QuadraticFn(SequentialLatticeFunction):
 
 
 class EmbeddingQuadraticFn(QuadraticFn):
-    r"""Lattice function F(x) = 0.5 * \sum_{i,j} \tfrac{\alpha_{ij}} p_i p_j
-    where p_i = embedding_projections[x_i], \alpha <= 0 and symmetric.
+    r"""Lattice function F(x) = 0.5 * p_x^T Q p_x with symmetric Q.
+    and p_x = embedding_projections[x].
     """
     def __init__(
         self,
-        alpha: Tensor,
+        Q: Tensor,
         embedding_projections: Tensor,
         k: int,
     ):
         assert embedding_projections.shape == (k,), "embedding_projections must have shape (k,)"
-        assert alpha.device == embedding_projections.device, "alpha and embedding_projections must be on the same device"
-        super().__init__(alpha, k)
+        assert Q.device == embedding_projections.device, "Q and embedding_projections must be on the same device"
+        super().__init__(Q, k)
         self.embedding_projections = embedding_projections
 
     def _projections(self, x: Tensor) -> Tensor:
@@ -171,15 +171,12 @@ def DR_submodular_decomposition(
     r"""Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H: 
     F = G - H, with G = F + H and 
     If embedding_matrix is not None:
-        \tilde{H}(x) = H'(E(x)) where E(x) is the submatrix of the embedding_matrix corresponding to rows x_i's 
-        and H': R^{n x d} -> R is defined as
-        H'(X') = \sum_{i=1}^n \sum_{j=1}^n  \tfrac{\alpha_{ij}}{(t^*)^2} X'_{i, :}  w^* X'_{j, :} w^*, where
-        \alpha_{i1, i2} = -max(hessian_upperbd[i1, i2], 0)
+        H(x) = 0.5 * p_x^T Q p_x, where  Q = -max(hessian_upperbd, 0), p_x = embedding_projections[x], and 
         ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  hessian_upperbd[i1, i2] 
     Otherwise:
         H(x) = 0.5 * x^T Q x where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix 
-        or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar.
-        ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2] (<= -alpha in DSMin paper) 
+        or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar, and
+        ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2]
     """
     if hessian_upperbd.max().item() <= 0: # alpha == 0 is useful to test if dca correctly reduces to its submin inner solver in this case
         logging.info("hessian_upperbd <= 0 implies F is already DR-submodular, returning F as G and zero lattice function as H")
