@@ -228,11 +228,14 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tens
     """
     k, d = embedding_matrix.shape
     max_retries = 1  # increase if needed
+    # we need to use float64 precision, otherwise couldn't find valid w even after 100 attempts 
+    # for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors 
+    # this likely will lead again to large H(x) values... 
     for _ in range(max_retries):
-        w = torch.randn(d, dtype=embedding_matrix.dtype, device=embedding_matrix.device)
+        w = torch.randn(d, dtype=torch.float64, device=embedding_matrix.device)
         w = w / w.norm()
-        projections = embedding_matrix @ w
-        if projections.unique().numel() == k:
+        projections = embedding_matrix.double() @ w
+        if projections.unique().numel() == k: 
             logging.info(f"Found a random direction w with distinct projections for all {k} rows.")
             break
     else:
@@ -297,7 +300,7 @@ def _find_embeddings_dual_cone_w(
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
     # perm, min_gap = _find_min_gap_permutation(embedding_matrix)
-    torch.manual_seed(seed)
+    # torch.manual_seed(seed)
     w, perm, min_gap, permuted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
     embedding_matrix = embedding_matrix[perm]
     perm = perm.to(device=model.device)
