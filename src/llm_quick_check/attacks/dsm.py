@@ -275,6 +275,7 @@ def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
     solve_lp: bool = False,
+    seed: int = 0,
     save_file: str | None = None,
 ) -> Tuple[Tensor, float, Tensor, Tensor, Tensor | None]:
     """Find a vector w in R^d in the interior of the dual cone of differences of
@@ -296,6 +297,7 @@ def _find_embeddings_dual_cone_w(
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
     # perm, min_gap = _find_min_gap_permutation(embedding_matrix)
+    torch.manual_seed(seed)
     w, perm, min_gap, permuted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
     embedding_matrix = embedding_matrix[perm]
     perm = perm.to(device=model.device)
@@ -345,17 +347,19 @@ def _find_embeddings_dual_cone_w(
         if abs(lambdas.sum() - 1.0) > 1e-12:
             logging.warning(f"Lambdas do not sum to 1.")
         
-        if save_file is not None:
-            os.makedirs(os.path.dirname(save_file), exist_ok=True)
-            torch.save(
-                {"w_opt": w_opt, "t_opt": t_opt, "lp_result": lp_result, "perm": perm, "inv_perm": inv_perm, "min_gap": min_gap},
-                save_file,
-            )
         permuted_embedding_projections = None # maybe compute them here too?
     else:
-        #TODO: do we also want to save results in this case?
-        w_opt = w.to(device=model.device) / min_gap # can recover t_opt = min_gap from ||w_opt||_2 = 1/min_gap
-        permuted_embedding_projections = permuted_embedding_projections.to(device=model.device) / min_gap 
+        lp_result = None
+        t_opt = min_gap
+        w_opt = w.to(device=model.device) / t_opt # can recover t_opt = min_gap from ||w_opt||_2 = 1/t_opt
+        permuted_embedding_projections = permuted_embedding_projections.to(device=model.device) / t_opt 
+
+    if save_file is not None:
+        os.makedirs(os.path.dirname(f"{save_file}/{seed}.pt"), exist_ok=True)
+        torch.save(
+            {"w_opt_scaled": w_opt, "t_opt": t_opt, "lp_result": lp_result, "perm": perm, "inv_perm": inv_perm, "min_gap": min_gap},
+            save_file,
+        )
 
     return w_opt, perm, inv_perm, permuted_embedding_projections
 
@@ -379,13 +383,14 @@ class DSMAttack(Attack):
             if os.path.exists(save_file):
                 logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
                 cache = torch.load(save_file,  map_location=model.device, weights_only=False)
-                self._embeddings_dual_cone_w = cache["w_opt"]
+                self._embeddings_dual_cone_w = cache["w_opt_scaled"]
                 self._embeddings_perm = cache["perm"]
                 self._embeddings_inv_perm = cache["inv_perm"]
+                self._permuted_embedding_projections = None # will be computed below
             else:
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_file}")
                 self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._permuted_embedding_projections = _find_embeddings_dual_cone_w(
-                    model, self.valid_token_ids, save_file=save_file
+                    model, self.valid_token_ids, seed=self.config.seed, save_file=save_file
                 )
             if self._permuted_embedding_projections is None:
                 self._permuted_embedding_projections = _permuted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
