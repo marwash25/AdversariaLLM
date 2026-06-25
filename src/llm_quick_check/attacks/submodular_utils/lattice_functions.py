@@ -189,30 +189,10 @@ class SequentialLatticeFunction(LatticeFunction):
         return new_val, new_x, flops
 
     def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
-        """Evaluate F(current_x - weight * e_i). Don't update current state
-        Default: call eval_batch. Override for more efficient update.
-        
-        Args:
-            i: coordinate index in [0, n).
-            weight: 0-dimensional tensor
-
-        Returns:
-            Fvalue: 0-dimensional tensor, F(current_x - weight * e_i).
-            new_x: Tensor of shape (n,), current_x - weight * e_i.
-            flops: flop count for this step, int.
-        """
-        assert weight.device == self.current_x.device, "weight must be on the same device as current_x"
-        new_x = self.current_x.clone()
-        new_x[i] -= weight
-        new_vals, flops = self.eval_batch(new_x.unsqueeze(0))
-        return new_vals[0], new_x, flops
+        return self.add(i, -weight)
 
     def remove_update(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
-        """Evaluate F(current_x - weight * e_i) and update state
-        """
-        new_val, new_x, flops = self.remove(i, weight)
-        self.set_state(new_x, new_val)
-        return new_val, new_x, flops
+        return self.add_update(i, -weight)
 
     def _assert_eval_neighbors_inputs(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor

@@ -59,30 +59,12 @@ class QuadraticFn(SequentialLatticeFunction):
             new_val = self.current_val + weight * (self.Q[i, :] * self.current_x).sum() + 0.5 * weight**2 * self.Q[i, i]
         return new_val, new_x, 0
 
-    def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
-        assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
-        new_x = self.current_x.clone()
-        new_x[i] -= weight
-        if self.Q.dim() == 0:
-            assert self._sum_x is not None
-            new_sum = self._sum_x - weight
-            new_val = 0.5 * self.Q * new_sum**2
-        else:
-            new_val = self.current_val - weight * (self.Q[i, :] * self.current_x).sum() + 0.5 * weight**2 * self.Q[i, i]
-        return new_val, new_x, 0
-
     # new_sum already computed in add/remove, so it's a bit inefficient to recompute it in add_update/remove_update, 
     # but want to keep return of add/remove consistent with base class. 
     # TODO: if we refactor SequentialLatticeFunction to maintain a state object this can be avoided
     def add_update(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         new_val, new_x, flops = self.add(i, weight)
         new_sum = self._sum_x + weight if self.Q.dim() == 0 else None 
-        self.set_state(new_x, new_val, sum_x=new_sum)
-        return new_val, new_x, flops
-
-    def remove_update(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
-        new_val, new_x, flops = self.remove(i, weight)
-        new_sum = self._sum_x - weight if self.Q.dim() == 0 else None 
         self.set_state(new_x, new_val, sum_x=new_sum)
         return new_val, new_x, flops
 
@@ -116,9 +98,6 @@ class EmbeddingQuadraticFn(QuadraticFn):
         current_p = self._projections(self.current_x)
         new_val = self.current_val + delta_p * (self.Q[i, :] * current_p).sum() + 0.5 * delta_p**2 * self.Q[i, i]
         return new_val, new_x, 0
-
-    def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
-        return self.add(i, -weight)
         
 
 
@@ -138,13 +117,6 @@ class ModularFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remov
         new_x = self.current_x.clone()
         new_x[i] += weight
         new_val = self.current_val + weight * self.w[i]
-        return new_val, new_x, 0
-
-    def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
-        assert weight.device == self.w.device == self.current_x.device, "weight, current_x and w must be on the same device"
-        new_x = self.current_x.clone()
-        new_x[i] -= weight
-        new_val = self.current_val - weight * self.w[i]
         return new_val, new_x, 0
 
 
