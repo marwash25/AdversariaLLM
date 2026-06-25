@@ -9,6 +9,7 @@ import logging
 from .lattice_functions import LatticeFunction, SequentialLatticeFunction, LinearCombinationLatticeFn, make_zero_lattice_fn
 from .setfn_reductions import SetToLatticeMap
 
+
 class QuadraticFn(SequentialLatticeFunction):
     """Quadratic lattice function F(x) = 0.5 * x^T Q x with symmetric Q.
 
@@ -86,6 +87,41 @@ class QuadraticFn(SequentialLatticeFunction):
         return new_val, new_x, flops
 
 
+class EmbeddingQuadraticFn(QuadraticFn):
+    r"""Lattice function F(x) = 0.5 * \sum_{i,j} \tfrac{\alpha_{ij}} p_i p_j
+    where p_i = embedding_projections[x_i], \alpha <= 0 and symmetric.
+    """
+    def __init__(
+        self,
+        alpha: Tensor,
+        embedding_projections: Tensor,
+        k: int,
+    ):
+        assert embedding_projections.shape == (k,), "embedding_projections must have shape (k,)"
+        assert alpha.device == embedding_projections.device, "alpha and embedding_projections must be on the same device"
+        super().__init__(alpha, k)
+        self.embedding_projections = embedding_projections
+
+    def _projections(self, x: Tensor) -> Tensor:
+        return self.embedding_projections[x] 
+
+    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:        
+        return super()._eval_batch(self._projections(x))
+
+    def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+        assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
+        new_x = self.current_x.clone()
+        new_x[i] += weight
+        delta_p = self.embedding_projections[new_x[i]] - self.embedding_projections[self.current_x[i]]
+        current_p = self._projections(self.current_x)
+        new_val = self.current_val + delta_p * (self.Q[i, :] * current_p).sum() + 0.5 * delta_p**2 * self.Q[i, i]
+        return new_val, new_x, 0
+
+    def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+        return self.add(i, -weight)
+        
+
+
 class ModularFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remove if not needed
     """Modular lattice function F(x) = w^T x."""
 
@@ -155,19 +191,34 @@ class LatticeFnWithModReduction(LatticeFunction):
         return Fvalues, 0
 
 
-def DR_submodular_decomposition(F_batch: LatticeFunction, hessian_upperbd: Tensor) -> Tuple[LatticeFunction, LatticeFunction]:
-    """Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H: 
-    F = G - H, with G = F + H and H = 0.5 * x^T Q x where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix 
-    or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar.
-    ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2] (<= -alpha in DSMin paper)
-    for all a_i1, a_i2 in V^n, i1, i2 in [n]. 
+def DR_submodular_decomposition(
+    F_batch: LatticeFunction,
+    hessian_upperbd: Tensor,
+    embedding_projections: Tensor | None = None,
+) -> Tuple[LatticeFunction, LatticeFunction]:
+    r"""Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H: 
+    F = G - H, with G = F + H and 
+    If embedding_matrix is not None:
+        \tilde{H}(x) = H'(E(x)) where E(x) is the submatrix of the embedding_matrix corresponding to rows x_i's 
+        and H': R^{n x d} -> R is defined as
+        H'(X') = \sum_{i=1}^n \sum_{j=1}^n  \tfrac{\alpha_{ij}}{(t^*)^2} X'_{i, :}  w^* X'_{j, :} w^*, where
+        \alpha_{i1, i2} = -max(hessian_upperbd[i1, i2], 0)
+        ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  hessian_upperbd[i1, i2] 
+    Otherwise:
+        H(x) = 0.5 * x^T Q x where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix 
+        or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar.
+        ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2] (<= -alpha in DSMin paper) 
     """
     if hessian_upperbd.max().item() <= 0: # alpha == 0 is useful to test if dca correctly reduces to its submin inner solver in this case
         logging.info("hessian_upperbd <= 0 implies F is already DR-submodular, returning F as G and zero lattice function as H")
         H_batch = make_zero_lattice_fn(F_batch.k, F_batch.n)
         return F_batch, H_batch
-        
-    H_batch = QuadraticFn(-torch.clamp(hessian_upperbd, min=0), F_batch.k, F_batch.n) 
+
+    alpha = -torch.clamp(hessian_upperbd, min=0)    
+    if embedding_projections is None:
+        H_batch = QuadraticFn(alpha, F_batch.k, F_batch.n)
+    else:
+        H_batch = EmbeddingQuadraticFn(alpha, embedding_projections, F_batch.k)
     G_batch = LinearCombinationLatticeFn([F_batch, H_batch], [1.0, 1.0])
     return G_batch, H_batch
    
