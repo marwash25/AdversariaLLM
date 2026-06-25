@@ -221,7 +221,7 @@ def _find_min_gap_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
     return best_perm, max_min_gap
 
 
-def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float]:
+def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Tensor]:
     """
     Generate a random unit vector w in R^d, and permute the rows of the embedding matrix 
     according to the non-decreasing order of their projections onto w.
@@ -242,9 +242,10 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tens
         )
 
     perm = projections.argsort(stable=True)
-    min_gap = projections[perm].diff().min().item()
+    permuted_embedding_projections = projections[perm]
+    min_gap = permuted_embedding_projections.diff().min().item()
     logging.info(f"Min gap achieved with w: {min_gap:.6g}")
-    return w, perm, min_gap
+    return w, perm, min_gap, permuted_embedding_projections
 
 
 def _valid_embeddings(
@@ -261,21 +262,22 @@ def _valid_embeddings(
     return E
 
 
-def _permuted_valid_embeddings(
+def _permuted_valid_projections(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
     perm: Tensor,
+    w: Tensor,
 ) -> Tensor:
-    return _valid_embeddings(model, valid_token_ids, device=perm.device)[perm]
-
+    E = _valid_embeddings(model, valid_token_ids, device=perm.device)
+    return (E @ w.to(device=perm.device, dtype=E.dtype))[perm]
 
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
     solve_lp: bool = False,
     save_file: str | None = None,
-) -> Tuple[Tensor, float, Tensor, Tensor]:
-    """Find a vector w in [-1, 1]^d in the interior of the dual cone of differences of
+) -> Tuple[Tensor, float, Tensor, Tensor, Tensor | None]:
+    """Find a vector w in R^d in the interior of the dual cone of differences of
     adjacent embedding vectors.
 
     Let U be the matrix with rows {E_{i + 1} - E_i : i in V} where 
@@ -284,7 +286,8 @@ def _find_embeddings_dual_cone_w(
 
         max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t
 
-    If save_file is set, writes w_opt and t_opt to that path.
+    If save_file is set, cache results to that path.
+    #TODO: update docstring to reflect new version of permuting embeddings
     """
     embedding_matrix = _valid_embeddings(model, valid_token_ids, device="cpu")
 
@@ -293,7 +296,7 @@ def _find_embeddings_dual_cone_w(
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
     # perm, min_gap = _find_min_gap_permutation(embedding_matrix)
-    w, perm, min_gap = _randomly_permute_embeddings(embedding_matrix)
+    w, perm, min_gap, permuted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
     embedding_matrix = embedding_matrix[perm]
     perm = perm.to(device=model.device)
     inv_perm = torch.empty_like(perm)
@@ -330,6 +333,7 @@ def _find_embeddings_dual_cone_w(
         assert t_opt >= 0.0, "t* should be non-negative."
         assert t_opt >= min_gap, "t* should be greater than or equal to the min gap."
         w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float32, device=model.device)
+        w_opt = w_opt / t_opt # can recover t_opt from ||w_opt||_\infty = 1/t_opt
         if t_opt == 0.0:
             logging.info("Did not find w in the interior of the dual cone, t* = 0.0.")
         else:
@@ -347,12 +351,13 @@ def _find_embeddings_dual_cone_w(
                 {"w_opt": w_opt, "t_opt": t_opt, "lp_result": lp_result, "perm": perm, "inv_perm": inv_perm, "min_gap": min_gap},
                 save_file,
             )
+        permuted_embedding_projections = None # maybe compute them here too?
     else:
         #TODO: do we also want to save results in this case?
-        w_opt = w.to(device=model.device)
-        t_opt = min_gap
-    
-    return w_opt, t_opt, perm, inv_perm
+        w_opt = w.to(device=model.device) / min_gap # can recover t_opt = min_gap from ||w_opt||_2 = 1/min_gap
+        permuted_embedding_projections = permuted_embedding_projections.to(device=model.device) / min_gap 
+
+    return w_opt, perm, inv_perm, permuted_embedding_projections
 
 class DSMAttack(Attack):
     def __init__(self, config: DSMConfig):
@@ -375,15 +380,15 @@ class DSMAttack(Attack):
                 logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
                 cache = torch.load(save_file,  map_location=model.device, weights_only=False)
                 self._embeddings_dual_cone_w = cache["w_opt"]
-                self._embeddings_dual_cone_t = cache["t_opt"]
                 self._embeddings_perm = cache["perm"]
                 self._embeddings_inv_perm = cache["inv_perm"]
             else:
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_file}")
-                self._embeddings_dual_cone_w, self._embeddings_dual_cone_t, self._embeddings_perm, self._embeddings_inv_perm = _find_embeddings_dual_cone_w(
+                self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._permuted_embedding_projections = _find_embeddings_dual_cone_w(
                     model, self.valid_token_ids, save_file=save_file
                 )
-            self._permuted_embeddings = _permuted_valid_embeddings(model, self.valid_token_ids, self._embeddings_perm)
+            if self._permuted_embedding_projections is None:
+                self._permuted_embedding_projections = _permuted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
         else:
             # define identity embedding permutation to be used by PGM
             # TODO: it's interesting to check if PGM performs better with DCA's embedding permutation.
@@ -503,9 +508,7 @@ class DSMAttack(Attack):
             G_batch, H_batch = DR_submodular_decomposition(
                 F_set_batch.lattice_fn,
                 hessian_upperbd,
-                self._permuted_embeddings,
-                self._embeddings_dual_cone_w,
-                self._embeddings_dual_cone_t,
+                self._permuted_embedding_projections,
             )
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
