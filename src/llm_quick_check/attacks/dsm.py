@@ -246,6 +246,29 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tens
     logging.info(f"Min gap achieved with w: {min_gap:.6g}")
     return w, perm, min_gap
 
+
+def _valid_embeddings(
+    model: PreTrainedModel,
+    valid_token_ids: Tensor,
+    device: torch.device | str | None = None,
+) -> Tensor:
+    embedding_layer = model.get_input_embeddings()
+    E = embedding_layer.weight[valid_token_ids].detach().float()
+    if hasattr(embedding_layer, "embed_scale"):
+        E = E * embedding_layer.embed_scale.float()
+    if device is not None:
+        E = E.to(device)
+    return E
+
+
+def _permuted_valid_embeddings(
+    model: PreTrainedModel,
+    valid_token_ids: Tensor,
+    perm: Tensor,
+) -> Tensor:
+    return _valid_embeddings(model, valid_token_ids, device=perm.device)[perm]
+
+
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
@@ -263,10 +286,7 @@ def _find_embeddings_dual_cone_w(
 
     If save_file is set, writes w_opt and t_opt to that path.
     """
-    embedding_layer = model.get_input_embeddings()
-    embedding_matrix = embedding_layer.weight[valid_token_ids].detach().float().cpu()
-    if hasattr(embedding_layer, "embed_scale"):
-        embedding_matrix = embedding_matrix * float(embedding_layer.embed_scale.cpu())
+    embedding_matrix = _valid_embeddings(model, valid_token_ids, device="cpu")
 
     k, d = embedding_matrix.shape
     # n_unique_rows = np.unique(embedding_matrix, axis=0).shape[0]
@@ -363,6 +383,7 @@ class DSMAttack(Attack):
                 self._embeddings_dual_cone_w, self._embeddings_dual_cone_t, self._embeddings_perm, self._embeddings_inv_perm = _find_embeddings_dual_cone_w(
                     model, self.valid_token_ids, save_file=save_file
                 )
+            self._permuted_embeddings = _permuted_valid_embeddings(model, self.valid_token_ids, self._embeddings_perm)
         else:
             # define identity embedding permutation to be used by PGM
             # TODO: it's interesting to check if PGM performs better with DCA's embedding permutation.
@@ -404,7 +425,7 @@ class DSMAttack(Attack):
         inv_perm_ids_init = self._embeddings_inv_perm[reduced_ids_init]
 
         # define loss_fn over V^n where V = {0, 1, ..., valid_vocab_size - 1} and n = n_optim_tokens
-        # on permuted embedding matrix. Need to apply embeddings_perm (defined on V^n, so should be applied first)  
+        # on the permuted embedding matrix. Need to apply embeddings_perm (defined on V^n, so should be applied first)  
         # and map back to original token ids
         loss_fn = lambda attack_ids: compute_loss_with_max_batchsize(
             model, self.valid_token_ids[self._embeddings_perm[attack_ids]], tokens, target_mask, attack_mask, self.config.lm_reg_weight
@@ -479,7 +500,13 @@ class DSMAttack(Attack):
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
             # decompose F into the difference of two DR-submodular functions G and H
-            G_batch, H_batch = DR_submodular_decomposition(F_set_batch.lattice_fn, hessian_upperbd)
+            G_batch, H_batch = DR_submodular_decomposition(
+                F_set_batch.lattice_fn,
+                hessian_upperbd,
+                self._permuted_embeddings,
+                self._embeddings_dual_cone_w,
+                self._embeddings_dual_cone_t,
+            )
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
       
