@@ -236,6 +236,8 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     continuous_obj_values = [0.0 for _ in range(num_outer_steps)]
     inner_continuous_values: List[List[float]] = [[] for _ in range(num_outer_steps)]
     inner_duality_gaps: List[List[float]] = [[] for _ in range(num_outer_steps)]
+    inner_times: List[List[float]] = [[] for _ in range(num_outer_steps)]
+    inner_flops: List[List[int]] = [[] for _ in range(num_outer_steps)]
     discrete_sols_filtered = torch.empty((num_outer_steps, n), dtype=torch.long, device=X.device)
     times = [0.0 for _ in range(num_outer_steps)]
     flops = [0 for _ in range(num_outer_steps)]
@@ -258,7 +260,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
 
             # warm start pgm with current X as initial solution
             inner_best_discrete_sol, inner_best_continuous_sol, inner_discrete_values[iter], inner_discrete_values_filtered[iter], \
-            inner_continuous_values[iter], inner_duality_gaps[iter], inner_discrete_sols_filtered, inner_times, inner_flops = \
+            inner_continuous_values[iter], inner_duality_gaps[iter], inner_discrete_sols_filtered, inner_times[iter], inner_flops[iter] = \
                 pgm_lovasz(F_set_upperbd, X, num_inner_steps, L_upperbd, gap_tol=inner_gap_tol)
                 
             prev_cont_value = inner_continuous_values[iter][0] # f_L_upperbd(X) = g_L(X) - <subgrad_H, X> = g_L(X) - h_L(X) = f_L(X)
@@ -295,7 +297,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
         times[iter] = time.time() - time_start
         # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill
         # flops_subgrad_H is 0 since H doesn't involve model fwd pass, but keeping it in case we flops for other functions later
-        flops[iter] += sum(inner_flops) + flops_subgrad_F + flops_subgrad_H 
+        flops[iter] += sum(inner_flops[iter]) + flops_subgrad_F + flops_subgrad_H 
         if iter == 0: 
             flops[iter] += flops_L_G
         

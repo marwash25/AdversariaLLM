@@ -9,6 +9,7 @@ from torch import Tensor
 from math import log2, ceil, inf
 import logging
 import time
+import os
 from .lattice_functions import CallableLatticeFunction, LatticeFunction, SequentialLatticeFunction
 
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
@@ -471,6 +472,7 @@ class SetFnReduction():
         flops = flops_singletons + flops_pairs
         time_taken = time.time() - t_start
         if save_file is not None:
+            os.makedirs(os.path.dirname(save_file), exist_ok=True)
             torch.save(
                 {
                     "cross_vals": cross_vals.cpu(),

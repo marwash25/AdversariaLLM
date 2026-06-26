@@ -227,7 +227,7 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tens
     according to the non-decreasing order of their projections onto w.
     """
     k, d = embedding_matrix.shape
-    max_retries = 1  # increase if needed
+    max_retries = 5  # increase if needed
     # we need to use float64 precision, otherwise couldn't find valid w even after 100 attempts 
     # for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors 
     # this likely will lead again to large H(x) values... 
@@ -339,9 +339,8 @@ def _find_embeddings_dual_cone_w(
         assert t_opt >= 0.0, "t* should be non-negative."
         assert t_opt >= min_gap, "t* should be greater than or equal to the min gap."
         w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float32, device=model.device)
-        w_opt = w_opt / t_opt # can recover t_opt from ||w_opt||_\infty = 1/t_opt
         if t_opt == 0.0:
-            logging.info("Did not find w in the interior of the dual cone, t* = 0.0.")
+             raise ValueError("Did not find w in the interior of the dual cone, t* = 0.0.")
         else:
             logging.info(f"Found w in the interior of the dual cone with t* = {t_opt:.6g}.")
 
@@ -351,6 +350,7 @@ def _find_embeddings_dual_cone_w(
         if abs(lambdas.sum() - 1.0) > 1e-12:
             logging.warning(f"Lambdas do not sum to 1.")
         
+        w_opt = w_opt / t_opt # can recover t_opt from ||w_opt||_\infty = 1/t_opt
         permuted_embedding_projections = None # maybe compute them here too?
     else:
         lp_result = None
@@ -359,7 +359,7 @@ def _find_embeddings_dual_cone_w(
         permuted_embedding_projections = permuted_embedding_projections.to(device=model.device) / t_opt 
 
     if save_file is not None:
-        os.makedirs(os.path.dirname(f"{save_file}/{seed}.pt"), exist_ok=True)
+        os.makedirs(os.path.dirname(f"{save_file}.pt"), exist_ok=True)
         torch.save(
             {"w_opt_scaled": w_opt, "t_opt": t_opt, "lp_result": lp_result, "perm": perm, "inv_perm": inv_perm, "min_gap": min_gap},
             save_file,
@@ -491,6 +491,7 @@ class DSMAttack(Attack):
 
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
+            time_hessian_bd = 0
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 logging.info(f"DR-submodular decomposition using Hessian upper bound at zero") 
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons() 
@@ -507,13 +508,12 @@ class DSMAttack(Attack):
                     time_hessian_bd = cache["time_taken"]
                 else:
                     logging.info(f"Computing Hessian upper bound at zero and saving to {save_file}")
-                    hessian_upperbd, flops_hessian_bd, time_taken = F_set_batch.hessian_upperbd_at_zero(F_singleton_vals, save_file=save_file)
+                    hessian_upperbd, flops_hessian_bd, time_taken = F_set_batch.hessian_upperbd_at_zero(singleton_vals=F_singleton_vals, save_file=save_file)
                     logging.info(f"Time taken to compute Hessian upper bound at zero: {time_taken}")
-                    time_hessian_bd = 0 # time already included      
 
                 L_F, flops_L_F = F_set_batch.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
             else:
-                hessian_upperbd = dca_config.hessian_upperbd
+                hessian_upperbd = torch.tensor(dca_config.hessian_upperbd, device=device, dtype=torch.float32)
                 L_F, flops_L_F = F_set_batch.singletons_L_bound() 
                 logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}") 
 
@@ -579,7 +579,7 @@ class DSMAttack(Attack):
         continuous_losses = [val + F_0.item() for val in continuous_obj_values]
 
         logging.info(
-            f"Optimization loop completed. Best attack (step {valid_idx[best_sol_idx_filtered]}): {optim_strings[best_sol_idx_filtered][:80]!s}. "
+            f"Optimization loop completed. Best valid attack (step {valid_idx[best_sol_idx_filtered]}): {optim_strings[best_sol_idx_filtered][:80]!s}. "
             f"Optimization time: {time.time() - t_start:.2f}s."
         )
         # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
@@ -588,21 +588,27 @@ class DSMAttack(Attack):
         # get tokens of attack conversations with optimized attack strings and empty assistant content
         prompt_token_list = []
         attack_conversations = []
-        for idx, attack in enumerate(optim_strings):
+        gen_valid_idx: list[int] = []
+        gen_optim_strings: list[str] = []
+
+        for i, attack in enumerate(optim_strings):
             try:
                 parts, attack_conversation = self._prepare_single_conversation(conversation, tokenizer, attack, generation=True)
             except TokenMergeError: 
                 if self.config.filter_ids:
-                    raise ValueError(f"TokenMergeError encountered for attack: {attack} at step {idx}. This should not happen when filtering is enabled.")
+                    raise ValueError(f"TokenMergeError encountered for attack: {attack} at step {valid_idx[i]}. This should not happen when filtering is enabled.")
                 else:
-                    logging.warning(f"TokenMergeError encountered for attack: {attack} at step {idx}. Skipping it.")
-                    valid_idx.pop(idx)
+                    logging.warning(f"TokenMergeError encountered for attack: {attack} at step {valid_idx[i]}. Skipping it.")
                     continue
 
+            # keep track of non-skipped attacks and their indices
+            gen_valid_idx.append(valid_idx[i])
+            gen_optim_strings.append(attack)
             prompt_token_list.append(torch.cat(parts[:5]))
             attack_conversations.append(attack_conversation)
 
-        optim_strings = [optim_strings[i] for i in valid_idx]
+        valid_idx = gen_valid_idx
+        optim_strings = gen_optim_strings
         t_start_gen = time.time()
         completions = generate_ragged_batched(
             model,
@@ -652,7 +658,7 @@ class DSMAttack(Attack):
         run_result = SingleAttackRunResult(
             original_prompt=conversation,
             steps=steps_results,
-            total_time=t_end - t_start + time_hessian_bd if self.config.optimizer == "dca" else 0,
+            total_time=t_end - t_start + (time_hessian_bd if self.config.optimizer == "dca" else 0),
         )
         return run_result
 
