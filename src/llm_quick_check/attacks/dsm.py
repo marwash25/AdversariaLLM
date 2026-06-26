@@ -384,7 +384,7 @@ class DSMAttack(Attack):
         # --- Find w to use in DR-submodular decomposition ---
         if self.config.optimizer == "dca":
             model_name_safe = model.name_or_path.replace("/", "-")
-            save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w/{self.config.seed}.pt"
+            save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w_seed{self.config.seed}.pt"
             if os.path.exists(save_file):
                 logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
                 cache = torch.load(save_file,  map_location=model.device, weights_only=False)
@@ -499,7 +499,7 @@ class DSMAttack(Attack):
                 # F changes with permutation of embeddings, which is fixed per seed, so we need to recompute hessian_upperbd for each seed
                 # TODO: we also need to recompute if anything else changes F, e.g., optim_str_init, lm_reg_weight, normalized flag, attack 
                 # placement, etc. We can store in saved file and validate on load. For now, these are fixed.
-                save_file = f"{dca_config.dsm_cache_dir}/{model_name_safe}/hessian_upperbd_at_zero_{stable_idx}/{self.config.seed}.pt"
+                save_file = f"{dca_config.dsm_cache_dir}/{model_name_safe}/hessian_upperbd_at_zero_idx{stable_idx}_seed{self.config.seed}.pt"
                 if os.path.exists(save_file):
                     logging.info(f"Loading Hessian upper bound at zero from {save_file}")
                     cache = torch.load(save_file, map_location=device)
