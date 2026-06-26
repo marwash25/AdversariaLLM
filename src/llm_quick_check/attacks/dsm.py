@@ -411,11 +411,12 @@ class DSMAttack(Attack):
 
         runs = []
         for idx, conversation in enumerate(conversations):
-            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx], idx))
+            stable_idx = int(dataset.idx[idx].item()) # conversation index in the original dataset (before shuffle)
+            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx], stable_idx))
 
         return AttackResult(runs=runs)
 
-    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask, idx) -> SingleAttackRunResult:
+    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask, stable_idx) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
         #TODO: add early stopping if exact match found as done in GCG.
         #TODO: move things like building loss_fn, filter_fn, initialization to separate functions
@@ -492,9 +493,12 @@ class DSMAttack(Attack):
             dca_config = self.config.dca_config
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 logging.info(f"DR-submodular decomposition using Hessian upper bound at zero") 
-                F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
+                F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons() 
                 model_name_safe = model.name_or_path.replace("/", "-")
-                save_file = f"{dca_config.dsm_cache_dir}/{model_name_safe}/hessian_upperbd_at_zero_{idx}.pt"
+                # F changes with permutation of embeddings, which is fixed per seed, so we need to recompute hessian_upperbd for each seed
+                # TODO: we also need to recompute if anything else changes F, e.g., optim_str_init, lm_reg_weight, normalized flag, attack 
+                # placement, etc. We can store in saved file and validate on load. For now, these are fixed.
+                save_file = f"{dca_config.dsm_cache_dir}/{model_name_safe}/hessian_upperbd_at_zero_{stable_idx}/{self.config.seed}.pt"
                 if os.path.exists(save_file):
                     logging.info(f"Loading Hessian upper bound at zero from {save_file}")
                     cache = torch.load(save_file, map_location=device)
@@ -504,7 +508,7 @@ class DSMAttack(Attack):
                 else:
                     logging.info(f"Computing Hessian upper bound at zero and saving to {save_file}")
                     hessian_upperbd, flops_hessian_bd, time_taken = F_set_batch.hessian_upperbd_at_zero(F_singleton_vals, save_file=save_file)
-                    logging.info(f"Time taken: {time_taken}")
+                    logging.info(f"Time taken to compute Hessian upper bound at zero: {time_taken}")
                     time_hessian_bd = 0 # time already included      
 
                 L_F, flops_L_F = F_set_batch.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
