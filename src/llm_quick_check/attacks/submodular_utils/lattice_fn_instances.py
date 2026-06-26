@@ -72,23 +72,31 @@ class QuadraticFn(SequentialLatticeFunction):
 class EmbeddingQuadraticFn(QuadraticFn):
     r"""Lattice function F(x) = 0.5 * p_x^T Q p_x with symmetric Q.
     and p_x = embedding_projections[x].
+    If normalize is True, F(x) = F(x) - F(0).
     """
     def __init__(
         self,
         Q: Tensor,
         embedding_projections: Tensor,
         k: int,
+        normalize: bool = True,
     ):
         assert embedding_projections.shape == (k,), "embedding_projections must have shape (k,)"
         assert Q.device == embedding_projections.device, "Q and embedding_projections must be on the same device"
         super().__init__(Q, k)
         self.embedding_projections = embedding_projections
+        if normalize:
+            zero_x = torch.zeros(self.n, dtype=torch.long, device=self.Q.device)
+            self.H_0, _ = super()._eval_batch(self._projections(zero_x))
+        else:
+            self.H_0 = torch.zeros(1, device=self.Q.device)
 
     def _projections(self, x: Tensor) -> Tensor:
         return self.embedding_projections[x] 
 
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:        
-        return super()._eval_batch(self._projections(x))
+    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:  
+        Fvalues, flops = super()._eval_batch(self._projections(x))      
+        return Fvalues - self.H_0, flops
 
     def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
@@ -171,8 +179,8 @@ def DR_submodular_decomposition(
     r"""Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H: 
     F = G - H, with G = F + H and 
     If embedding_matrix is not None:
-        H(x) = 0.5 * p_x^T Q p_x, where  Q = -max(hessian_upperbd, 0), p_x = embedding_projections[x], and 
-        ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  hessian_upperbd[i1, i2] 
+        H(x) = 0.5 * p_x^T Q p_x - 0.5 * p_0^T Q p_0, where Q = -max(hessian_upperbd, 0), p_x = embedding_projections[x],  
+        and ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  hessian_upperbd[i1, i2] 
     Otherwise:
         H(x) = 0.5 * x^T Q x where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix 
         or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar, and
