@@ -293,6 +293,7 @@ def _find_embeddings_dual_cone_w(
     If save_file is set, cache results to that path.
     #TODO: update docstring to reflect new version of permuting embeddings
     """
+
     embedding_matrix = _valid_embeddings(model, valid_token_ids, device="cpu")
 
     k, d = embedding_matrix.shape
@@ -300,7 +301,7 @@ def _find_embeddings_dual_cone_w(
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
     # perm, min_gap = _find_min_gap_permutation(embedding_matrix)
-    # torch.manual_seed(seed)
+    torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm for a given seed
     w, perm, min_gap, permuted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
     embedding_matrix = embedding_matrix[perm]
     perm = perm.to(device=model.device)
@@ -380,9 +381,10 @@ class DSMAttack(Attack):
         # --- Build Valid Vocab ---
         self._build_valid_vocab(tokenizer, model)
 
+        # --- Find w to use in DR-submodular decomposition ---
         if self.config.optimizer == "dca":
             model_name_safe = model.name_or_path.replace("/", "-")
-            save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w"
+            save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w/{self.config.seed}.pt"
             if os.path.exists(save_file):
                 logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
                 cache = torch.load(save_file,  map_location=model.device, weights_only=False)
@@ -392,9 +394,12 @@ class DSMAttack(Attack):
                 self._permuted_embedding_projections = None # will be computed below
             else:
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_file}")
+                time_start = time.time()
                 self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._permuted_embedding_projections = _find_embeddings_dual_cone_w(
                     model, self.valid_token_ids, seed=self.config.seed, save_file=save_file
                 )
+                time_end = time.time()
+                logging.info(f"Time taken to find w: {time_end - time_start:.2f} seconds")
             if self._permuted_embedding_projections is None:
                 self._permuted_embedding_projections = _permuted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
         else:
@@ -445,7 +450,7 @@ class DSMAttack(Attack):
         )
         zero_attack_ids = torch.zeros_like(inv_perm_ids_init)
         F_0, F_0_flops = loss_fn(zero_attack_ids)
-        logging.info(f"Loss at zero F(0): {F_0.item():.4f}")
+        logging.info(f"Loss at zero F(0): {F_0.item():.4f}") # this changes with permutation of embeddings
         # normalize F(0) = 0
         def F_batch(attack_ids):
             loss, flops = loss_fn(attack_ids)
@@ -481,7 +486,7 @@ class DSMAttack(Attack):
                 gap_tol=None,
             )
 
-            plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps)
+            plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, F_0.item())
 
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
@@ -545,7 +550,7 @@ class DSMAttack(Attack):
             )
             
             for i in range(len(inner_discrete_values)): # plot pgm curves for each outer iteration
-                plot_pgm_curves(inner_discrete_values[i], inner_discrete_values_filtered[i], inner_continuous_values[i], inner_duality_gaps[i], outer_step=i)
+                plot_pgm_curves(inner_discrete_values[i], inner_discrete_values_filtered[i], inner_continuous_values[i], inner_duality_gaps[i], F_0.item(), outer_step=i)
 
         else:
             raise ValueError(f"Optimizer {self.config.optimizer} not supported. Must be 'pgm' or 'dca'.")
@@ -775,8 +780,12 @@ class DSMAttack(Attack):
 
         return parts, attack_conversation
 
-def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, outer_step=None):
+def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, F_0=0.0, outer_step=None):
     # figure will be saved in Hydra run directory ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
+
+    discrete_obj_values = [val + F_0 for val in discrete_obj_values]
+    discrete_obj_values_filtered = [val + F_0 for val in discrete_obj_values_filtered]
+    continuous_obj_values = [val + F_0 for val in continuous_obj_values]
 
     steps_axis = range(len(discrete_obj_values))
     fig, (ax_obj, ax_gap) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
