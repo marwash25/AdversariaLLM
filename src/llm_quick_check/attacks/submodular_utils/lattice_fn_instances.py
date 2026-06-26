@@ -71,8 +71,10 @@ class QuadraticFn(SequentialLatticeFunction):
 
 class EmbeddingQuadraticFn(QuadraticFn):
     r"""Lattice function F(x) = 0.5 * p_x^T Q p_x with symmetric Q.
-    and p_x = embedding_projections[x].
-    If normalize is True, F(x) = F(x) - F(0).
+    and p_x = embedding_projections[x] if normalize is False.
+    Otherwise, F(x) = 0.5 * (p_x - p_0)^T Q (p_x - p_0). 
+    I'm normalizing this way instead of simply subtracting F(0) to make F(x) non-increasing in x
+    so a bound on the Lipschitz constant of its Lovasz extension can be easily computed as -F((k-1) 1_n)
     """
     def __init__(
         self,
@@ -85,18 +87,20 @@ class EmbeddingQuadraticFn(QuadraticFn):
         assert Q.device == embedding_projections.device, "Q and embedding_projections must be on the same device"
         super().__init__(Q, k)
         self.embedding_projections = embedding_projections
-        if normalize:
-            zero_x = torch.zeros(self.n, dtype=torch.long, device=self.Q.device)
-            self.H_0, _ = super()._eval_batch(self._projections(zero_x))
-        else:
-            self.H_0 = torch.zeros(1, device=self.Q.device)
+        zero_x = torch.zeros(1, self.n, dtype=torch.long, device=self.Q.device)
+        self.p_0 = self._projections(zero_x) if normalize else zero_x
+        # if normalize:
+        #     self.F_0, _ = super()._eval_batch(self._projections(zero_x))
+        # else:
+        #     self.F_0 = torch.zeros(1, device=self.Q.device)
 
     def _projections(self, x: Tensor) -> Tensor:
         return self.embedding_projections[x] 
 
     def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:  
-        Fvalues, flops = super()._eval_batch(self._projections(x))      
-        return Fvalues - self.H_0, flops
+        return super()._eval_batch(self._projections(x) - self.p_0)   
+        # Fvalues, flops = super()._eval_batch(self._projections(x))      
+        # return Fvalues - self.F_0, flops
 
     def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
@@ -104,7 +108,7 @@ class EmbeddingQuadraticFn(QuadraticFn):
         new_x[i] += weight
         delta_p = self.embedding_projections[new_x[i]] - self.embedding_projections[self.current_x[i]]
         current_p = self._projections(self.current_x)
-        new_val = self.current_val + delta_p * (self.Q[i, :] * current_p).sum() + 0.5 * delta_p**2 * self.Q[i, i]
+        new_val = self.current_val + delta_p * (self.Q[i, :] * (current_p - self.p_0)).sum() + 0.5 * delta_p**2 * self.Q[i, i]
         return new_val, new_x, 0
         
 
@@ -179,7 +183,7 @@ def DR_submodular_decomposition(
     r"""Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H: 
     F = G - H, with G = F + H and 
     If embedding_matrix is not None:
-        H(x) = 0.5 * p_x^T Q p_x - 0.5 * p_0^T Q p_0, where Q = -max(hessian_upperbd, 0), p_x = embedding_projections[x],  
+        H(x) = 0.5 * (p_x - p_0)^T Q (p_x - p_0), where Q = -max(hessian_upperbd, 0), p_x = embedding_projections[x],  
         and ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  hessian_upperbd[i1, i2] 
     Otherwise:
         H(x) = 0.5 * x^T Q x where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix 
