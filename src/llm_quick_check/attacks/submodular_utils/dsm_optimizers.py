@@ -151,7 +151,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         time_start = time.time()
         if iter < num_steps: # no need to update in last iteration
             if polyak or normalize:
-                subgradient_norm = torch.linalg.vector_norm(subgradient.float(), ord=2).item()
+                subgradient_norm = subgradient.norm().item()
                 if subgradient_norm < 1e-12:
                     logging.info(f"Subgradient norm {subgradient_norm:.4f} < 1e-12.")
                     #TODO: if F is submodular we should stop. Otherwise still stop?
@@ -161,7 +161,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
                     max_dual_value = max(max_dual_value, dual_value)
                     eta = (continuous_obj_values[iter] - max_dual_value) / max(subgradient_norm, 1e-12)**2
                 else: 
-                    eta = 1 / max(subgradient_norm, 1e-12)
+                    eta = D / (max(subgradient_norm, 1e-12) * sqrt(iter + 1))
             else:
                 eta = D / (L * sqrt(iter + 1))
 
