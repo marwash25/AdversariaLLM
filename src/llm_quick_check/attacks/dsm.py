@@ -196,7 +196,7 @@ def compute_loss_with_max_batchsize(
         loss, flops = compute_loss_fn(attack_ids)
     return loss, flops.sum().item()
 
-
+#TODO: remove if not used
 def _find_min_gap_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
     r"""Sort rows of embedding matrix based on their jth coordinate in non-decreasing order, 
     for j \in [d] with the largest minimal gap between adjacent rows, i.e.,  
@@ -272,7 +272,9 @@ def _permuted_valid_projections(
     w: Tensor,
 ) -> Tensor:
     E = _valid_embeddings(model, valid_token_ids, device=perm.device)
-    return (E @ w.to(device=perm.device, dtype=E.dtype))[perm]
+    # Match float64 precision used in _randomly_permute_embeddings 
+    projections = E.double() @ w.to(device=perm.device, dtype=torch.float64)
+    return projections[perm]
 
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
