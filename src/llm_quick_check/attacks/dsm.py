@@ -1,6 +1,6 @@
 """Difference of submodular minimization (DSM) attack"""
 import copy
-import math
+from math import sqrt, inf
 import os
 import time
 import logging
@@ -223,8 +223,8 @@ def _find_min_gap_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
 
 def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Tensor]:
     """
-    Generate a random unit vector w in R^d, and permute the rows of the embedding matrix 
-    according to the non-decreasing order of their projections onto w.
+    Sample a random unit vector w such that the projections of the rows of the embedding matrix 
+    onto w are distinct, then sort the rows in non-decreasing order of their projections onto w.
     """
     k, d = embedding_matrix.shape
     max_retries = 5  # increase if needed
@@ -276,89 +276,199 @@ def _permuted_valid_projections(
     projections = E.double() @ w.to(device=perm.device, dtype=torch.float64)
     return projections[perm]
 
+
+def _solve_dual_cone_lp(
+    neg_U: Tensor,
+    min_gap: float,
+    device: torch.device,
+) -> Tuple[Tensor, float, Any]:
+    """Solve the LP problem:
+       max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t.
+    """
+    #TODO: move min_gap, and logging about finding w outside?
+    n_ineq, d = neg_U.shape
+    # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
+    # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0,
+    # bounds = [-1, 1]^d x [0, None].
+    A_ub = np.empty((n_ineq - 1, d + 1), dtype=np.float32)
+    A_ub[:, :d] = neg_U
+    A_ub[:, d] = 1.0
+
+    c = np.zeros(d + 1, dtype=np.float32)
+    c[-1] = -1.0
+    b_ub = np.zeros(n_ineq - 1, dtype=np.float32)
+    bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
+
+    logging.info(
+        f"Solving LP with {d + 1} variables and {n_ineq} constraints"
+    )
+    lp_result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs", options={"disp": True})  # set disp to False when done debugging
+    if not lp_result.success:
+        raise RuntimeError(f"LP failed: {lp_result.message}")
+
+    t_opt = float(-lp_result.fun)
+    assert t_opt >= 0.0, "t* should be non-negative."
+    assert t_opt >= min_gap, "t* should be greater than or equal to the min gap."
+    w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float32, device=device)
+    if t_opt == 0.0:
+        raise ValueError("Did not find w in the interior of the dual cone, t* = 0.0.")
+    logging.info(f"Found w in the interior of the dual cone with t* = {t_opt:.6g}.")
+
+    lambdas = -lp_result.ineqlin.marginals  # dual variables / Lagrange multipliers
+    if not (lambdas >= 0.0).all():
+        logging.warning("Lambdas are not non-negative.")
+    if abs(lambdas.sum() - 1.0) > 1e-12:
+        logging.warning(f"Lambdas do not sum to 1.")
+
+    return w_opt, t_opt, lp_result
+
+
+# TODO: refactor to have one common PGM solver used both here and in pgm_lovasz in dsm_optimizers.py
+def _solve_dual_cone_pgm(
+    E: Tensor,
+    w_init: Tensor,
+    norm: Literal["l2", "linf"] = "l2",
+    num_steps: int = 2000,
+    log_every: int = 200,
+) -> Tuple[Tensor, float, Tensor]:
+    """Run projected subgradient method (PGM) on the following problem:
+       max_{\| w\| <= 1} \min_{i \in [k-1]} (B sort(E w))_i, 
+    where B is the matrix with rows e_{i+1} - e_{i}, and sort operation
+    is applied in non-decreasing order.
+    
+    Args:
+        E: 2D tensor.
+        w_init: 1D tensor, initial direction. 
+        norm: norm used to constrain w, "l2" or "linf".
+        num_steps: number of subgradient steps.
+        log_every: log progress every this many steps (<= 0 disables).
+
+    Returns:
+        best_w: best direction found, normalized to unit norm (l2 or l-infinity)
+        best_obj: min objective value achieved at best_w.
+        best_perm: permutation sorting E @ best_w non-decreasingly.
+    """
+    if norm not in ("l2", "linf"):
+        raise ValueError(f"norm must be 'l2' or 'linf', got {norm!r}.")
+
+    def _obj_and_supergrad(E: Tensor, w: Tensor) -> Tuple[float, Tensor, Tensor, int]:
+        # evaluate objective and a Clarke supergradient at w
+        # Match float64 precision used in _randomly_permute_embeddings 
+        proj = E.double() @ w  # (k,)
+        perm = proj.argsort(stable=True)
+        permuted_proj = proj[perm]
+        gaps = permuted_proj.diff()  # (k-1,), adjacent gaps of the sorted projections
+        i_star = gaps.argmin().item()
+        obj_value = gaps[i_star].item()
+        supergrad = E[perm[i_star + 1]] - E[perm[i_star]]  
+        return obj_value, supergrad, perm, permuted_proj
+
+    w = w_init.to(device=E.device, dtype=E.dtype)
+
+    best_w = w.clone()
+    best_obj = -inf
+    best_perm = None
+    best_permuted_proj = None
+    D = 2 if norm == "l2" else 2 * sqrt(E.shape[1]) # domain diameter
+
+    for iter in range(num_steps):
+        obj_value, supergrad, perm, permuted_proj = _obj_and_supergrad(E, w)
+        if obj_value > best_obj:
+            best_obj, best_w, best_perm, best_permuted_proj = obj_value, w, perm, permuted_proj
+
+        supergrad_norm = supergrad.norm()
+        if log_every > 0 and (iter % log_every == 0 or iter == num_steps - 1):
+            logging.info(
+                f"PGM dual cone step {iter}: obj value = {obj_value:.6g}, best obj value = {best_obj:.6g}, "
+                f"||supergrad|| = {supergrad_norm.item():.6g}"
+            )
+        if supergrad_norm < 1e-12:
+            logging.info(f"PGM dual cone: supergradient norm < 1e-12 at step {iter}, stopping.")
+            break
+
+        # TODO: I am using normalized supergradient. Try also using L = max ||E_sigma_i+1 - E_sigma_i||_2
+        eta = D / sqrt(iter + 1)
+        w = w + eta * (supergrad / supergrad_norm)
+        if norm == "l2":
+            w /= w.norm()  
+        else:
+            w = torch.clamp(w, min=-1.0, max=1.0)
+
+    logging.info(f"PGM finished after {iter + 1} steps with best obj value {best_obj:.6g}.")
+    return best_w, best_obj, best_perm, best_permuted_proj
+
+
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
-    solve_lp: bool = False,
+    solver: Literal["lp", "pgm"] | None = None,
     seed: int = 0,
     save_file: str | None = None,
 ) -> Tuple[Tensor, float, Tensor, Tensor, Tensor | None]:
     """Find a vector w in R^d in the interior of the dual cone of differences of
-    adjacent embedding vectors.
+    adjacent embedding vectors after permuting them, i.e., 
+    
+    w^\top(E_{\sigma_{i+1}} - E_{\sigma_i}) > 0 for all i in V, 
+    where E is the model embedding matrix (restricted to valid_token_ids).
 
-    Let U be the matrix with rows {E_{i + 1} - E_i : i in V} where 
-    E_i is the i-th row of the model embedding matrix (restricted to valid_token_ids) 
-    Solve the LP problem:
+    If solver is None:
+        Sample a random unit vector w such that the projections of the rows of E onto w are distinct, 
+        then sort the rows in non-decreasing order of their projections onto w.
+
+    If solver == "pgm":
+        Find w and permutation sigma that maximize the min gap between adjacent embedding vectors 
+        permutted by sigma, i.e.,
+
+        \max_{\| w\| <= 1} \max_{\sigma} \min_{i \in [k-1]} w^\top(E_{\sigma_{i+1}} - E_{\sigma_i})
+        = \max_{\| w\| <= 1} \min_{i \in [k-1]} (B ~\mathrm{sort}(E w))_i, 
+        where B is the matrix with rows e_{i+1} - e_{i}.
+
+        Use PGM initialized with the random w.
+
+    If solver == "lp":
+        Find w that maximizes the min gap between adjacent randomly permuted embedding vectors.
+        Let U be the matrix with rows {E_{\sigma_{i+1}} - E_{\sigma_i} : i in V}, where \sigma
+        is the fixed permutation corresponding to the random w.
+        Solve the LP problem:
 
         max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t
 
     If save_file is set, cache results to that path.
-    #TODO: update docstring to reflect new version of permuting embeddings
     """
 
     embedding_matrix = _valid_embeddings(model, valid_token_ids, device="cpu")
 
-    k, d = embedding_matrix.shape
+    k = embedding_matrix.shape[0]
     # n_unique_rows = np.unique(embedding_matrix, axis=0).shape[0]
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
-    # perm, min_gap = _find_min_gap_permutation(embedding_matrix)
     torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm for a given seed
     w, perm, min_gap, permuted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
-    embedding_matrix = embedding_matrix[perm]
     perm = perm.to(device=model.device)
-    inv_perm = torch.empty_like(perm)
-    inv_perm[perm] = torch.arange(k, device=model.device)
 
-    # We can simply use random w, but probably better to use w that maximizes the min gap 
-    # for this permuted embedding matrix. 
-    # LP took > 3hrs to solve, so for now let's use random w.
-    # TODO: can try to solve problem with SVM instead of LP
-
-    if solve_lp:
-        embedding_matrix = embedding_matrix.numpy()
-        # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
-        # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0, 
-        # bounds = [-1, 1]^d x [0, None]. 
-        A_ub = np.empty((k-1, d + 1), dtype=np.float32)
-        A_ub[:, :d] = embedding_matrix[:-1] - embedding_matrix[1:]
-        A_ub[:, d] = 1.0
+    if solver == "lp":
+        # LP took > 3hrs to solve after permuting embeddings according to random w.
+        # TODO: try initializing lp solver with random w. Also, try to solve problem with SVM instead of LP
+        embedding_matrix = embedding_matrix[perm]
+        neg_U = (embedding_matrix[:-1] - embedding_matrix[1:]).numpy()
         del embedding_matrix
-        
-        c = np.zeros(d + 1, dtype=np.float32)
-        c[-1] = -1.0
-        b_ub = np.zeros(k - 1, dtype=np.float32)
-        bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
+        w_opt, t_opt, lp_result = _solve_dual_cone_lp(neg_U, min_gap, model.device)
+        permuted_embedding_projections = None # TODO: compute them here too?
 
-        logging.info(
-            f"Solving LP with {d + 1} variables and {k-1} constraints"
-        )
-        lp_result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs", options={"disp": True})  # set disp to False when done debugging
-        if not lp_result.success:
-            raise RuntimeError(f"LP failed: {lp_result.message}")
+    elif solver == "pgm":
+        w_opt, t_opt, perm, permuted_embedding_projections = _solve_dual_cone_pgm(embedding_matrix, w)
 
-        t_opt = float(-lp_result.fun)
-        assert t_opt >= 0.0, "t* should be non-negative."
-        assert t_opt >= min_gap, "t* should be greater than or equal to the min gap."
-        w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float32, device=model.device)
-        if t_opt == 0.0:
-             raise ValueError("Did not find w in the interior of the dual cone, t* = 0.0.")
-        else:
-            logging.info(f"Found w in the interior of the dual cone with t* = {t_opt:.6g}.")
-
-        lambdas = -lp_result.ineqlin.marginals  # dual variables / Lagrange multipliers
-        if not (lambdas >= 0.0).all():
-            logging.warning("Lambdas are not non-negative.")
-        if abs(lambdas.sum() - 1.0) > 1e-12:
-            logging.warning(f"Lambdas do not sum to 1.")
-        
-        w_opt = w_opt / t_opt # can recover t_opt from ||w_opt||_\infty = 1/t_opt
-        permuted_embedding_projections = None # maybe compute them here too?
     else:
         lp_result = None
         t_opt = min_gap
-        w_opt = w.to(device=model.device) / t_opt # can recover t_opt = min_gap from ||w_opt||_2 = 1/t_opt
-        permuted_embedding_projections = permuted_embedding_projections.to(device=model.device) / t_opt 
+        w_opt = w.to(device=model.device)
+
+    inv_perm = torch.empty_like(perm)
+    inv_perm[perm] = torch.arange(k, device=model.device)
+    # normalize by t_opt. We can recover t_opt from 1/||w_opt||_\infty if solver=="lp" or 
+    # 1/||w_opt||_2 otherwise
+    w_opt /= t_opt 
+    permuted_embedding_projections = permuted_embedding_projections.to(device=model.device) / t_opt 
 
     if save_file is not None:
         os.makedirs(os.path.dirname(f"{save_file}.pt"), exist_ok=True)
