@@ -119,14 +119,14 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
         
         if F_round < best_discrete_obj: 
             best_discrete_obj = F_round
-            best_discrete_sol = x_round
-            best_continuous_sol = X
+            best_discrete_sol = x_round.clone()
+            best_continuous_sol = X.clone()
             # best_continuous_obj = cont_value
 
         discrete_obj_values[iter] = F_round # best_discrete_obj
         discrete_obj_values_filtered[iter] = F_round_filtered 
         continuous_obj_values[iter] = cont_value # best_continuous_obj
-        discrete_sols_filtered[iter] = x_round_filtered # x_best
+        discrete_sols_filtered[iter] = x_round_filtered.clone() # x_best
 
         # if gap_tol is not None: # not used if gap_tol is None but we can still compute it since it's relatively cheap
         dual_avg = (dual_avg * iter + subgradient) / (iter + 1)
