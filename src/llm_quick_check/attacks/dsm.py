@@ -13,6 +13,7 @@ from scipy.optimize import linprog
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass, field
+from fast_soft_sort.pytorch_ops import soft_sort
 from ..dataset import PromptDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
@@ -249,10 +250,10 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tens
         )
 
     perm = projections.argsort(stable=True)
-    permuted_embedding_projections = projections[perm]
-    min_gap = permuted_embedding_projections.diff().min().item()
+    sorted_embedding_projections = projections[perm]
+    min_gap = sorted_embedding_projections.diff().min().item()
     logging.info(f"Min gap achieved with w: {min_gap:.6g}")
-    return w, perm, min_gap, permuted_embedding_projections
+    return w, perm, min_gap, sorted_embedding_projections
 
 
 def _valid_embeddings(
@@ -266,7 +267,7 @@ def _valid_embeddings(
     return E
 
 
-def _permuted_valid_projections(
+def _sorted_valid_projections(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
     perm: Tensor,
@@ -286,7 +287,6 @@ def _solve_dual_cone_lp(
     """Solve the LP problem:
        max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t.
     """
-    #TODO: move min_gap, and logging about finding w outside?
     #TODO: maybe we should use float64 here too?
     n_ineq, d = neg_U.shape
     # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
@@ -326,6 +326,7 @@ def _solve_dual_cone_pgm(
     E: Tensor,
     w_init: Tensor,
     norm: Literal["l2", "linf"] = "l2",
+    reg_strength: float = 1.0,
     num_steps: int = 2000,
     log_every: int = 200,
 ) -> Tuple[Tensor, float, Tensor, Tensor]:
@@ -338,6 +339,8 @@ def _solve_dual_cone_pgm(
         E: 2D tensor.
         w_init: 1D tensor, initial direction. 
         norm: norm used to constrain w, "l2" or "linf".
+        reg_strength: if 0, use hard sort and a Clarke supergradient;
+            if > 0, use soft sort and its gradient (via fast-soft-sort).
         num_steps: number of subgradient steps.
         log_every: log progress every this many steps (<= 0 disables).
 
@@ -345,44 +348,69 @@ def _solve_dual_cone_pgm(
         best_w: best direction found, normalized to unit norm (l2 or l-infinity)
         best_obj: min objective value achieved at best_w.
         best_perm: permutation sorting E @ best_w non-decreasingly.
-        best_permuted_proj: sorted projections at best_w.
+        best_sorted_proj: sorted projections at best_w.
     """
     if norm not in ("l2", "linf"):
         raise ValueError(f"norm must be 'l2' or 'linf', got {norm!r}.")
     
+    logging.info( f"Running PGM for {num_steps} iterations, "
+        f"norm={norm}, reg_strength={reg_strength}")
+
     if E.dtype != torch.float64:
         logging.warning("Converting E to float64 precision")
         E = E.double()
 
-    def _obj_and_supergrad(E: Tensor, w: Tensor) -> Tuple[float, Tensor, Tensor, Tensor]:
-        # evaluate objective and a Clarke supergradient at w
-        # Match float64 precision used in _randomly_permute_embeddings 
-        proj = E @ w  # (k,)
-        perm = proj.argsort(stable=True)
-        permuted_proj = proj[perm]
-        gaps = permuted_proj.diff()  # (k-1,), adjacent gaps of the sorted projections
-        i_star = gaps.argmin().item()
-        obj_value = gaps[i_star].item()
-        supergrad = E[perm[i_star + 1]] - E[perm[i_star]]  
-        return obj_value, supergrad, perm, permuted_proj
+    def _obj_and_supergrad(E: Tensor, w: Tensor) -> Tuple[float, float, Tensor, Tensor, Tensor]:
+        # evaluate objective and a supergradient at w
+        # Match float64 precision used in _randomly_permute_embeddings
+       
+        if reg_strength == 0:
+            proj = E @ w  # (k,)
+            perm = proj.argsort(stable=True)
+            sorted_proj = proj[perm]
+            gaps = sorted_proj.diff()  # (k-1,), adjacent gaps of the sorted projections
+            i_star = gaps.argmin().item()
+            obj_value = gaps[i_star].item()
+            supergrad = E[perm[i_star + 1]] - E[perm[i_star]]
+            soft_obj_value = obj_value
+        else:
+            with torch.enable_grad():
+                w_var = w.detach().requires_grad_(True)
+                proj = E @ w_var 
+                soft_sorted_proj = soft_sort(
+                    proj.unsqueeze(0),
+                    direction="ASCENDING",
+                    regularization_strength=reg_strength,
+                ).squeeze(0)
+                gaps = soft_sorted_proj.diff()
+                obj = gaps.min()
+                supergrad = torch.autograd.grad(obj, w_var)[0]
+            soft_obj_value = obj.item()
+            # track non-smoothed objective too
+            proj = proj.detach()
+            perm = proj.argsort(stable=True)
+            sorted_proj = proj[perm]
+            obj_value = sorted_proj.diff().min().item()
+
+        return obj_value, soft_obj_value, supergrad, perm, sorted_proj
 
     w = w_init.to(device=E.device, dtype=torch.float64)
 
     best_w = w.clone()
     best_obj = -inf
     best_perm = None
-    best_permuted_proj = None
+    best_sorted_proj = None
     D = 2 if norm == "l2" else 2 * sqrt(E.shape[1]) # domain diameter
 
     for iter in range(num_steps):
-        obj_value, supergrad, perm, permuted_proj = _obj_and_supergrad(E, w)
+        obj_value, soft_obj_value, supergrad, perm, sorted_proj = _obj_and_supergrad(E, w)
         if obj_value > best_obj:
-            best_obj, best_w, best_perm, best_permuted_proj = obj_value, w.clone(), perm, permuted_proj.clone()
+            best_obj, best_w, best_perm, best_sorted_proj = obj_value, w.clone(), perm, sorted_proj.clone()
 
         supergrad_norm = supergrad.norm()
         if log_every > 0 and (iter % log_every == 0 or iter == num_steps - 1):
             logging.info(
-                f"PGM dual cone step {iter}: obj value = {obj_value:.6g}, best obj value = {best_obj:.6g}, "
+                f"PGM dual cone step {iter}: obj value = {obj_value:.6g}, soft obj value = {soft_obj_value:.6g}, best obj value = {best_obj:.6g}, "
                 f"||supergrad|| = {supergrad_norm.item():.6g}"
             )
         if supergrad_norm < 1e-12:
@@ -398,13 +426,14 @@ def _solve_dual_cone_pgm(
             w = torch.clamp(w, min=-1.0, max=1.0)
 
     logging.info(f"PGM finished after {iter + 1} steps with best obj value {best_obj:.6g}.")
-    return best_w, best_obj, best_perm, best_permuted_proj
+    return best_w, best_obj, best_perm, best_sorted_proj
 
 
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
     solver: Literal["lp", "pgm"] | None = None,
+    reg_strength: float = 0.0,
     seed: int = 0,
     save_file: str | None = None,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor | None]:
@@ -420,7 +449,7 @@ def _find_embeddings_dual_cone_w(
 
     If solver == "pgm":
         Find w and permutation sigma that maximize the min gap between adjacent embedding vectors 
-        permutted by sigma, i.e.,
+        permuted by sigma, i.e.,
 
         \max_{\| w\| <= 1} \max_{\sigma} \min_{i \in [k-1]} w^\top(E_{\sigma_{i+1}} - E_{\sigma_i})
         = \max_{\| w\| <= 1} \min_{i \in [k-1]} (B ~\mathrm{sort}(E w))_i, 
@@ -429,7 +458,7 @@ def _find_embeddings_dual_cone_w(
         Use PGM initialized with the random w.
 
     If solver == "lp":
-        Find w that maximizes the min gap between adjacent randomly permuted embedding vectors.
+        Find w that maximizes the min gap between adjacent embedding vectors sorted based on random w.
         Let U be the matrix with rows {E_{\sigma_{i+1}} - E_{\sigma_i} : i in V}, where \sigma
         is the fixed permutation corresponding to the random w.
         Solve the LP problem:
@@ -447,20 +476,23 @@ def _find_embeddings_dual_cone_w(
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
     torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm for a given seed
-    w, perm, min_gap, permuted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
+    w, perm, min_gap, sorted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
 
     if solver == "lp":
         # LP took > 3hrs to solve after permuting embeddings according to random w.
         # TODO: try initializing lp solver with random w. Also, try to solve problem with SVM instead of LP
-        # linprog solver requires numpy arrays on CPU
+        # linprog solver requires numpy inputs on CPU
         embedding_matrix = embedding_matrix[perm].to("cpu").numpy()
         neg_U = (embedding_matrix[:-1] - embedding_matrix[1:])
         del embedding_matrix
-        w_opt, t_opt, lp_result = _solve_dual_cone_lp(neg_U, min_gap, model.device)
-        permuted_embedding_projections = None # no need to compute here they will be computed in dsm 
+        w_opt, t_opt, lp_result = _solve_dual_cone_lp(neg_U, model.device)
+        sorted_embedding_projections = None # no need to compute here they will be computed in dsm 
 
     elif solver == "pgm":
-        w_opt, t_opt, perm, permuted_embedding_projections = _solve_dual_cone_pgm(embedding_matrix, w)
+        if reg_strength > 0: # fast_soft_sort requires inputs to be on CPU (will convert to numpy internally)
+            embedding_matrix = embedding_matrix[perm].to("cpu")
+            w = w.to("cpu")
+        w_opt, t_opt, perm, sorted_embedding_projections = _solve_dual_cone_pgm(embedding_matrix, w, reg_strength=reg_strength, log_every=1)
 
     else:
         t_opt = min_gap
@@ -477,8 +509,8 @@ def _find_embeddings_dual_cone_w(
     # normalize by t_opt. We can recover t_opt from 1/||w_opt||_\infty if solver=="lp" or 
     # 1/||w_opt||_2 otherwise
     w_opt /= t_opt 
-    if permuted_embedding_projections is not None:  
-        permuted_embedding_projections /= t_opt 
+    if sorted_embedding_projections is not None:  
+        sorted_embedding_projections /= t_opt 
 
     if save_file is not None:
         os.makedirs(os.path.dirname(f"{save_file}.pt"), exist_ok=True)
@@ -487,7 +519,7 @@ def _find_embeddings_dual_cone_w(
             save_file,
         ) # not storing premuted projections as it's cheaper to just recompute them
 
-    return w_opt, perm, inv_perm, permuted_embedding_projections
+    return w_opt, perm, inv_perm, sorted_embedding_projections
 
 class DSMAttack(Attack):
     def __init__(self, config: DSMConfig):
@@ -513,17 +545,17 @@ class DSMAttack(Attack):
                 self._embeddings_dual_cone_w = cache["w_opt_scaled"]
                 self._embeddings_perm = cache["perm"]
                 self._embeddings_inv_perm = cache["inv_perm"]
-                self._permuted_embedding_projections = None # will be computed below
+                self._sorted_embedding_projections = None # will be computed below
             else:
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_file}")
                 time_start = time.time()
-                self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._permuted_embedding_projections = _find_embeddings_dual_cone_w(
-                    model, self.valid_token_ids, solver="pgm",seed=self.config.seed, save_file=save_file
+                self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._sorted_embedding_projections = _find_embeddings_dual_cone_w(
+                    model, self.valid_token_ids, solver="pgm", reg_strength=1.0, seed=self.config.seed, save_file=save_file
                 )
                 time_end = time.time()
                 logging.info(f"Time taken to find w: {time_end - time_start:.2f} seconds")
-            if self._permuted_embedding_projections is None:
-                self._permuted_embedding_projections = _permuted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
+            if self._sorted_embedding_projections is None:
+                self._sorted_embedding_projections = _sorted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
         else:
             # define identity embedding permutation to be used by PGM
             # TODO: it's interesting to check if PGM performs better with DCA's embedding permutation.
@@ -619,8 +651,8 @@ class DSMAttack(Attack):
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons() 
                 model_name_safe = model.name_or_path.replace("/", "-")
                 # F changes with permutation of embeddings, which is fixed per seed, so we need to recompute hessian_upperbd for each seed
-                # TODO: we also need to recompute if anything else changes F, e.g., optim_str_init, lm_reg_weight, normalized flag, attack 
-                # placement, etc. We can store in saved file and validate on load. For now, these are fixed.
+                # TODO: we also need to recompute if anything else changes F, e.g., _embeddings_perm, optim_str_init, lm_reg_weight, normalized flag, 
+                # attack placement, etc. We can store in saved file and validate on load. For now, these are fixed.
                 save_file = f"{dca_config.dsm_cache_dir}/{model_name_safe}/hessian_upperbd_at_zero_idx{stable_idx}_seed{self.config.seed}.pt"
                 if os.path.exists(save_file):
                     logging.info(f"Loading Hessian upper bound at zero from {save_file}")
@@ -647,7 +679,7 @@ class DSMAttack(Attack):
             G_batch, H_batch = DR_submodular_decomposition(
                 F_set_batch.lattice_fn,
                 hessian_upperbd,
-                self._permuted_embedding_projections,
+                self._sorted_embedding_projections,
             )
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
