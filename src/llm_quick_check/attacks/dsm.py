@@ -282,7 +282,6 @@ def _sorted_valid_projections(
 
 def _solve_dual_cone_lp(
     neg_U: Tensor,
-    device: torch.device,
 ) -> Tuple[Tensor, float, Any]:
     """Solve the LP problem:
        max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t.
@@ -310,7 +309,7 @@ def _solve_dual_cone_lp(
 
     t_opt = float(-lp_result.fun)
     
-    w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float32, device=device)
+    w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float32)
 
     lambdas = -lp_result.ineqlin.marginals  # dual variables / Lagrange multipliers
     if not (lambdas >= 0.0).all():
@@ -485,12 +484,12 @@ def _find_embeddings_dual_cone_w(
         embedding_matrix = embedding_matrix[perm].to("cpu").numpy()
         neg_U = (embedding_matrix[:-1] - embedding_matrix[1:])
         del embedding_matrix
-        w_opt, t_opt, lp_result = _solve_dual_cone_lp(neg_U, model.device)
+        w_opt, t_opt, lp_result = _solve_dual_cone_lp(neg_U)
         sorted_embedding_projections = None # no need to compute here they will be computed in dsm 
 
     elif solver == "pgm":
         if reg_strength > 0: # fast_soft_sort requires inputs to be on CPU (will convert to numpy internally)
-            embedding_matrix = embedding_matrix[perm].to("cpu")
+            embedding_matrix = embedding_matrix.to("cpu")
             w = w.to("cpu")
         w_opt, t_opt, perm, sorted_embedding_projections = _solve_dual_cone_pgm(embedding_matrix, w, reg_strength=reg_strength, log_every=1)
 
@@ -504,13 +503,14 @@ def _find_embeddings_dual_cone_w(
         raise ValueError("Did not find w in the interior of the dual cone, t* = 0.0.")
     logging.info(f"Found w in the interior of the dual cone with t* = {t_opt:.6g}.")
 
+    perm = perm.to(model.device)
     inv_perm = torch.empty_like(perm)
     inv_perm[perm] = torch.arange(k, device=model.device)
     # normalize by t_opt. We can recover t_opt from 1/||w_opt||_\infty if solver=="lp" or 
     # 1/||w_opt||_2 otherwise
-    w_opt /= t_opt 
+    w_opt = (w_opt / t_opt).to(model.device)
     if sorted_embedding_projections is not None:  
-        sorted_embedding_projections /= t_opt 
+        sorted_embedding_projections = (sorted_embedding_projections / t_opt).to(model.device)
 
     if save_file is not None:
         os.makedirs(os.path.dirname(f"{save_file}.pt"), exist_ok=True)
