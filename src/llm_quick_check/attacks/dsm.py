@@ -222,6 +222,43 @@ def _find_min_gap_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
     return best_perm, max_min_gap
 
 
+def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Tensor]:
+    """
+    Find unit vector w that maximizes the sum of all squared pairwise gaps between embedding projections on w, i.e., 
+    solve the PCA problem: 
+
+            \max_{\| w \| \leq 1} w^\top M w = largest eigenvalue of M.
+
+    where M  = 2k (\tilde{E}^T \tilde{E}) and \tilde{E} is the mean-centered matrix, 
+    where each row is $E_i - \bar{E}$ with $\bar{E}$ the mean of the embedding vectors.
+
+    Returns:
+        w: eigenvector corresponding to the largest eigenvalue of M.
+        perm: permutation sorting E @ w non-decreasingly.
+        min_gap: min gap between adjacent embedding projections on w.
+        sorted_embedding_projections: sorted projections of the embedding vectors on w.
+    """
+    if embedding_matrix.dtype != torch.float64:
+        logging.warning("Converting E to float64 precision")
+        embedding_matrix = embedding_matrix.double()
+
+    k = embedding_matrix.shape[0]
+    E_centered = embedding_matrix - embedding_matrix.mean(dim=0, keepdim=True)
+    M = 2 * k * (E_centered.T @ E_centered) # shape (d, d)
+    # compute full eigendecomposition (cheap relative to computing M: O(d^3) vs O(k d^2))
+    eigenvalues, eigenvectors = torch.linalg.eigh(M) 
+    logging.info(f"largest eigenvalue of embeddings covariance matrix = {eigenvalues[-1]:.6g}")
+    w = eigenvectors[:, -1]
+    w = w / w.norm()
+
+    projections = embedding_matrix @ w
+    perm = projections.argsort(stable=True)
+    sorted_embedding_projections = projections[perm]
+    min_gap = sorted_embedding_projections.diff().min().item()
+    logging.info(f"Min gap achieved with PCA unit vector w: {min_gap:.6g}")
+
+    return w, perm, min_gap, sorted_embedding_projections
+
 def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Tensor]:
     """
     Sample a random unit vector w such that the projections of the rows of the embedding matrix 
@@ -252,7 +289,7 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tens
     perm = projections.argsort(stable=True)
     sorted_embedding_projections = projections[perm]
     min_gap = sorted_embedding_projections.diff().min().item()
-    logging.info(f"Min gap achieved with w: {min_gap:.6g}")
+    logging.info(f"Min gap achieved with random unit vector w: {min_gap:.6g}")
     return w, perm, min_gap, sorted_embedding_projections
 
 
@@ -480,6 +517,7 @@ def _solve_dual_cone_pgm(
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
+    init_w: Literal["random", "pca"] = "random",
     solver: Literal["lp", "pgm"] | None = None,
     solver_config: dict = {},
     seed: int = 0,
@@ -496,7 +534,7 @@ def _find_embeddings_dual_cone_w(
         then sort the rows in non-decreasing order of their projections onto w.
 
     If solver == "pgm":
-        Find w and permutation sigma that maximize the min gap between adjacent embedding vectors 
+        Find unit vector w and permutation sigma that maximize the min gap between adjacent embedding vectors 
         permuted by sigma, i.e.,
 
         \max_{\| w\| <= 1} \max_{\sigma} \min_{i \in [k-1]} w^\top(E_{\sigma_{i+1}} - E_{\sigma_i})
@@ -525,8 +563,13 @@ def _find_embeddings_dual_cone_w(
     # n_unique_rows = np.unique(embedding_matrix, axis=0).shape[0]
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
-    torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm for a given seed
-    w, perm, min_gap, sorted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
+    if init_w == "random":
+        torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm for a given seed
+        w, perm, min_gap, sorted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
+    elif init_w == "pca":
+        w, perm, min_gap, sorted_embedding_projections = _embeddings_pca(embedding_matrix)
+    else:
+        raise ValueError(f"Invalid init_w: {init_w}")
 
     if solver == "lp":
         # LP took > 3hrs to solve after permuting embeddings according to random w.
@@ -540,7 +583,7 @@ def _find_embeddings_dual_cone_w(
         sorted_embedding_projections = None # no need to compute here they will be computed in dsm 
 
     elif solver == "pgm":
-        if solver_config("sort_epsilon") > 0: # fast_soft_sort requires inputs to be on CPU (will convert to numpy internally)
+        if solver_config["sort_epsilon"] > 0: # fast_soft_sort requires inputs to be on CPU (will convert to numpy internally)
             embedding_matrix = embedding_matrix.to("cpu")
             w = w.to("cpu")
         w_opt, t_opt, perm, sorted_embedding_projections = _solve_dual_cone_pgm(embedding_matrix, w, **solver_config)
@@ -606,9 +649,10 @@ class DSMAttack(Attack):
                 solver_config = {
                     "sort_epsilon": 1.0,
                     "min_epsilon": 1.0,
+                    "log_every": 10,
                 }
                 self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._sorted_embedding_projections = _find_embeddings_dual_cone_w(
-                    model, self.valid_token_ids, solver="pgm", solver_config=solver_config, seed=self.config.seed, save_file=save_file
+                    model, self.valid_token_ids, init_w = "pca", solver="pgm", solver_config=solver_config, seed=self.config.seed, save_file=save_file
                 )
                 time_end = time.time()
                 logging.info(f"Time taken to find w: {time_end - time_start:.2f} seconds")
