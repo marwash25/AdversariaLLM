@@ -467,7 +467,7 @@ class SetFnReduction():
 
         hessian_max = hessian_upperbd_flat.max().item() 
         logging.info(f"cross_vals_max: {cross_vals.max().item()}") # 0.51898 for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors 
-        logging.info(f"hessian_max: {hessian_max}") # becomes 0.07127
+        logging.info(f"hessian_max: {hessian_max}") # becomes 0.07127 with normalized=True
 
         flops = flops_singletons + flops_pairs
         time_taken = time.time() - t_start

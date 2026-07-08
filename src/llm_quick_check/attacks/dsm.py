@@ -259,10 +259,10 @@ def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Te
 
     return w, perm, min_gap, sorted_embedding_projections
 
-def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Tensor]:
+def _randomly_permute_embeddings(embedding_matrix: Tensor, num_samples: int = 10000) -> Tuple[Tensor, Tensor, float, Tensor]:
     """
-    Sample a random unit vector w such that the projections of the rows of the embedding matrix 
-    onto w are distinct, then sort the rows in non-decreasing order of their projections onto w.
+    Sample max_retries random unit vectors w. Return one with largest minimum gap between adjacent embedding projections on w, 
+    and the corresponding permutation that sorts the projections in non-decreasing order.
     """
     # we need to use float64 precision, otherwise couldn't find valid w even after 100 attempts 
     # for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors 
@@ -271,26 +271,31 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor) -> Tuple[Tensor, Tens
         embedding_matrix = embedding_matrix.double()
 
     k, d = embedding_matrix.shape
-    max_retries = 5  # increase if needed
+    best_min_gap = -inf
 
-    for _ in range(max_retries):
+    for i in range(num_samples):
         w = torch.randn(d, dtype=torch.float64, device=embedding_matrix.device)
         w = w / w.norm()
         projections = embedding_matrix @ w
         if projections.unique().numel() == k: 
-            logging.info(f"Found a random direction w with distinct projections for all {k} rows.")
-            break
-    else:
+            perm = projections.argsort(stable=True)
+            sorted_embedding_projections = projections[perm]
+            min_gap = sorted_embedding_projections.diff().min().item()
+            if min_gap > best_min_gap:
+                best_min_gap = min_gap
+                best_w = w
+                best_perm = perm
+                best_sorted_embedding_projections = sorted_embedding_projections
+            logging.info(f"Found a random unit vector w with distinct projections for all {k} rows at attempt {i+1} and min gap {min_gap:.6g}.")
+            
+    if best_min_gap <= 0.0:
         raise ValueError(
-            f"Could not find a random direction w with distinct projections for all {k} rows "
-            f"after {max_retries} attempts."
+            f"Could not find a random unit vector w with distinct projections for all {k} rows "
+            f"after {num_samples} attempts."
         )
 
-    perm = projections.argsort(stable=True)
-    sorted_embedding_projections = projections[perm]
-    min_gap = sorted_embedding_projections.diff().min().item()
-    logging.info(f"Min gap achieved with random unit vector w: {min_gap:.6g}")
-    return w, perm, min_gap, sorted_embedding_projections
+    logging.info(f"Best min gap achieved with {num_samples} random samples of unit vector w: {best_min_gap:.6g}")
+    return best_w, best_perm, best_min_gap, best_sorted_embedding_projections
 
 
 def _valid_embeddings(
@@ -647,12 +652,13 @@ class DSMAttack(Attack):
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_file}")
                 time_start = time.time()
                 solver_config = {
-                    "sort_epsilon": 1.0,
-                    "min_epsilon": 1.0,
+                    "sort_epsilon": 0.0,
+                    "min_epsilon": 0.0,
+                    "num_steps": 5000,
                     "log_every": 10,
                 }
                 self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._sorted_embedding_projections = _find_embeddings_dual_cone_w(
-                    model, self.valid_token_ids, init_w = "pca", solver="pgm", solver_config=solver_config, seed=self.config.seed, save_file=save_file
+                    model, self.valid_token_ids, init_w = "random", solver="pgm", solver_config=solver_config, seed=self.config.seed, save_file=save_file
                 )
                 time_end = time.time()
                 logging.info(f"Time taken to find w: {time_end - time_start:.2f} seconds")
