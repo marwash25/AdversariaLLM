@@ -452,9 +452,10 @@ def _solve_dual_cone_pgm(
             perm = proj.argsort(stable=True)
             sorted_proj = proj[perm]
             gaps = sorted_proj.diff()  # (k-1,), adjacent gaps of the sorted projections
-            i_star = gaps.argmin().item()
-            obj_value = gaps[i_star].item()
-            supergrad = E[perm[i_star + 1]] - E[perm[i_star]]
+            min_gap = gaps.min()
+            min_indices = (gaps == min_gap).nonzero(as_tuple=True)[0]
+            obj_value = min_gap.item()
+            supergrad = (E[perm[min_indices + 1]] - E[perm[min_indices]]).mean(dim=0)
             soft_obj_value = obj_value
         else:
             with torch.enable_grad():
