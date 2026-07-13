@@ -719,17 +719,11 @@ class DSMAttack(Attack):
                 self._sorted_embedding_projections = None # will be computed below
             else:
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_file}")
+                dual_cone_config = self.config.dca_config.dual_cone_config
                 time_start = time.time()
-                solver_config = {
-                    "sort_epsilon": 0.0,
-                    "min_epsilon": 0.0,
-                    "sort_reg": "log_kl",
-                    "normalize": True,
-                    "num_steps": 100000,
-                    "log_every": 100,
-                }
                 self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._sorted_embedding_projections = _find_embeddings_dual_cone_w(
-                    model, self.valid_token_ids, init_w = "pca", solver="pgm", solver_config=solver_config, seed=self.config.seed, save_file=save_file
+                    model, self.valid_token_ids, init_w = dual_cone_config.init_w, solver=dual_cone_config.solver, solver_config=dual_cone_config.solver_config, 
+                    seed=self.config.seed, save_file=save_file
                 )
                 time_end = time.time()
                 logging.info(f"Time taken to find w: {time_end - time_start:.2f} seconds")
