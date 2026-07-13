@@ -326,19 +326,23 @@ def _sorted_valid_projections(
     return projections[perm]
 
 
-def _embeddings_min_dist(E: Tensor, block_size: int = 2048) -> float:
-    """Compute min_{i < j} ||E_i - E_j||_2 over embedding rows and log it.
-    
+def _embeddings_pairwise_ext_dist(
+    E: Tensor,
+    mode: Literal["min", "max"],
+    block_size: int = 2048,
+) -> Tuple[float, int, int]:
+    """Compute the min or max pairwise L2 distance over rows i < j.
+
     Computed in blocks of size block_size to avoid OOM error.
     """
-    k, d = E.shape
+    k, _ = E.shape
     if k < 2:
-        logging.info(f"Embeddings min pairwise l2 distance = N/A (k < 2)")
-        return inf
+        return (inf if mode == "min" else -inf), -1, -1
 
-    t0 = time.time()
-    min_dist = torch.tensor(inf, device=E.device, dtype=E.dtype)
-    min_i, min_j = -1, -1
+    seeking_min = mode == "min"
+    sentinel = inf if seeking_min else -inf
+    ext_dist = torch.tensor(sentinel, device=E.device, dtype=E.dtype)
+    ext_i, ext_j = -1, -1
     for i_start in range(0, k, block_size):
         i_end = min(i_start + block_size, k)
         Ei = E[i_start:i_end]
@@ -348,28 +352,61 @@ def _embeddings_min_dist(E: Tensor, block_size: int = 2048) -> float:
             dists = torch.cdist(Ei, Ej, p=2)
             if i_start == j_start:
                 mask = torch.triu(torch.ones_like(dists, dtype=torch.bool), diagonal=1)
-                dists = dists.masked_fill(~mask, inf)
-            block_min, flat_idx = dists.min(), dists.argmin()
-            if block_min < min_dist:
-                min_dist = block_min
+                dists = dists.masked_fill(~mask, sentinel)
+            if seeking_min:
+                block_ext, flat_idx = dists.min(), dists.argmin()
+                is_better = block_ext < ext_dist
+            else:
+                block_ext, flat_idx = dists.max(), dists.argmax()
+                is_better = block_ext > ext_dist
+            if is_better:
+                ext_dist = block_ext
                 local_i = flat_idx // dists.shape[1]
                 local_j = flat_idx % dists.shape[1]
-                min_i = i_start + local_i.item()
-                min_j = j_start + local_j.item()
+                ext_i = i_start + local_i.item()
+                ext_j = j_start + local_j.item()
 
-    min_dist = min_dist.item()
+    return ext_dist.item(), ext_i, ext_j
+
+
+def _embeddings_min_dist(E: Tensor, block_size: int = 2048) -> float:
+    """Compute min_{i < j} ||E_i - E_j||_2 over embedding rows and log it."""
+    t0 = time.time()
+    min_dist, min_i, min_j = _embeddings_pairwise_ext_dist(E, mode="min", block_size=block_size)
+    elapsed = time.time() - t0
+    if min_i < 0:
+        logging.info("Embeddings min pairwise l2 distance = N/A (k < 2)")
+        return min_dist
 
     logging.info(
         f"Embeddings min pairwise l2 distance = {min_dist:.6g} "
         f"at pair ({min_i}, {min_j}) "
-        f"(computed in {time.time() - t0:.2f}s)"
+        f"(computed in {elapsed:.2f}s)"
     )
 
     w = (E[min_i] - E[min_j]) / min_dist
     min_gap, perm, sorted_proj = _projections_min_gap(E, w)
-    logging.info(f"Min gap achieved with min dist unit vector w: {min_gap:.6g}") # all gaps = 0 for Llama-3.2-1B-Instruct
-    
+    logging.info(f"Min gap achieved with min dist unit vector w: {min_gap:.6g}") # min_gap = 0 for Llama-3.2-1B-Instruct
+
     return min_dist
+
+
+def _embeddings_max_dist(E: Tensor, block_size: int = 2048) -> float:
+    """Compute max_{i < j} ||E_i - E_j||_2 over embedding rows and log it."""
+    t0 = time.time()
+    max_dist, max_i, max_j = _embeddings_pairwise_ext_dist(E, mode="max", block_size=block_size)
+    elapsed = time.time() - t0
+    if max_i < 0:
+        logging.info("Embeddings max pairwise l2 distance = N/A (k < 2)")
+        return max_dist
+
+    logging.info(
+        f"Embeddings max pairwise l2 distance = {max_dist:.6g} "
+        f"at pair ({max_i}, {max_j}) "
+        f"(computed in {elapsed:.2f}s)"
+    )
+
+    return max_dist
 
 
 def _solve_dual_cone_lp(
@@ -417,8 +454,10 @@ def _solve_dual_cone_pgm(
     E: Tensor,
     w_init: Tensor,
     norm: Literal["l2", "linf"] = "l2",
+    normalize: bool = False,
     sort_epsilon: float = 1.0,
     min_epsilon: float = 1.0,
+    sort_reg: Literal["l2", "log_kl"] | None = None,
     num_steps: int = 2000,
     log_every: int = 200,
 ) -> Tuple[Tensor, float, Tensor, Tensor]:
@@ -431,8 +470,10 @@ def _solve_dual_cone_pgm(
         E: 2D tensor.
         w_init: 1D tensor, initial direction. 
         norm: norm used to constrain w, "l2" or "linf".
+        normalize: if True, normalize gradients, otherwise use L = 
         sort_epsilon: if 0, use hard sort; if > 0, use soft sort (via fast-soft-sort).
-        min_epsilon: if 0, use hard min; if > 0, use soft min via log-sum-exp.
+        min_epsilon: if 0, use hard min; if > 0, use soft min via log-sum-exp,
+        sort_reg: regularization method to use in soft sort; "l2" or "log_kl" (None for hard sort).
         num_steps: number of subgradient steps.
         log_every: log progress every this many steps (<= 0 disables).
 
@@ -446,8 +487,8 @@ def _solve_dual_cone_pgm(
         raise ValueError(f"norm must be 'l2' or 'linf', got {norm!r}.")
     
     logging.info(
-        f"Running PGM for {num_steps} iterations, "
-        f"norm={norm}, sort_epsilon={sort_epsilon}, min_epsilon={min_epsilon}"
+        f"Running PGM for {num_steps} iterations, with normalize={normalize}, "
+        f"norm={norm}, sort_epsilon={sort_epsilon}, sort_reg={sort_reg}, min_epsilon={min_epsilon}"
     )
 
     if E.dtype != torch.float64:
@@ -457,11 +498,12 @@ def _solve_dual_cone_pgm(
     def _soft_min(gaps: Tensor) -> Tensor:
         return -min_epsilon * torch.logsumexp(-gaps / min_epsilon, dim=0)
 
+    hard_sort = sort_epsilon == 0
+    hard_min = min_epsilon == 0
+
     def _obj_and_supergrad(E: Tensor, w: Tensor) -> Tuple[float, float, Tensor, Tensor, Tensor]:
         # evaluate objective and a supergradient at w
         # Match float64 precision used in _randomly_permute_embeddings
-        hard_sort = sort_epsilon == 0
-        hard_min = min_epsilon == 0
         # TODO: use _projections_min_gap instead of rewriting things here (can make the function output gaps or min_indices)
         if hard_sort and hard_min:
             proj = E @ w  
@@ -483,10 +525,13 @@ def _solve_dual_cone_pgm(
                     perm = perm_var.detach()
                     sorted_proj = sorted_proj_var.detach()
                 else:
+                    if sort_reg is None:
+                        raise ValueError(f"sort_reg must be set when sort_epsilon > 0, got {sort_reg}")
                     sorted_proj_var = soft_sort(
                         proj.unsqueeze(0),
                         direction="ASCENDING",
                         regularization_strength=sort_epsilon,
+                        regularization=sort_reg,
                     ).squeeze(0)
                     proj = proj.detach()
                     perm = proj.argsort(stable=True)
@@ -508,6 +553,13 @@ def _solve_dual_cone_pgm(
     best_perm = None
     best_sorted_proj = None
     D = 2 if norm == "l2" else 2 * sqrt(E.shape[1]) # domain diameter
+    if normalize:
+        L = 1.0
+    else:
+        if hard_sort and hard_min:
+            L = _embeddings_max_dist(E) # max_{i < j} ||E_j - E_i||_2
+        else:
+            raise ValueError(f"Not implemented yet")
 
     for iter in range(num_steps):
         obj_value, soft_obj_value, supergrad, perm, sorted_proj = _obj_and_supergrad(E, w)
@@ -524,9 +576,9 @@ def _solve_dual_cone_pgm(
             logging.info(f"PGM dual cone: supergradient norm < 1e-12 at step {iter}, stopping.")
             break
 
-        # TODO: I am using normalized supergradient. Try also using L = max ||E_sigma_i+1 - E_sigma_i||_2
-        eta = D / sqrt(iter + 1)
-        w = w + eta * (supergrad / supergrad_norm)
+
+        eta = D / (L * sqrt(iter + 1))
+        w = w + eta * ((supergrad / supergrad_norm) if normalize else supergrad)
         if norm == "l2":
             w /= w.norm()  
         else:
@@ -581,7 +633,7 @@ def _find_embeddings_dual_cone_w(
     embedding_matrix = embedding_matrix.double()
     k = embedding_matrix.shape[0]
     # TODO:remove when done debugging
-    min_dist = _embeddings_min_dist(embedding_matrix) # 0.0166836 for Llama-3.2-1B-Instruct 
+    # min_dist = _embeddings_min_dist(embedding_matrix) # 0.0166836 for Llama-3.2-1B-Instruct 
     # n_unique_rows = np.unique(embedding_matrix, axis=0).shape[0]
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
@@ -671,6 +723,8 @@ class DSMAttack(Attack):
                 solver_config = {
                     "sort_epsilon": 0.0,
                     "min_epsilon": 0.0,
+                    "sort_reg": "log_kl",
+                    "normalize": True,
                     "num_steps": 100000,
                     "log_every": 100,
                 }
