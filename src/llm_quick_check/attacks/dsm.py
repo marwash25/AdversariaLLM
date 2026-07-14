@@ -2,6 +2,7 @@
 import copy
 from math import sqrt, inf, isfinite
 import os
+import sys
 import time
 import logging
 import gc
@@ -709,13 +710,14 @@ class DSMAttack(Attack):
         if self.config.optimizer == "dca":
             model_name_safe = model.name_or_path.replace("/", "-")
             save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w_seed{self.config.dca_config.seed_w}.pt"
-            if os.path.exists(save_file):
-                logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
-                cache = torch.load(save_file,  map_location=model.device, weights_only=False)
-                self._embeddings_dual_cone_w = cache["w_opt_scaled"]
-                self._embeddings_perm = cache["perm"]
-                self._embeddings_inv_perm = cache["inv_perm"]
-                self._sorted_embedding_projections = None # will be computed below
+            
+            if not self.config.dca_config.overwrite_cache and os.path.exists(save_file):
+                    logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
+                    cache = torch.load(save_file,  map_location=model.device, weights_only=False)
+                    self._embeddings_dual_cone_w = cache["w_opt_scaled"]
+                    self._embeddings_perm = cache["perm"]
+                    self._embeddings_inv_perm = cache["inv_perm"]
+                    self._sorted_embedding_projections = None # will be computed below
             else:
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_file}")
                 dual_cone_config = self.config.dca_config.dual_cone_config
@@ -726,6 +728,8 @@ class DSMAttack(Attack):
                 )
                 time_end = time.time()
                 logging.info(f"Time taken to find w: {time_end - time_start:.2f} seconds")
+                return AttackResult(runs=[]) #TODO: remove when done testing
+
             if self._sorted_embedding_projections is None:
                 self._sorted_embedding_projections = _sorted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
         else:
