@@ -457,7 +457,7 @@ def _solve_dual_cone_pgm(
     normalize: bool = False,
     sort_epsilon: float = 1.0,
     min_epsilon: float = 1.0,
-    sort_reg: Literal["l2", "log_kl"] | None = None,
+    sort_reg: Literal["l2", "kl"] | None = None,
     num_steps: int = 2000,
     log_every: int = 200,
 ) -> Tuple[Tensor, float, Tensor, Tensor]:
@@ -473,7 +473,7 @@ def _solve_dual_cone_pgm(
         normalize: if True, normalize gradients, otherwise use L = 
         sort_epsilon: if 0, use hard sort; if > 0, use soft sort (via fast-soft-sort).
         min_epsilon: if 0, use hard min; if > 0, use soft min via log-sum-exp,
-        sort_reg: regularization method to use in soft sort; "l2" or "log_kl" (None for hard sort).
+        sort_reg: regularization method to use in soft sort; "l2" or "kl" (None for hard sort).
         num_steps: number of subgradient steps.
         log_every: log progress every this many steps (<= 0 disables).
 
