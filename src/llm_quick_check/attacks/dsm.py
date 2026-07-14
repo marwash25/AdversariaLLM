@@ -638,7 +638,8 @@ def _find_embeddings_dual_cone_w(
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
     if init_w == "random":
-        torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm for a given seed
+        torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm 
+        #TODO: run solver with different random initializations and pick the best final solution
         w, perm, min_gap, sorted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
     elif init_w == "pca":
         w, perm, min_gap, sorted_embedding_projections = _embeddings_pca(embedding_matrix)
@@ -705,11 +706,9 @@ class DSMAttack(Attack):
         self._build_valid_vocab(tokenizer, model)
 
         # --- Find w to use in DR-submodular decomposition ---
-        # TODO: instead of recomputing for each seed, compute best w (potentially with different random initializations) for each model 
-        # and use that for all seeds and conversations..
         if self.config.optimizer == "dca":
             model_name_safe = model.name_or_path.replace("/", "-")
-            save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w_seed{self.config.seed}.pt"
+            save_file = f"{self.config.dca_config.dsm_cache_dir}/{model_name_safe}/embeddings_dual_cone_w_seed{self.config.dca_config.seed_w}.pt"
             if os.path.exists(save_file):
                 logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_file}")
                 cache = torch.load(save_file,  map_location=model.device, weights_only=False)
@@ -723,7 +722,7 @@ class DSMAttack(Attack):
                 time_start = time.time()
                 self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._sorted_embedding_projections = _find_embeddings_dual_cone_w(
                     model, self.valid_token_ids, init_w = dual_cone_config.init_w, solver=dual_cone_config.solver, solver_config=dual_cone_config.solver_config, 
-                    seed=self.config.seed, save_file=save_file
+                    seed=self.config.dca_config.seed_w, save_file=save_file
                 )
                 time_end = time.time()
                 logging.info(f"Time taken to find w: {time_end - time_start:.2f} seconds")
