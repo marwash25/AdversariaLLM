@@ -180,7 +180,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
 
 # TODO: replace lengthy names like discrete_obj_values with F_values here and in pgm_lovasz?
 def dca_dsm(F_set_batch: SetFnReduction, G_set_batch: SetFnReduction, H_set_batch: SetFnReduction, x_init: Tensor, num_outer_steps: int, num_inner_steps: int, 
-inner_solver: Literal["pgm", "mnp"], outer_tol: Optional[float] = 1e-5, inner_gap_tol: Optional[float] = 1e-4, 
+inner_solver: Literal["pgm", "mnp"], outer_tol: Optional[float] = 1e-5, inner_gap_tol: Optional[float] = 1e-5, 
 tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     """
     Implement the difference of convex algorithm (DCA) variant from El Halabi et al. 2023 (Algorithm 2) 
