@@ -287,7 +287,7 @@ def _solve_dual_cone_pgm(
         E: 2D tensor.
         w_init: 1D tensor, initial direction. 
         norm: norm used to constrain w, "l2" or "linf".
-        normalize: if True, normalize gradients, otherwise use L = 
+        normalize: if True, normalize gradients, otherwise use L (only supported for hard sort and hard min for now)
         sort_epsilon: if 0, use hard sort; if > 0, use soft sort (via fast-soft-sort).
         min_epsilon: if 0, use hard min; if > 0, use soft min via log-sum-exp,
         sort_reg: regularization method to use in soft sort; "l2" or "kl" (None for hard sort).
@@ -420,92 +420,98 @@ def _affine_min_norm_point(A: Tensor) -> Tensor:
     return e / e.sum()
 
 
-def _min_norm_point_wolfe(
-    Es: Tensor,
-    p_init_dir: Tensor | None = None,
-    max_major: int = 2000,
-    max_minor: int = 1000,
+def _min_norm_point(
+    E: Tensor,
+    p_init: Tensor | None = None,
+    num_major_cycles: int = 2000,
+    num_minor_cycles: int = 1000,
     tol: float = 1e-12,
 ) -> Tuple[Tensor, int, int]:
-    r"""Minimum-norm point in the convex hull of the adjacent-difference vectors
-       u_i = Es[i+1] - Es[i],  i = 0, ..., m-1   (m = Es.shape[0] - 1),
-    computed with Wolfe's min-norm-point algorithm.
+    r"""Solve the minimum-norm-point (MNP) problem by Wolfe's MNP algorithm:
+    min_{lbd in simplex} || U^T lbd ||_2
 
-    This solves  min_{lambda in simplex} || U^T lambda ||_2  where U has rows u_i,
-    the dual of the fixed-permutation inner problem
-        max_{||w||_2 <= 1} min_i <u_i, w>,
-    with primal recovery w* = p* / ||p*||_2 and optimal value ||p*||_2.
+    Implementation based on Algorithm 1 in:
+    @article{chakrabarty2014provable,
+        title={Provable submodular minimization using Wolfe's algorithm},
+        author={Chakrabarty, Deeparnab and Jain, Prateek and Kothari, Pravesh},
+        journal={Advances in Neural Information Processing Systems},
+        volume={27},
+        year={2014}
+    }
 
-    We roll our own solver rather than call a QP/min-norm-point library because the
-    atom set (m ~ vocab size) is far too large to materialize the m x m Gram matrix
-    those libraries need. Wolfe's algorithm only touches the full atom set through the
-    linear minimization oracle argmin_i <u_i, x> (one matvec Es @ x plus a diff), and
+    Wolfe's algorithm only touches the full atom set through the
+    linear minimization oracle argmin_i <u_i, x> (one matvec E @ x plus a diff), and
     solves an exact min-norm subproblem restricted to the small active set each major
     cycle -- so only |S| x |S| systems (|S| <= d + 1) are ever formed, and it converges
     in a handful of major cycles instead of the many thousands plain FW needs when the
     origin lies close to the hull boundary (tiny optimal margin).
 
     Args:
-        Es: (k, d) tensor of embeddings already sorted by the current permutation.
-        p_init_dir: optional direction used to pick the initial vertex (argmin_i <u_i, dir>).
-        max_major: maximum number of major cycles (atom insertions).
-        max_minor: maximum minor-cycle iterations per major cycle.
+        E: 2D tensor
+        x_init: optional direction used to pick the initial vertex (argmin_i <u_i, dir>).
+        num_major_cycles: maximum number of major cycles (atom insertions).
+        num_minor_cycles: maximumnumber of minor-cycle iterations per major cycle.
         tol: stop when the relative duality gap (xx - min_i <u_i, x>) / max(xx, 1) <= tol.
 
     Returns:
-        x: the minimum-norm point (d-vector), equal to U^T lambda*.
+        x: the minimum-norm point (d-vector), equal to U^T lbd*.
         n_active: number of atoms with positive weight at the solution.
         n_major: number of major cycles performed.
     """
-    device, dtype = Es.device, Es.dtype
+    device, dtype = E.device, E.dtype
 
-    def gaps_of(vec: Tensor) -> Tensor:  # <u_i, vec> for all atoms i
-        proj = Es @ vec
-        return proj[1:] - proj[:-1]
+    def min_gaps(x: Tensor) -> Tuple[Tensor, Tensor]: # not using _projections_min_gap because we don't need to sort
+        proj = E @ x
+        min_gap, min_index = proj.diff().min(dim=0)
+        return min_gap, min_index
 
     def atom(i: int) -> Tensor:
-        return Es[i + 1] - Es[i]
+        return E[i+1] - E[i] # U[i] 
 
-    s0 = 0 if p_init_dir is None else int(torch.argmin(gaps_of(p_init_dir)).item())
-    active = [s0]
-    A = atom(s0).unsqueeze(0).clone()  # (|S|, d) active atom vectors
-    lam = torch.ones(1, dtype=dtype, device=device)
+    # TODO: modify to accept any point in convex hull to be able to restart (see Bach's code)
+    s0 = 0 if p_init is None else int(torch.argmin(gaps_of(p_init)).item()) 
+    active = [s0] # active_atoms_indices
+    A = atom(s0).unsqueeze(1).clone()  # matrix with active atoms as columns
+    lbd = torch.ones(1, dtype=dtype, device=device)
     x = A[0].clone()
 
-    major = 0
-    for major in range(max_major):
-        g = gaps_of(x)
-        xx = torch.dot(x, x)
-        s = int(torch.argmin(g).item())
-        if (xx - g[s]).item() <= tol * max(xx.item(), 1.0):
+    for major_iter in range(num_major_cycles): # major cycle
+        min_gap, min_index = min_gaps(x) # LMO: argmin_i <u_i, x> 
+        x_norm_squared = torch.dot(x, x)
+        s = min_index 
+        if x_norm_squared - min_gap <= tol: 
             break
-        if s in active:  # LMO returned an active atom: numerically optimal
+        if s in active: 
+            # TODO: remove this? This should not happen if inner problem is solved exactly (x = argmin_{z in aff(S)} ||z||_2) 
+            # since in this case any point q in aff(S) satisfy q^Tx = ||x||_2^2 so termination condition above is met.
+            # but not sure if this is true if inner problem is solved approximately 
             break
 
         active.append(s)
-        A = torch.cat([A, atom(s).unsqueeze(0)], dim=0)
-        lam = torch.cat([lam, torch.zeros(1, dtype=dtype, device=device)])
+        A = torch.cat([A, atom(s).unsqueeze(1)], dim=1)
+        lbd = torch.cat([lbd, torch.zeros(1, dtype=dtype, device=device)])
 
-        for _ in range(max_minor):
+        for _ in range(num_minor_cycles): #minor cycle
             alpha = _affine_min_norm_point(A)
-            if bool((alpha > 1e-12).all()):
-                lam = alpha
-                x = lam @ A
+            if (alpha > 1e-12).all(): # using 1e-12 instead of 0 to avoid numerical issues
+                lbd = alpha
+                x = A @ lbd
                 break
-            # move toward the affine point until an atom weight hits zero (leaves hull)
-            diff = alpha - lam
+            # update x to the intersection of the boundary of conv(A) and the segment joining the affine solution y = A @ alpha and previous x. 
+            # move toward y until an atom weight lbd_i hits zero (leaves conv(A))
+            diff = alpha - lbd
             blocking = diff < 0
-            theta = torch.where(
-                blocking, -lam / diff, torch.full_like(lam, inf)
-            ).min().clamp(0.0, 1.0)
-            lam = lam + theta * diff
-            keep = lam > 1e-12
-            active = [active[i] for i in range(len(active)) if bool(keep[i])]
-            A, lam = A[keep], lam[keep]
-            lam = lam / lam.sum()
-            x = lam @ A
+            # theta = min(1, min_{alpha_i < lbd_i} lbd_i / (lbd_i - alpha_i))
+            # which is equivalent to taking min over alpha_i < 0 if any, otherwise theta = 1.
+            theta = torch.min(1.0, (-lbd[blocking] / diff[blocking]).min())
+            lbd = lbd + theta * diff
+            keep = lbd > 1e-12
+            active = [active[i] for i in range(len(active)) if keep[i]]
+            A, lbd = A[:, keep], lbd[keep]
+            lbd = lbd / lbd.sum()
+            x = A @ lbd
 
-    return x, len(active), major + 1
+    return x, len(active), major_iter + 1
 
 
 def _solve_dual_cone_am(
@@ -514,7 +520,7 @@ def _solve_dual_cone_am(
     num_outer_steps: int = 100,
     num_inner_steps: int = 5000,
     outer_tol: float = 1e-10,
-    inner_tol: float = 1e-12,
+    inner_tol: float = 1e-10,
     log_every: int = 1,
 ) -> Tuple[Tensor, float, Tensor, Tensor]:
     r"""Solve the dual-cone problem by alternating maximization:
@@ -526,7 +532,7 @@ def _solve_dual_cone_am(
              max_{||w||_2 <= 1} min_i <u_i, w>,   u_i = E_{sigma_{i+1}} - E_{sigma_i}
          by solving its dual min_{lbd in simplex} || U^T lbd ||_2, where U is the matrix with rows u_i,
         using away-step Frank-Wolfe. Update w = U^T lbd^* / || U^T lbd^* ||_2.
-    Objective should monotonically decrease up to accuracy of inner problem. 
+    Objective should monotonically increase up to accuracy of inner problem. 
 
     Args:
         E: 2D tensor.
@@ -567,13 +573,13 @@ def _solve_dual_cone_am(
             assert obj_value > 0, "w_init should have non-zero minimum gap."
 
         E_sorted = E[perm]
-
-        p, n_active, n_steps = _min_norm_point_wolfe(
-            E_sorted, p_init_dir=w, max_major=num_inner_steps, tol=inner_tol
+        U = E_sorted[1:] - E_sorted[:-1] 
+        p, n_active, n_steps = _min_norm_point(
+            U, p_init=w, max_major=num_inner_steps, tol=inner_tol
         )
         p_norm = p.norm()
 
-        # TODO: add a check that obj_value decreased up to accuracy achieved for inner problem. 
+        # TODO: add a check that obj_value increased up to accuracy achieved for inner problem. 
         if obj_value > best_obj:
             best_obj, best_w, best_perm, best_sorted_proj = (
                 obj_value, w.clone(), perm, sorted_proj.clone()
@@ -584,7 +590,8 @@ def _solve_dual_cone_am(
                 {"obj value": obj_value, "best obj": best_obj, "||p*||": p_norm.item(), "|active|": n_active, "inner steps": n_steps}
             )
 
-        if obj_value - prev_obj_value <= outer_tol:
+        if (obj_value - prev_obj_value)/ prev_obj_value <= outer_tol:
+            # use relative tolerance since obj_value can be very small (e.g., 1e-12 at w_init)
             logging.info(f"Alternating maximization converged after {iter + 1} outer steps with best obj value {best_obj:.6g}, stopping.")
             break
 
