@@ -4,7 +4,8 @@ import os
 import time
 import logging
 from typing import Tuple, Any, Literal
-
+from tqdm import trange
+import sys
 import numpy as np
 import torch
 from scipy.optimize import linprog
@@ -269,7 +270,7 @@ def _solve_dual_cone_lp(
 def _solve_dual_cone_pgm(
     E: Tensor,
     w_init: Tensor,
-    norm: Literal["l2", "linf"] = "l2",
+    norm: Literal["2", "inf"] = "2",
     normalize: bool = False,
     sort_epsilon: float = 1.0,
     min_epsilon: float = 1.0,
@@ -277,7 +278,7 @@ def _solve_dual_cone_pgm(
     num_steps: int = 2000,
     log_every: int = 200,
 ) -> Tuple[Tensor, float, Tensor, Tensor]:
-    """Run projected subgradient method (PGM) on the following problem:
+    """Solve the dual-cone problem by projected subgradient method (PGM):
        max_{\| w\| <= 1} \min_{i \in [k-1]} (B sort(E w))_i, 
     where B is the matrix with rows e_{i+1} - e_{i}, and sort operation
     is applied in non-decreasing order.
@@ -296,11 +297,11 @@ def _solve_dual_cone_pgm(
     Returns:
         best_w: best direction found, normalized to unit norm (l2 or l-infinity)
         best_obj: min objective value achieved at best_w.
-        best_perm: permutation sorting E @ best_w non-decreasingly.
+        best_perm: permutation sorting E best_w non-decreasingly.
         best_sorted_proj: sorted projections at best_w.
     """
-    if norm not in ("l2", "linf"):
-        raise ValueError(f"norm must be 'l2' or 'linf', got {norm!r}.")
+    if norm not in ("2", "inf"):
+        raise ValueError(f"norm must be '2' or 'inf', got {norm!r}.")
     
     logging.info(
         f"Running PGM for {num_steps} iterations, with normalize={normalize}, "
@@ -363,12 +364,13 @@ def _solve_dual_cone_pgm(
         return obj_value, soft_obj_value, supergrad, perm, sorted_proj
 
     w = w_init.to(device=E.device, dtype=torch.float64)
+    w = w / w.norm(p=float(norm))
 
     best_w = w.clone()
     best_obj = -inf
     best_perm = None
     best_sorted_proj = None
-    D = 2 if norm == "l2" else 2 * sqrt(E.shape[1]) # domain diameter
+    D = 2 if norm == "2" else 2 * sqrt(E.shape[1]) # domain diameter
     if normalize:
         L = 1.0
     else:
@@ -377,25 +379,23 @@ def _solve_dual_cone_pgm(
         else:
             raise ValueError(f"Not implemented yet")
 
-    for iter in range(num_steps):
+    for iter in (pbar := trange(num_steps, file=sys.stdout)):
         obj_value, soft_obj_value, supergrad, perm, sorted_proj = _obj_and_supergrad(E, w)
         if obj_value > best_obj:
             best_obj, best_w, best_perm, best_sorted_proj = obj_value, w.clone(), perm, sorted_proj.clone()
 
         supergrad_norm = supergrad.norm()
         if log_every > 0 and (iter % log_every == 0 or iter == num_steps - 1):
-            logging.info(
-                f"PGM dual cone step {iter}: obj value = {obj_value:.6g}, soft obj value = {soft_obj_value:.6g}, best obj value = {best_obj:.6g}, "
-                f"||supergrad|| = {supergrad_norm.item():.6g}"
+            pbar.set_postfix(
+            {"obj value": obj_value, "soft obj value": soft_obj_value, "best obj value": best_obj, "||supergrad||": supergrad_norm.item()}
             )
         if supergrad_norm < 1e-12:
-            logging.info(f"PGM dual cone: supergradient norm < 1e-12 at step {iter}, stopping.")
+            pbar.write(f"PGM dual cone: supergradient norm < 1e-12 at step {iter}, stopping.")
             break
-
 
         eta = D / (L * sqrt(iter + 1))
         w = w + eta * ((supergrad / supergrad_norm) if normalize else supergrad)
-        if norm == "l2":
+        if norm == "2":
             w /= w.norm()  
         else:
             w = torch.clamp(w, min=-1.0, max=1.0)
@@ -404,11 +404,208 @@ def _solve_dual_cone_pgm(
     return best_w, best_obj, best_perm, best_sorted_proj
 
 
+def _affine_min_norm_point(A: Tensor) -> Tensor:
+    r"""Barycentric coordinates of the minimum-norm point in the AFFINE hull of the
+    rows of A, i.e. argmin_{alpha : 1^T alpha = 1} || A^T alpha ||_2.
+
+    Uses Wolfe's trick: with M_ij = 1 + <a_i, a_j> (= 1 1^T + A A^T, which is positive
+    definite whenever the augmented vectors [1; a_i] are independent), the solution is
+    alpha = e / (1^T e) where M e = 1. A tiny ridge guards against ill-conditioning.
+    """
+    n = A.shape[0]
+    ones = torch.ones(n, dtype=A.dtype, device=A.device)
+    M = 1.0 + A @ A.T
+    M = M + 1e-12 * torch.eye(n, dtype=A.dtype, device=A.device)
+    e = torch.linalg.solve(M, ones)
+    return e / e.sum()
+
+
+def _min_norm_point_wolfe(
+    Es: Tensor,
+    p_init_dir: Tensor | None = None,
+    max_major: int = 2000,
+    max_minor: int = 1000,
+    tol: float = 1e-12,
+) -> Tuple[Tensor, int, int]:
+    r"""Minimum-norm point in the convex hull of the adjacent-difference vectors
+       u_i = Es[i+1] - Es[i],  i = 0, ..., m-1   (m = Es.shape[0] - 1),
+    computed with Wolfe's min-norm-point algorithm.
+
+    This solves  min_{lambda in simplex} || U^T lambda ||_2  where U has rows u_i,
+    the dual of the fixed-permutation inner problem
+        max_{||w||_2 <= 1} min_i <u_i, w>,
+    with primal recovery w* = p* / ||p*||_2 and optimal value ||p*||_2.
+
+    We roll our own solver rather than call a QP/min-norm-point library because the
+    atom set (m ~ vocab size) is far too large to materialize the m x m Gram matrix
+    those libraries need. Wolfe's algorithm only touches the full atom set through the
+    linear minimization oracle argmin_i <u_i, x> (one matvec Es @ x plus a diff), and
+    solves an exact min-norm subproblem restricted to the small active set each major
+    cycle -- so only |S| x |S| systems (|S| <= d + 1) are ever formed, and it converges
+    in a handful of major cycles instead of the many thousands plain FW needs when the
+    origin lies close to the hull boundary (tiny optimal margin).
+
+    Args:
+        Es: (k, d) tensor of embeddings already sorted by the current permutation.
+        p_init_dir: optional direction used to pick the initial vertex (argmin_i <u_i, dir>).
+        max_major: maximum number of major cycles (atom insertions).
+        max_minor: maximum minor-cycle iterations per major cycle.
+        tol: stop when the relative duality gap (xx - min_i <u_i, x>) / max(xx, 1) <= tol.
+
+    Returns:
+        x: the minimum-norm point (d-vector), equal to U^T lambda*.
+        n_active: number of atoms with positive weight at the solution.
+        n_major: number of major cycles performed.
+    """
+    device, dtype = Es.device, Es.dtype
+
+    def gaps_of(vec: Tensor) -> Tensor:  # <u_i, vec> for all atoms i
+        proj = Es @ vec
+        return proj[1:] - proj[:-1]
+
+    def atom(i: int) -> Tensor:
+        return Es[i + 1] - Es[i]
+
+    s0 = 0 if p_init_dir is None else int(torch.argmin(gaps_of(p_init_dir)).item())
+    active = [s0]
+    A = atom(s0).unsqueeze(0).clone()  # (|S|, d) active atom vectors
+    lam = torch.ones(1, dtype=dtype, device=device)
+    x = A[0].clone()
+
+    major = 0
+    for major in range(max_major):
+        g = gaps_of(x)
+        xx = torch.dot(x, x)
+        s = int(torch.argmin(g).item())
+        if (xx - g[s]).item() <= tol * max(xx.item(), 1.0):
+            break
+        if s in active:  # LMO returned an active atom: numerically optimal
+            break
+
+        active.append(s)
+        A = torch.cat([A, atom(s).unsqueeze(0)], dim=0)
+        lam = torch.cat([lam, torch.zeros(1, dtype=dtype, device=device)])
+
+        for _ in range(max_minor):
+            alpha = _affine_min_norm_point(A)
+            if bool((alpha > 1e-12).all()):
+                lam = alpha
+                x = lam @ A
+                break
+            # move toward the affine point until an atom weight hits zero (leaves hull)
+            diff = alpha - lam
+            blocking = diff < 0
+            theta = torch.where(
+                blocking, -lam / diff, torch.full_like(lam, inf)
+            ).min().clamp(0.0, 1.0)
+            lam = lam + theta * diff
+            keep = lam > 1e-12
+            active = [active[i] for i in range(len(active)) if bool(keep[i])]
+            A, lam = A[keep], lam[keep]
+            lam = lam / lam.sum()
+            x = lam @ A
+
+    return x, len(active), major + 1
+
+
+def _solve_dual_cone_am(
+    E: Tensor,
+    w_init: Tensor,
+    num_outer_steps: int = 100,
+    num_inner_steps: int = 5000,
+    outer_tol: float = 1e-10,
+    inner_tol: float = 1e-12,
+    log_every: int = 1,
+) -> Tuple[Tensor, float, Tensor, Tensor]:
+    r"""Solve the dual-cone problem by alternating maximization:
+       max_{||w||_2 <= 1} max_{sigma} min_{i in [k-1]} w^T (E_{sigma_{i+1}} - E_{sigma_i}).
+
+    In each outer step:
+      1. update sigma to the non-decreasing order of E w (optimal sigma for current w);
+      2. for that fixed sigma, solve the concave inner problem
+             max_{||w||_2 <= 1} min_i <u_i, w>,   u_i = E_{sigma_{i+1}} - E_{sigma_i}
+         by solving its dual min_{lbd in simplex} || U^T lbd ||_2, where U is the matrix with rows u_i,
+        using away-step Frank-Wolfe. Update w = U^T lbd^* / || U^T lbd^* ||_2.
+    Objective should monotonically decrease up to accuracy of inner problem. 
+
+    Args:
+        E: 2D tensor.
+        w_init: 1D tensor, initial direction with non-zero minimum gap. 
+        num_outer_steps: maximum number of sort/inner-solve alternations.
+        num_inner_steps: maximum major cycles per inner min-norm-point solve.
+        outer_tol: relative objective value change tolerance for the outer solve.
+        inner_tol: relative duality-gap tolerance for the inner problem.
+        log_every: log progress every this many outer steps (<= 0 disables).
+
+    Returns:
+        best_w: best unit-norm direction found.
+        best_obj: min objective value achieved at best_w.
+        best_perm: permutation sorting E best_w non-decreasingly.
+        best_sorted_proj: sorted projections at best_w.
+    """
+    if E.dtype != torch.float64:
+        logging.warning("Converting E to float64 precision")
+        E = E.double()
+
+    logging.info(
+        f"Running alternating maximization for up to {num_outer_steps} outer steps, "
+        f"with num_inner_steps={num_inner_steps}, inner_tol={inner_tol}."
+    )
+
+    w = w_init.to(device=E.device, dtype=torch.float64)
+    w = w / w.norm()
+
+    best_w = w.clone() # should be last iterate if inner problem is solved exactly
+    best_obj = -inf  
+    best_perm = None
+    best_sorted_proj = None
+    prev_obj_value = -inf
+
+    for iter in (pbar := trange(num_outer_steps, file=sys.stdout)):
+        obj_value, perm, sorted_proj = _projections_min_gap(E, w)
+        if iter == 0:
+            assert obj_value > 0, "w_init should have non-zero minimum gap."
+
+        E_sorted = E[perm]
+
+        p, n_active, n_steps = _min_norm_point_wolfe(
+            E_sorted, p_init_dir=w, max_major=num_inner_steps, tol=inner_tol
+        )
+        p_norm = p.norm()
+
+        # TODO: add a check that obj_value decreased up to accuracy achieved for inner problem. 
+        if obj_value > best_obj:
+            best_obj, best_w, best_perm, best_sorted_proj = (
+                obj_value, w.clone(), perm, sorted_proj.clone()
+            )
+
+        if log_every > 0 and (iter % log_every == 0 or iter == num_outer_steps - 1):
+            pbar.set_postfix(
+                {"obj value": obj_value, "best obj": best_obj, "||p*||": p_norm.item(), "|active|": n_active, "inner steps": n_steps}
+            )
+
+        if obj_value - prev_obj_value <= outer_tol:
+            logging.info(f"Alternating maximization converged after {iter + 1} outer steps with best obj value {best_obj:.6g}, stopping.")
+            break
+
+        if p_norm <= 1e-13:
+            logging.warning(
+                f"Alternating dual cone: min-norm point ~ 0 at outer step {iter} "
+                f"(origin in convex hull of u_i's); stopping."
+                # should not happen if init min_gap > 1e-12 and inner problem solve up inner_tol
+            )
+            break # alternatively we can restart from a random w
+
+        w =  p / p_norm
+
+    return best_w, best_obj, best_perm, best_sorted_proj
+
+
 def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
     init_w: Literal["random", "pca"] = "random",
-    solver: Literal["lp", "pgm"] | None = None,
+    solver: Literal["lp", "pgm", "am"] | None = None,
     solver_config: dict = {},
     seed: int = 0,
     save_file: str | None = None,
@@ -431,7 +628,11 @@ def _find_embeddings_dual_cone_w(
         = \max_{\| w\| <= 1} \min_{i \in [k-1]} (B ~\mathrm{sort}(E w))_i, 
         where B is the matrix with rows e_{i+1} - e_{i}.
 
-        Use PGM initialized with the random w.
+        Use PGM initialized with init_w.
+    
+    If solver == "am":
+        Solve the same problem as "pgm" (l2 norm only) by alternating maximization
+        initialized with init_w.
 
     If solver == "lp":
         Find w that maximizes the min gap between adjacent embedding vectors sorted based on random w.
@@ -478,6 +679,9 @@ def _find_embeddings_dual_cone_w(
             embedding_matrix = embedding_matrix.to("cpu")
             w = w.to("cpu")
         w_opt, t_opt, perm, sorted_embedding_projections = _solve_dual_cone_pgm(embedding_matrix, w, **solver_config)
+
+    elif solver == "am":
+        w_opt, t_opt, perm, sorted_embedding_projections = _solve_dual_cone_am(embedding_matrix, w, **solver_config)
 
     else:
         t_opt = min_gap
