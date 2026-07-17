@@ -405,29 +405,33 @@ def _solve_dual_cone_pgm(
 
 
 def _affine_min_norm_point(A: Tensor) -> Tensor:
-    r"""Barycentric coordinates of the minimum-norm point in the AFFINE hull of the
-    rows of A, i.e. argmin_{alpha : 1^T alpha = 1} || A^T alpha ||_2.
+    r"""Find the minimum-norm point in the affine hull of the
+    columns of A: 
+    min_{x \in aff(A)} 0.5 ||x||^2_2 = min_{alpha : 1^T alpha = 1} 0.5 || A alpha ||^2_2.
+    Return the barycentric coordinates alpha of the MNP.
 
-    Uses Wolfe's trick: with M_ij = 1 + <a_i, a_j> (= 1 1^T + A A^T, which is positive
+    Uses Wolfe's trick: with M = 1 1^T + A^T A, which is positive
     definite whenever the augmented vectors [1; a_i] are independent), the solution is
     alpha = e / (1^T e) where M e = 1. A tiny ridge guards against ill-conditioning.
     """
-    n = A.shape[0]
+    n = A.shape[1]
     ones = torch.ones(n, dtype=A.dtype, device=A.device)
-    M = 1.0 + A @ A.T
+    M = 1.0 + A.T @ A
     M = M + 1e-12 * torch.eye(n, dtype=A.dtype, device=A.device)
     e = torch.linalg.solve(M, ones)
     return e / e.sum()
 
-
+# TODO: when we want to use this for DCA inner problem, add option to restart from a point in conv(A)
 def _min_norm_point(
     U: Tensor,
     w_init: Tensor | None = None,
     num_major_cycles: int = 1000,
-    tol: float = 1e-12,
+    tol: float = 1e-10,
 ) -> Tuple[Tensor, int, int]:
     r"""Solve the minimum-norm-point (MNP) problem by Wolfe's MNP algorithm:
-    min_{x \in conv(u_i: u_i row of U)} ||x||_2 = min_{lbd in simplex} || U^T lbd ||_2,
+    min_{x \in conv(u_i: u_i row of U)} 0.5 ||x||_2^2 = min_{lbd in simplex} 0.5 || U^T lbd ||_2^2,
+
+    Equivalent to solving the dual problem: max_{w} min_{i} <u_i, w> - 0.5 ||w||_2^2 (w^* = x^*).
 
     Implementation based on Algorithm 1 in:
     @article{chakrabarty2014provable,
@@ -438,19 +442,11 @@ def _min_norm_point(
         year={2014}
     }
 
-    Wolfe's algorithm only touches the full atom set through the
-    linear minimization oracle argmin_i <u_i, x> (one matvec E @ x plus a diff), and
-    solves an exact min-norm subproblem restricted to the small active set each major
-    cycle -- so only |S| x |S| systems (|S| <= d + 1) are ever formed, and it converges
-    in a handful of major cycles instead of the many thousands plain FW needs when the
-    origin lies close to the hull boundary (tiny optimal margin).
-
     Args:
         U: 2D tensor
         w_init: optional direction used to pick the initial vertex (argmin_i <u_i, w_init>). 
         num_major_cycles: maximum number of major cycles (atom insertions).
-        num_minor_cycles: maximumnumber of minor-cycle iterations per major cycle.
-        tol: stop when the relative duality gap (xx - min_i <u_i, x>) / max(xx, 1) <= tol.
+        tol: stop when the duality gap ||x||_2^2 - min_i <u_i, x> <= tol.
 
     Returns:
         x: the minimum-norm point (d-vector), equal to U^T lbd*.
@@ -462,15 +458,14 @@ def _min_norm_point(
     def min_gaps(x: Tensor) -> Tuple[Tensor, Tensor]: # not using _projections_min_gap because we don't need to sort
         gaps = U @ x 
         min_gap, min_index = gaps.min(dim=0)
-        return min_gap, min_index
+        return min_gap, min_index.item()
 
-    # TODO: modify to accept any point in convex hull to be able to restart (see Bach's code)
     init_index = 0 if w_init is None else min_gaps(w_init)[1] 
     active_indices = [init_index]
     n_active = 1
     A = U[active_indices].T # matrix with active atoms as columns
     lbd = torch.ones(1, dtype=dtype, device=device)
-    x = A[0].clone() 
+    x = A[:, 0].clone() 
     d = x.shape[0]
 
     for major_iter in range(num_major_cycles): # major cycle
@@ -478,14 +473,20 @@ def _min_norm_point(
         x_norm_squared = torch.dot(x, x)
 
         if x_norm_squared - min_gap <= tol: 
-            logging.info(f"MNP converged after {major_iter + 1} major cycles with ||x||_2 = {torch.sqrt(x_norm_squared).item():.6g},  number of active atoms = {len(active)}, stopping.")
+            logging.info(f"MNP converged after {major_iter + 1} major cycles with ||x||_2 = {torch.sqrt(x_norm_squared).item():.6g},  # of active atoms = {n_active}, stopping.")
             break
         
-        # min_index should not be in active_indices: If x = argmin_{z in aff(A)} ||z||_2 (holds throughout the algorithm)
-        # any point q in aff(A) satisfy q^Tx = ||x||_2^2 so termination condition above is met.
-        # x_init should
-        assert min_index not in active_indices, "New atom is already in the active set, MNP should have terminated or removed atoms from A in minor cycle."
-        assert n_active <= d, "Number of active atoms should be at most d, otherwise affine minimizer is 0, and MNP should have either terminated or removed atoms from A in minor cycle."
+        if min_index in active_indices:
+        # min_index should not be in active_indices: If x = argmin_{z in aff(A)} ||z||_2 (holds up to numerical errors throughout the algorithm)
+        # any point q in aff(A) satisfy q^Tx = ||x||_2^2 so termination condition above should be met but might due to numerical errors.
+            logging.warning(f"MNP major cycle {major_iter}: new atom {min_index} is already in the active set, MNP should have terminated. "
+                            f"Duality gap: {x_norm_squared - min_gap:.6g}, ||x||_2: {torch.sqrt(x_norm_squared).item():.6g}, # of active atoms: {n_active}, stopping.")
+            break
+
+        if n_active > d:
+            logging.warning(f"MNP major cycle {major_iter}: # of active atoms {n_active} > d, affine minimizer is 0, and MNP should have either terminated or removed atoms from A in minor cycle."
+            f"Duality gap: {x_norm_squared - min_gap:.6g}, ||x||_2: {torch.sqrt(x_norm_squared).item():.6g}, # of active atoms: {n_active}, stopping.")
+            break
 
         active_indices.append(min_index)
         n_active += 1
@@ -499,7 +500,7 @@ def _min_norm_point(
             if (alpha > 1e-12).all(): # using 1e-12 instead of 0 to avoid numerical issues
                 lbd = alpha
                 x = A @ lbd
-                logging.info(f"MNP minor cycle {minor_iter}: found affine solution in conv(A), exiting minor cycle.")
+                # logging.info(f"MNP minor cycle {minor_iter}: found affine solution in conv(A), exiting minor cycle.")
                 break
             # update x to the intersection of the boundary of conv(A) and the segment joining the affine solution y = A @ alpha and previous x. 
             # move toward y until an atom weight lbd_i hits zero (leaves conv(A))
@@ -507,7 +508,7 @@ def _min_norm_point(
             blocking = diff < 0 # not empty since lbd > 1e-12 and there exists alpha_i < 1e-12
             # theta = min(1, min_{alpha_i < lbd_i} lbd_i / (lbd_i - alpha_i))
             # which is equivalent to taking min over alpha_i < 0 if any, otherwise theta = 1.
-            theta = torch.min(1.0, (-lbd[blocking] / diff[blocking]).min())
+            theta = min((-lbd[blocking] / diff[blocking]).min().item(), 1.0)
             lbd = lbd + theta * diff
             keep = lbd > 1e-12 
             active_indices = [active_indices[i] for i in range(n_active) if keep[i]]
@@ -527,7 +528,7 @@ def _solve_dual_cone_am(
     num_outer_steps: int = 100,
     num_inner_steps: int = 5000,
     outer_tol: float = 1e-10,
-    inner_tol: float = 1e-12,
+    inner_tol: float = 1e-10,
     log_every: int = 1,
 ) -> Tuple[Tensor, float, Tensor, Tensor]:
     r"""Solve the dual-cone problem by alternating maximization:
@@ -538,7 +539,7 @@ def _solve_dual_cone_am(
       2. for that fixed sigma, solve the concave inner problem
              max_{||w||_2 <= 1} min_i <u_i, w>,   u_i = E_{sigma_{i+1}} - E_{sigma_i}
          by solving its dual min_{lbd in simplex} || U^T lbd ||_2, where U is the matrix with rows u_i,
-        using away-step Frank-Wolfe. Update w = U^T lbd^* / || U^T lbd^* ||_2.
+        using MNP algorithm. Update w = U^T lbd^* / || U^T lbd^* ||_2.
     Objective should monotonically increase up to accuracy of inner problem. 
 
     Args:
@@ -547,7 +548,7 @@ def _solve_dual_cone_am(
         num_outer_steps: maximum number of sort/inner-solve alternations.
         num_inner_steps: maximum major cycles per inner min-norm-point solve.
         outer_tol: relative objective value change tolerance for the outer solve.
-        inner_tol: relative duality-gap tolerance for the inner problem.
+        inner_tol: duality-gap tolerance for the MNP problem.
         log_every: log progress every this many outer steps (<= 0 disables).
 
     Returns:
@@ -598,10 +599,11 @@ def _solve_dual_cone_am(
                 {"obj value": obj_value, "best obj": best_obj, "MNP norm": mnp_norm.item(), "|MNP active indices|": n_active, "MNP steps": n_MNP_steps}
             )
 
-        if (obj_value - prev_obj_value)/ prev_obj_value <= outer_tol:
+        if iter > 0 and (obj_value - prev_obj_value)/ prev_obj_value <= outer_tol:
             # use relative tolerance since obj_value can be very small (e.g., 1e-12 at w_init)
             logging.info(f"Alternating maximization converged after {iter + 1} outer steps with best obj value {best_obj:.6g}, stopping.")
             break
+        prev_obj_value = obj_value
 
         if mnp_norm <= 1e-13:
             logging.warning(
