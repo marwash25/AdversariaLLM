@@ -421,14 +421,13 @@ def _affine_min_norm_point(A: Tensor) -> Tensor:
 
 
 def _min_norm_point(
-    E: Tensor,
-    p_init: Tensor | None = None,
-    num_major_cycles: int = 2000,
-    num_minor_cycles: int = 1000,
+    U: Tensor,
+    w_init: Tensor | None = None,
+    num_major_cycles: int = 1000,
     tol: float = 1e-12,
 ) -> Tuple[Tensor, int, int]:
     r"""Solve the minimum-norm-point (MNP) problem by Wolfe's MNP algorithm:
-    min_{lbd in simplex} || U^T lbd ||_2
+    min_{x \in conv(u_i: u_i row of U)} ||x||_2 = min_{lbd in simplex} || U^T lbd ||_2,
 
     Implementation based on Algorithm 1 in:
     @article{chakrabarty2014provable,
@@ -447,8 +446,8 @@ def _min_norm_point(
     origin lies close to the hull boundary (tiny optimal margin).
 
     Args:
-        E: 2D tensor
-        x_init: optional direction used to pick the initial vertex (argmin_i <u_i, dir>).
+        U: 2D tensor
+        w_init: optional direction used to pick the initial vertex (argmin_i <u_i, w_init>). 
         num_major_cycles: maximum number of major cycles (atom insertions).
         num_minor_cycles: maximumnumber of minor-cycle iterations per major cycle.
         tol: stop when the relative duality gap (xx - min_i <u_i, x>) / max(xx, 1) <= tol.
@@ -458,60 +457,68 @@ def _min_norm_point(
         n_active: number of atoms with positive weight at the solution.
         n_major: number of major cycles performed.
     """
-    device, dtype = E.device, E.dtype
+    device, dtype = U.device, U.dtype
 
     def min_gaps(x: Tensor) -> Tuple[Tensor, Tensor]: # not using _projections_min_gap because we don't need to sort
-        proj = E @ x
-        min_gap, min_index = proj.diff().min(dim=0)
+        gaps = U @ x 
+        min_gap, min_index = gaps.min(dim=0)
         return min_gap, min_index
 
-    def atom(i: int) -> Tensor:
-        return E[i+1] - E[i] # U[i] 
-
     # TODO: modify to accept any point in convex hull to be able to restart (see Bach's code)
-    s0 = 0 if p_init is None else int(torch.argmin(gaps_of(p_init)).item()) 
-    active = [s0] # active_atoms_indices
-    A = atom(s0).unsqueeze(1).clone()  # matrix with active atoms as columns
+    init_index = 0 if w_init is None else min_gaps(w_init)[1] 
+    active_indices = [init_index]
+    n_active = 1
+    A = U[active_indices].T # matrix with active atoms as columns
     lbd = torch.ones(1, dtype=dtype, device=device)
-    x = A[0].clone()
+    x = A[0].clone() 
+    d = x.shape[0]
 
     for major_iter in range(num_major_cycles): # major cycle
         min_gap, min_index = min_gaps(x) # LMO: argmin_i <u_i, x> 
         x_norm_squared = torch.dot(x, x)
-        s = min_index 
-        if x_norm_squared - min_gap <= tol: 
-            break
-        if s in active: 
-            # TODO: remove this? This should not happen if inner problem is solved exactly (x = argmin_{z in aff(S)} ||z||_2) 
-            # since in this case any point q in aff(S) satisfy q^Tx = ||x||_2^2 so termination condition above is met.
-            # but not sure if this is true if inner problem is solved approximately 
-            break
 
-        active.append(s)
-        A = torch.cat([A, atom(s).unsqueeze(1)], dim=1)
+        if x_norm_squared - min_gap <= tol: 
+            logging.info(f"MNP converged after {major_iter + 1} major cycles with ||x||_2 = {torch.sqrt(x_norm_squared).item():.6g},  number of active atoms = {len(active)}, stopping.")
+            break
+        
+        # min_index should not be in active_indices: If x = argmin_{z in aff(A)} ||z||_2 (holds throughout the algorithm)
+        # any point q in aff(A) satisfy q^Tx = ||x||_2^2 so termination condition above is met.
+        # x_init should
+        assert min_index not in active_indices, "New atom is already in the active set, MNP should have terminated or removed atoms from A in minor cycle."
+        assert n_active <= d, "Number of active atoms should be at most d, otherwise affine minimizer is 0, and MNP should have either terminated or removed atoms from A in minor cycle."
+
+        active_indices.append(min_index)
+        n_active += 1
+        A = torch.cat([A, U[min_index].unsqueeze(1)], dim=1)
         lbd = torch.cat([lbd, torch.zeros(1, dtype=dtype, device=device)])
 
-        for _ in range(num_minor_cycles): #minor cycle
+        minor_iter = -1
+        while True: # minor cycle (will run at most |active| times)
+            minor_iter += 1
             alpha = _affine_min_norm_point(A)
             if (alpha > 1e-12).all(): # using 1e-12 instead of 0 to avoid numerical issues
                 lbd = alpha
                 x = A @ lbd
+                logging.info(f"MNP minor cycle {minor_iter}: found affine solution in conv(A), exiting minor cycle.")
                 break
             # update x to the intersection of the boundary of conv(A) and the segment joining the affine solution y = A @ alpha and previous x. 
             # move toward y until an atom weight lbd_i hits zero (leaves conv(A))
             diff = alpha - lbd
-            blocking = diff < 0
+            blocking = diff < 0 # not empty since lbd > 1e-12 and there exists alpha_i < 1e-12
             # theta = min(1, min_{alpha_i < lbd_i} lbd_i / (lbd_i - alpha_i))
             # which is equivalent to taking min over alpha_i < 0 if any, otherwise theta = 1.
             theta = torch.min(1.0, (-lbd[blocking] / diff[blocking]).min())
             lbd = lbd + theta * diff
-            keep = lbd > 1e-12
-            active = [active[i] for i in range(len(active)) if keep[i]]
+            keep = lbd > 1e-12 
+            active_indices = [active_indices[i] for i in range(n_active) if keep[i]]
+            assert len(active_indices) < n_active, "At least one atom should be removed in each minor cycle."
+            n_active = len(active_indices)
             A, lbd = A[:, keep], lbd[keep]
             lbd = lbd / lbd.sum()
             x = A @ lbd
+            
 
-    return x, len(active), major_iter + 1
+    return x, n_active, major_iter + 1
 
 
 def _solve_dual_cone_am(
@@ -520,7 +527,7 @@ def _solve_dual_cone_am(
     num_outer_steps: int = 100,
     num_inner_steps: int = 5000,
     outer_tol: float = 1e-10,
-    inner_tol: float = 1e-10,
+    inner_tol: float = 1e-12,
     log_every: int = 1,
 ) -> Tuple[Tensor, float, Tensor, Tensor]:
     r"""Solve the dual-cone problem by alternating maximization:
@@ -573,11 +580,12 @@ def _solve_dual_cone_am(
             assert obj_value > 0, "w_init should have non-zero minimum gap."
 
         E_sorted = E[perm]
-        U = E_sorted[1:] - E_sorted[:-1] 
-        p, n_active, n_steps = _min_norm_point(
-            U, p_init=w, max_major=num_inner_steps, tol=inner_tol
+        U = E_sorted[1:] - E_sorted[:-1]
+        # w is used to pick the initial vertex, we can't restart from w itself since U changes in each outer step
+        x_mnp, n_active, n_MNP_steps = _min_norm_point(
+            U, w_init=w, num_major_cycles=num_inner_steps, tol=inner_tol
         )
-        p_norm = p.norm()
+        mnp_norm = x_mnp.norm()
 
         # TODO: add a check that obj_value increased up to accuracy achieved for inner problem. 
         if obj_value > best_obj:
@@ -587,7 +595,7 @@ def _solve_dual_cone_am(
 
         if log_every > 0 and (iter % log_every == 0 or iter == num_outer_steps - 1):
             pbar.set_postfix(
-                {"obj value": obj_value, "best obj": best_obj, "||p*||": p_norm.item(), "|active|": n_active, "inner steps": n_steps}
+                {"obj value": obj_value, "best obj": best_obj, "MNP norm": mnp_norm.item(), "|MNP active indices|": n_active, "MNP steps": n_MNP_steps}
             )
 
         if (obj_value - prev_obj_value)/ prev_obj_value <= outer_tol:
@@ -595,7 +603,7 @@ def _solve_dual_cone_am(
             logging.info(f"Alternating maximization converged after {iter + 1} outer steps with best obj value {best_obj:.6g}, stopping.")
             break
 
-        if p_norm <= 1e-13:
+        if mnp_norm <= 1e-13:
             logging.warning(
                 f"Alternating dual cone: min-norm point ~ 0 at outer step {iter} "
                 f"(origin in convex hull of u_i's); stopping."
@@ -603,7 +611,7 @@ def _solve_dual_cone_am(
             )
             break # alternatively we can restart from a random w
 
-        w =  p / p_norm
+        w =  x_mnp / mnp_norm
 
     return best_w, best_obj, best_perm, best_sorted_proj
 
