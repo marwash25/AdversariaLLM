@@ -403,14 +403,22 @@ dsm:
   dca_config:
     dual_cone_config:
       init_w: "pca"
-      solver: "pgm"
-      solver_config:
-        sort_epsilon: 1.0
-        min_epsilon: 1.0
-        sort_reg: "kl"
-        normalize: True
-        num_steps: 100000
-        log_every: 100
+      solver: "am" # "pgm" or "am"
+      solver_configs:
+        pgm:
+          sort_epsilon: 1.0 # when sort_epsilon > 0, run on CPU if just solving dual cone problem since fast_soft_sort works on CPU only
+          min_epsilon: 1.0
+          sort_reg: "kl"
+          normalize: True
+          num_steps: 100000
+          log_every: 100
+        am:
+          num_outer_steps: 100
+          num_inner_steps: 5000
+          outer_tol: 1e-10
+          inner_tol: 1e-10
+          log_every: 1
+      solver_config: ${.solver_configs[${.solver}]}
     hessian_upperbd: "hessian_upperbd_at_zero" # this is -alpha in DSMin paper # sanity check that DCA basically reduces to PGM when hessian_upperbd = 0
     dsm_cache_dir: ${root_dir}/src/llm_quick_check/attacks/dsm_cache # place to store cached hessian upper bounds at zero 
     overwrite_cache: True # for now used only for w cache, TODO: use it also for hessian upper bounds cache
