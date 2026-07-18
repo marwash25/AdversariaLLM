@@ -426,8 +426,9 @@ def _min_norm_point(
     U: Tensor,
     w_init: Tensor | None = None,
     num_major_cycles: int = 1000,
-    tol: float = 1e-10,
-) -> Tuple[Tensor, int, int]:
+    tol: float = 1e-6,
+    log_every: int = 1,
+) -> Tuple[Tensor, float, int, int]:
     r"""Solve the minimum-norm-point (MNP) problem by Wolfe's MNP algorithm:
     min_{x \in conv(u_i: u_i row of U)} 0.5 ||x||_2^2 = min_{lbd in simplex} 0.5 || U^T lbd ||_2^2,
 
@@ -446,7 +447,7 @@ def _min_norm_point(
         U: 2D tensor
         w_init: optional direction used to pick the initial vertex (argmin_i <u_i, w_init>). 
         num_major_cycles: maximum number of major cycles (atom insertions).
-        tol: stop when the duality gap ||x||_2^2 - min_i <u_i, x> <= tol.
+        tol: stop when the relative duality gap (||x||_2^2 - min_i <u_i, x>) / ||x||_2^2 <= tol.
 
     Returns:
         x: the minimum-norm point (d-vector), equal to U^T lbd*.
@@ -468,12 +469,18 @@ def _min_norm_point(
     x = A[:, 0].clone() 
     d = x.shape[0]
 
-    for major_iter in range(num_major_cycles): # major cycle
+    for major_iter in (pbar := trange(num_major_cycles, file=sys.stdout)): # major cycle
         min_gap, min_index = min_gaps(x) # LMO: argmin_i <u_i, x> 
         x_norm_squared = torch.dot(x, x)
 
-        if x_norm_squared - min_gap <= tol: 
-            logging.info(f"MNP converged after {major_iter + 1} major cycles with ||x||_2 = {torch.sqrt(x_norm_squared).item():.6g},  # of active atoms = {n_active}, stopping.")
+        gap = x_norm_squared - min_gap
+        if log_every > 0 and (major_iter % log_every == 0 or major_iter == num_major_cycles - 1):
+            pbar.set_postfix(
+                {"||x||_2": torch.sqrt(x_norm_squared).item(), "min gap": min_gap.item(), "relative duality gap": gap.item()/x_norm_squared, "|active indices|": n_active}
+            )
+
+        if gap <= tol * x_norm_squared: 
+            logging.info(f"MNP converged after {major_iter + 1} major cycles with ||x||_2 = {torch.sqrt(x_norm_squared).item():.6g}, stopping.")
             break
         
         if min_index in active_indices:
@@ -495,12 +502,12 @@ def _min_norm_point(
 
         minor_iter = -1
         while True: # minor cycle (will run at most |active| times)
+            assert minor_iter < 2*d, f"MNP minor cycle ran more than 2*d = {2*d} times. It should run at most |active| <= d+1 = {d+1} times."
             minor_iter += 1
             alpha = _affine_min_norm_point(A)
             if (alpha > 1e-12).all(): # using 1e-12 instead of 0 to avoid numerical issues
                 lbd = alpha
                 x = A @ lbd
-                # logging.info(f"MNP minor cycle {minor_iter}: found affine solution in conv(A), exiting minor cycle.")
                 break
             # update x to the intersection of the boundary of conv(A) and the segment joining the affine solution y = A @ alpha and previous x. 
             # move toward y until an atom weight lbd_i hits zero (leaves conv(A))
@@ -517,26 +524,28 @@ def _min_norm_point(
             A, lbd = A[:, keep], lbd[keep]
             lbd = lbd / lbd.sum()
             x = A @ lbd
-            
 
-    return x, n_active, major_iter + 1
+        if log_every > 0 and (major_iter % log_every == 0 or major_iter == num_major_cycles - 1):
+            pbar.set_postfix({"minor steps": minor_iter + 1})            
 
+    return x, gap.item(), n_active, major_iter + 1
+    
 
 def _solve_dual_cone_am(
     E: Tensor,
     w_init: Tensor,
     num_outer_steps: int = 100,
     num_inner_steps: int = 5000,
-    outer_tol: float = 1e-10,
-    inner_tol: float = 1e-10,
+    outer_tol: float = 1e-6,
+    inner_tol: float = 1e-6,
     log_every: int = 1,
 ) -> Tuple[Tensor, float, Tensor, Tensor]:
     r"""Solve the dual-cone problem by alternating maximization:
        max_{||w||_2 <= 1} max_{sigma} min_{i in [k-1]} w^T (E_{sigma_{i+1}} - E_{sigma_i}).
 
     In each outer step:
-      1. update sigma to the non-decreasing order of E w (optimal sigma for current w);
-      2. for that fixed sigma, solve the concave inner problem
+      1. fix w and update sigma to the non-decreasing order of E w (optimal sigma for current w);
+      2. fix sigma and solve the concave maximization inner problem
              max_{||w||_2 <= 1} min_i <u_i, w>,   u_i = E_{sigma_{i+1}} - E_{sigma_i}
          by solving its dual min_{lbd in simplex} || U^T lbd ||_2, where U is the matrix with rows u_i,
         using MNP algorithm. Update w = U^T lbd^* / || U^T lbd^* ||_2.
@@ -548,7 +557,7 @@ def _solve_dual_cone_am(
         num_outer_steps: maximum number of sort/inner-solve alternations.
         num_inner_steps: maximum major cycles per inner min-norm-point solve.
         outer_tol: relative objective value change tolerance for the outer solve.
-        inner_tol: duality-gap tolerance for the MNP problem.
+        inner_tol: relative duality-gap tolerance for the MNP problem.
         log_every: log progress every this many outer steps (<= 0 disables).
 
     Returns:
@@ -583,10 +592,10 @@ def _solve_dual_cone_am(
         E_sorted = E[perm]
         U = E_sorted[1:] - E_sorted[:-1]
         # w is used to pick the initial vertex, we can't restart from w itself since U changes in each outer step
-        x_mnp, n_active, n_MNP_steps = _min_norm_point(
+        x_mnp, mnp_gap, n_active, n_MNP_steps = _min_norm_point(
             U, w_init=w, num_major_cycles=num_inner_steps, tol=inner_tol
         )
-        mnp_norm = x_mnp.norm()
+        x_mnp_norm = x_mnp.norm()
 
         # TODO: add a check that obj_value increased up to accuracy achieved for inner problem. 
         if obj_value > best_obj:
@@ -596,16 +605,16 @@ def _solve_dual_cone_am(
 
         if log_every > 0 and (iter % log_every == 0 or iter == num_outer_steps - 1):
             pbar.set_postfix(
-                {"obj value": obj_value, "best obj": best_obj, "MNP norm": mnp_norm.item(), "|MNP active indices|": n_active, "MNP steps": n_MNP_steps}
-            )
+                {"obj value": obj_value, "best obj": best_obj, "MNP norm": x_mnp_norm.item(), "MNP duality gap": mnp_gap, "|MNP active indices|": n_active, "MNP steps": n_MNP_steps}
+            ) 
 
-        if iter > 0 and (obj_value - prev_obj_value)/ prev_obj_value <= outer_tol:
+        if iter > 0 and (obj_value - prev_obj_value) <= outer_tol * prev_obj_value:
             # use relative tolerance since obj_value can be very small (e.g., 1e-12 at w_init)
             logging.info(f"Alternating maximization converged after {iter + 1} outer steps with best obj value {best_obj:.6g}, stopping.")
             break
         prev_obj_value = obj_value
 
-        if mnp_norm <= 1e-13:
+        if x_mnp_norm <= 1e-13:
             logging.warning(
                 f"Alternating dual cone: min-norm point ~ 0 at outer step {iter} "
                 f"(origin in convex hull of u_i's); stopping."
@@ -613,7 +622,7 @@ def _solve_dual_cone_am(
             )
             break # alternatively we can restart from a random w
 
-        w =  x_mnp / mnp_norm
+        w =  x_mnp / x_mnp_norm # we should have (U @ w).min() = x_mnp_norm - mnp_gap / x_mnp_norm
 
     return best_w, best_obj, best_perm, best_sorted_proj
 
