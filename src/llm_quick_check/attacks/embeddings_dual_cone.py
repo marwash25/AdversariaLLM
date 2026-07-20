@@ -421,7 +421,7 @@ def _affine_min_norm_point(A: Tensor) -> Tensor:
 
     try:
         # solve M v = 1 using Cholesky decomposition
-        ones = torch.ones(r, dtype=A.dtype, device=A.device)
+        ones = torch.ones(r, 1, dtype=A.dtype, device=A.device)
         R = torch.linalg.cholesky(M)
         v = torch.cholesky_solve(ones, R).squeeze(1)
         # v = torch.linalg.solve(M, ones)
@@ -501,8 +501,8 @@ def _min_norm_point(
             break
 
         if n_active > d:
-            logging.warning(f"MNP major cycle {major_iter}: # of active atoms {n_active} > d, affine minimizer is 0, and MNP should have either terminated or removed atoms from A in minor cycle."
-            f"Duality gap: {x_norm_squared - min_gap:.6g}, ||x||_2: {torch.sqrt(x_norm_squared).item():.6g}, # of active atoms: {n_active}, stopping.")
+            logging.warning(f"MNP major cycle {major_iter}: # of active atoms {n_active} > d = {d}, affine minimizer is 0, and MNP should have either terminated or removed atoms from A in minor cycle. "
+            f"Duality gap: {x_norm_squared - min_gap:.6g}, ||x||_2: {torch.sqrt(x_norm_squared).item():.6g}, stopping.")
             break
 
         active_indices.append(min_index)
