@@ -406,20 +406,30 @@ def _solve_dual_cone_pgm(
 
 def _affine_min_norm_point(A: Tensor) -> Tensor:
     r"""Find the minimum-norm point in the affine hull of the
-    columns of A: 
+    columns of A (assumed to be affinely independent): 
     min_{x \in aff(A)} 0.5 ||x||^2_2 = min_{alpha : 1^T alpha = 1} 0.5 || A alpha ||^2_2.
     Return the barycentric coordinates alpha of the MNP.
 
-    Uses Wolfe's trick: with M = 1 1^T + A^T A, which is positive
-    definite whenever the augmented vectors [1; a_i] are independent), the solution is
-    alpha = e / (1^T e) where M e = 1. A tiny ridge guards against ill-conditioning.
+    Implementation matches the one from the MNP algorithm in Francis Bach's 
+    Matlab Submodular package (version 2.0), https://www.di.ens.fr/~fbach/submodular/. 
     """
-    n = A.shape[1]
-    ones = torch.ones(n, dtype=A.dtype, device=A.device)
-    M = 1.0 + A.T @ A
-    M = M + 1e-12 * torch.eye(n, dtype=A.dtype, device=A.device)
-    e = torch.linalg.solve(M, ones)
-    return e / e.sum()
+    r = A.shape[1]
+    c = A.norm()**2 / r
+    # add a constant c to make M positive definite (augmented vectors [c; a_i] are linearly independent for any c > 0)
+    # add a small ridge to avoid numerical issues
+    M = A.T @ A + c + 1e-12 * torch.eye(r, dtype=A.dtype, device=A.device)
+
+    try:
+        # solve M v = 1 using Cholesky decomposition
+        ones = torch.ones(r, dtype=A.dtype, device=A.device)
+        R = torch.linalg.cholesky(M)
+        v = torch.cholesky_solve(ones, R).squeeze(1)
+        # v = torch.linalg.solve(M, ones)
+    except RuntimeError as e:
+        logging.warning(f"Cholesky decomposition failed: {e}")
+        return None
+        
+    return v / v.sum()
 
 # TODO: when we want to use this for DCA inner problem, add option to restart from a point in conv(A)
 def _min_norm_point(
@@ -500,11 +510,15 @@ def _min_norm_point(
         A = torch.cat([A, U[min_index].unsqueeze(1)], dim=1)
         lbd = torch.cat([lbd, torch.zeros(1, dtype=dtype, device=device)])
 
+        #TODO: don't update x if last major cycle, to match the last obj and gap logged
         minor_iter = -1
         while True: # minor cycle (will run at most |active| times)
             assert minor_iter < 2*d, f"MNP minor cycle ran more than 2*d = {2*d} times. It should run at most |active| <= d+1 = {d+1} times."
             minor_iter += 1
             alpha = _affine_min_norm_point(A)
+            if alpha is None:
+                logging.warning(f"MNP major cycle {major_iter}: Cholesky decomposition in affine minimizer failed, stopping.")
+                break 
             if (alpha > 1e-12).all(): # using 1e-12 instead of 0 to avoid numerical issues
                 lbd = alpha
                 x = A @ lbd
