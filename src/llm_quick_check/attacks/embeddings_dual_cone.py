@@ -483,13 +483,13 @@ def _min_norm_point(
         min_gap, min_index = min_gaps(x) # LMO: argmin_i <u_i, x> 
         x_norm_squared = torch.dot(x, x)
 
-        gap = x_norm_squared - min_gap
+        duality_gap = x_norm_squared - min_gap
         if log_every > 0 and (major_iter % log_every == 0 or major_iter == num_major_cycles - 1):
             pbar.set_postfix(
-                {"||x||_2": torch.sqrt(x_norm_squared).item(), "min gap": min_gap.item(), "relative duality gap": gap.item()/x_norm_squared, "|active indices|": n_active}
+                {"||x||_2": torch.sqrt(x_norm_squared).item(), "min gap": min_gap.item(), "relative duality gap": (duality_gap/x_norm_squared).item(), "|active indices|": n_active}
             )
 
-        if gap <= tol * x_norm_squared: 
+        if duality_gap <= tol * x_norm_squared: 
             logging.info(f"MNP converged after {major_iter + 1} major cycles with ||x||_2 = {torch.sqrt(x_norm_squared).item():.6g}, stopping.")
             break
         
