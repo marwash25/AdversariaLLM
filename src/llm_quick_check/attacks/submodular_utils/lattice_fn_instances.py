@@ -81,11 +81,15 @@ class EmbeddingQuadraticFn(QuadraticFn):
         Q: Tensor,
         embedding_projections: Tensor,
         k: int,
+        n: Optional[int] = None,
         normalize: bool = True,
     ):
         assert embedding_projections.shape == (k,), "embedding_projections must have shape (k,)"
         assert Q.device == embedding_projections.device, "Q and embedding_projections must be on the same device"
-        super().__init__(Q, k)
+        if Q.dim() == 0:
+            assert n is not None and n > 0, "n is required when Q is a scalar (constant matrix c * 11^T)"
+            Q = Q * torch.ones((n, n), dtype=Q.dtype, device=Q.device)
+        super().__init__(Q, k, n)
         self.embedding_projections = embedding_projections
         zero_x = torch.zeros(1, self.n, dtype=torch.long, device=self.Q.device)
         self.p_0 = self._projections(zero_x) if normalize else zero_x
@@ -183,11 +187,12 @@ def DR_submodular_decomposition(
     r"""Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H: 
     F = G - H, with G = F + H and 
     If embedding_matrix is not None:
-        H(x) = 0.5 * (p_x - p_0)^T Q (p_x - p_0), where Q = -max(hessian_upperbd, 0), p_x = embedding_projections[x],  
+        H(x) = 0.5 * (p_x - p_0)^T Q (p_x - p_0), where p_x = embedding_projections[x],  
     Otherwise:
-        H(x) = 0.5 * x^T Q x where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix 
-        or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar, 
-    where
+        H(x) = 0.5 * x^T Q x 
+    
+    where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar, 
+    and
         ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2]
     """
     if hessian_upperbd.max().item() <= 0: # alpha == 0 is useful to test if dca correctly reduces to its submin inner solver in this case
@@ -199,7 +204,7 @@ def DR_submodular_decomposition(
     if embedding_projections is None:
         H_batch = QuadraticFn(alpha, F_batch.k, F_batch.n)
     else:
-        H_batch = EmbeddingQuadraticFn(alpha, embedding_projections, F_batch.k)
+        H_batch = EmbeddingQuadraticFn(alpha, embedding_projections, F_batch.k, F_batch.n)
     G_batch = LinearCombinationLatticeFn([F_batch, H_batch], [1.0, 1.0])
     return G_batch, H_batch
    
