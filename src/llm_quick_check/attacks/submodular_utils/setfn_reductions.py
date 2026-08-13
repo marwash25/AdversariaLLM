@@ -423,7 +423,7 @@ class SetFnReduction():
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
 
-    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Optional[Tensor] = None, save_file: Optional[str] = None) -> Tuple[Tensor, int]:
+    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Optional[Tensor] = None, save_file: Optional[str] = None) -> Tuple[Tensor, int, float]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
         We want to compute:
@@ -442,11 +442,12 @@ class SetFnReduction():
         Returns:
             hessian_upperbd: symmetric (n, n) tensor Q
             flops: flop count for singleton and pair evaluations.
+            time_taken: elapsed computation time in seconds.
         """
         t_start = time.time()
         nb = self.n * self.b
-        if nb < 2:
-            return torch.zeros((self.n, self.n), device=self.device, dtype=torch.float32), 0
+        if nb < 2: # possible if n = 1 and k = 2 (so b = 1), no distinct pairs v1, v2 in this case, so Q = 0
+            return torch.zeros((self.n, self.n), device=self.device, dtype=torch.float32), 0, 0.0
         flops_singletons = 0
         if singleton_vals is None:
             singleton_vals, flops_singletons = self.eval_singletons()
