@@ -35,8 +35,10 @@ def subgradient_lovasz_extension(
             X.flatten(). If not provided, original order is used.
     Returns:
         subgradient: Tensor of shape (n, b)
-        Fvalues: Tensor of shape (n x b,)
-        x_chain: Tensor of shape (n x b, n)
+        Fvalues: Tensor of shape (n x b,) with Fvalues[i] = F_set(S^{i+1}) (F_set(S^0) not included), 
+        with S^i the set of first i elements in the sorted order of X.flatten().
+        x_chain: Tensor of shape (n x b, n) with x_chain[i] = x^{i+1} corresponding to S^{i+1}.
+        flops: flop count, int.
     """
     # TODO: for now assume x is a 2D tensor, not sure if there's a reason to vectorize it
     # if X is already flattened, we can pass (n, b) to reshape it to (n, b) here
@@ -489,16 +491,24 @@ class SetFnReduction():
         return hessian_upperbd, flops, time_taken
 
     def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None) -> float:
-        """Evaluate the Lovasz extension f_L of F_set at X: f_L(X) = <X, subgradient>
-        If X is of type long (assumed to be a binary matrix), return F_set(S) where S 
-        is the set of non-zeros indices in X to avoid numerical errors.
+        """Evaluate the Lovasz extension f_L of F_set at X (n x b tensor): f_L(X) = <X, subgradient>
+        If X is of type long (assumed to be a binary matrix), f_L(X) = F_set(S) where S 
+        is the set of non-zeros indices in X, return F_set(S) directly for better numerical accuracy.
         """
-        if X.dtype == torch.long and Fvalues is not None:
+        if X.dtype == torch.long:
             assert ((X == 0) | (X == 1)).all().item(), "X must be a binary matrix"
             nnz = int(X.sum().item())
-            # normally this should match F_set(S), but not for loss based on cross entropy 
-            # because of difference between batched and single logits
-            return Fvalues[nnz-1].item()
+            if nnz == 0:
+                return 0.0 # F is normalized, F_set(S) = 0 for S = empty set
+
+            if Fvalues is not None:
+                # normally this should match F_set(S), but not for loss based on cross entropy
+                # because of difference between batched and single logits
+                return Fvalues[nnz-1].item()
+
+            x = self.map.binary2ints(X.unsqueeze(0))
+            values, _ = self.lattice_fn(x)
+            return values[0].item()
 
         if subgradient is None:
             subgradient = self.subgradient_lovasz_extension(X)[0]
