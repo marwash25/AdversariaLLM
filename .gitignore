@@ -24,5 +24,4 @@ uv.lock
 *.pt
 src/llm_quick_check/attacks/dsm_cache/
 notes.md
-
 *.gsheet
