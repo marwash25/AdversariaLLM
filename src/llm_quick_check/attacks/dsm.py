@@ -274,7 +274,6 @@ class DSMAttack(Attack):
                     model, **find_w_kwargs, save_file=save_path, fingerprint=fingerprint
                 )
                 logging.info(f"Time taken to find w: {time_taken:.2f} seconds") # not added to attack's time in SingleAttackRunResult since this is only computed once for each model
-                return AttackResult(runs=[])  # TODO: remove when done testing
 
             if self._sorted_embedding_projections is None:
                 self._sorted_embedding_projections = _sorted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
