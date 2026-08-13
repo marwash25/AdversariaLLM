@@ -415,8 +415,8 @@ dsm:
         am:
           num_outer_steps: 100
           num_inner_steps: 5000
-          outer_tol: 1e-10
-          inner_tol: 1e-10
+          outer_tol: 1e-6
+          inner_tol: 1e-6
           log_every: 1
       solver_config: ${.solver_configs[${.solver}]}
     hessian_upperbd: "hessian_upperbd_at_zero" # this is -alpha in DSMin paper # sanity check that DCA basically reduces to PGM when hessian_upperbd = 0

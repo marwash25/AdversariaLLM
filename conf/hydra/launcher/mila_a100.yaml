@@ -13,7 +13,7 @@ max_num_timeout: 0
 additional_parameters: {}
 setup: []
 gres: gpu:a100l:4
-mem_gb: 32
-cpus_per_task: 6
+mem_gb: 248
+cpus_per_task: 16
 partition: short-unkillable #unkillable
 # array_parallelism: 24

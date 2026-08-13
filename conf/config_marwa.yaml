@@ -7,11 +7,11 @@ defaults:
   - _self_
 
 hydra:
-  mode: MULTIRUN
-  sweeper:
-    params:
-      attacks.dsm.dca_config.dual_cone_config.solver_config.sort_epsilon: 0.0,1e-4,1e-3,1e-2,1e-1,1.0
-      attacks.dsm.dca_config.dual_cone_config.solver_config.min_epsilon: 0.0,1e-4,1e-3,1e-2,1e-1,1.0
+  # mode: MULTIRUN
+  # sweeper:
+  #   params:
+  #     attacks.dsm.dca_config.dual_cone_config.solver_configs.pgm.sort_epsilon: 0.0,1e-4,1e-3,1e-2,1e-1,1.0
+  #     attacks.dsm.dca_config.dual_cone_config.solver_configs.pgm.min_epsilon: 0.0,1e-4,1e-3,1e-2,1e-1,1.0
   run:
     dir: ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
   job:
