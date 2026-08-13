@@ -184,10 +184,10 @@ def DR_submodular_decomposition(
     F = G - H, with G = F + H and 
     If embedding_matrix is not None:
         H(x) = 0.5 * (p_x - p_0)^T Q (p_x - p_0), where Q = -max(hessian_upperbd, 0), p_x = embedding_projections[x],  
-        and ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  hessian_upperbd[i1, i2] 
     Otherwise:
         H(x) = 0.5 * x^T Q x where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix 
-        or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar, and
+        or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar, 
+    where
         ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2]
     """
     if hessian_upperbd.max().item() <= 0: # alpha == 0 is useful to test if dca correctly reduces to its submin inner solver in this case

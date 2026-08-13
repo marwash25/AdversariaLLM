@@ -423,7 +423,7 @@ class SetFnReduction():
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
 
-    def hessian_upperbd_at_zero(self, normalized: bool = False, singleton_vals: Optional[Tensor] = None, save_file: Optional[str] = None) -> Tuple[Tensor, int]:
+    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Optional[Tensor] = None, save_file: Optional[str] = None) -> Tuple[Tensor, int]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
         We want to compute:
