@@ -149,7 +149,7 @@ def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: f
                 break
         
         time_start = time.time()
-        if iter < num_steps: # no need to update in last iteration
+        if iter < num_steps: # no update in last iteration
             if polyak or normalize:
                 subgradient_norm = subgradient.norm().item()
                 if subgradient_norm < 1e-12:

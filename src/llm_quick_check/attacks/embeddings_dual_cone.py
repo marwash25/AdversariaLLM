@@ -479,12 +479,12 @@ def _min_norm_point(
     x = A[:, 0].clone() 
     d = x.shape[0]
 
-    for major_iter in (pbar := trange(num_major_cycles, file=sys.stdout)): # major cycle
+    for major_iter in (pbar := trange(num_major_cycles+1, file=sys.stdout)): # major cycle (last iter is just for logging)
         min_gap, min_index = min_gaps(x) # LMO: argmin_i <u_i, x> 
         x_norm_squared = torch.dot(x, x)
 
         duality_gap = x_norm_squared - min_gap
-        if log_every > 0 and (major_iter % log_every == 0 or major_iter == num_major_cycles - 1):
+        if log_every > 0 and (major_iter % log_every == 0 or major_iter == num_major_cycles):
             pbar.set_postfix(
                 {"||x||_2": torch.sqrt(x_norm_squared).item(), "min gap": min_gap.item(), "relative duality gap": (duality_gap/x_norm_squared).item(), "|active indices|": n_active}
             )
@@ -505,44 +505,44 @@ def _min_norm_point(
             f"Duality gap: {x_norm_squared - min_gap:.6g}, ||x||_2: {torch.sqrt(x_norm_squared).item():.6g}, stopping.")
             break
 
-        active_indices.append(min_index)
-        n_active += 1
-        A = torch.cat([A, U[min_index].unsqueeze(1)], dim=1)
-        lbd = torch.cat([lbd, torch.zeros(1, dtype=dtype, device=device)])
+        if major_iter < num_major_cycles: # no update in last major cycle
+            active_indices.append(min_index)
+            n_active += 1
+            A = torch.cat([A, U[min_index].unsqueeze(1)], dim=1)
+            lbd = torch.cat([lbd, torch.zeros(1, dtype=dtype, device=device)])
 
-        #TODO: don't update x if last major cycle, to match the last obj and gap logged
-        minor_iter = -1
-        while True: # minor cycle (will run at most |active| times)
-            assert minor_iter < 2*d, f"MNP minor cycle ran more than 2*d = {2*d} times. It should run at most |active| <= d+1 = {d+1} times."
-            minor_iter += 1
-            alpha = _affine_min_norm_point(A)
-            if alpha is None:
-                logging.warning(f"MNP major cycle {major_iter}: Cholesky decomposition in affine minimizer failed, stopping.")
-                break 
-            if (alpha > 1e-12).all(): # using 1e-12 instead of 0 to avoid numerical issues
-                lbd = alpha
+            minor_iter = -1
+            while True: # minor cycle (will run at most |active| times)
+                assert minor_iter < 2*d, f"MNP minor cycle ran more than 2*d = {2*d} times. It should run at most |active| <= d+1 = {d+1} times."
+                minor_iter += 1
+                alpha = _affine_min_norm_point(A)
+                if alpha is None:
+                    logging.warning(f"MNP major cycle {major_iter}: Cholesky decomposition in affine minimizer failed, stopping.")
+                    break 
+                if (alpha > 1e-12).all(): # using 1e-12 instead of 0 to avoid numerical issues
+                    lbd = alpha
+                    x = A @ lbd
+                    break
+                # update x to the intersection of the boundary of conv(A) and the segment joining the affine solution y = A @ alpha and previous x. 
+                # move toward y until an atom weight lbd_i hits zero (leaves conv(A))
+                diff = alpha - lbd
+                blocking = diff < 0 # not empty since lbd > 1e-12 and there exists alpha_i < 1e-12
+                # theta = min(1, min_{alpha_i < lbd_i} lbd_i / (lbd_i - alpha_i))
+                # which is equivalent to taking min over alpha_i < 0 if any, otherwise theta = 1.
+                theta = min((-lbd[blocking] / diff[blocking]).min().item(), 1.0)
+                lbd = lbd + theta * diff
+                keep = lbd > 1e-12 
+                active_indices = [active_indices[i] for i in range(n_active) if keep[i]]
+                assert len(active_indices) < n_active, "At least one atom should be removed in each minor cycle."
+                n_active = len(active_indices)
+                A, lbd = A[:, keep], lbd[keep]
+                lbd = lbd / lbd.sum()
                 x = A @ lbd
-                break
-            # update x to the intersection of the boundary of conv(A) and the segment joining the affine solution y = A @ alpha and previous x. 
-            # move toward y until an atom weight lbd_i hits zero (leaves conv(A))
-            diff = alpha - lbd
-            blocking = diff < 0 # not empty since lbd > 1e-12 and there exists alpha_i < 1e-12
-            # theta = min(1, min_{alpha_i < lbd_i} lbd_i / (lbd_i - alpha_i))
-            # which is equivalent to taking min over alpha_i < 0 if any, otherwise theta = 1.
-            theta = min((-lbd[blocking] / diff[blocking]).min().item(), 1.0)
-            lbd = lbd + theta * diff
-            keep = lbd > 1e-12 
-            active_indices = [active_indices[i] for i in range(n_active) if keep[i]]
-            assert len(active_indices) < n_active, "At least one atom should be removed in each minor cycle."
-            n_active = len(active_indices)
-            A, lbd = A[:, keep], lbd[keep]
-            lbd = lbd / lbd.sum()
-            x = A @ lbd
 
-        if log_every > 0 and (major_iter % log_every == 0 or major_iter == num_major_cycles - 1):
-            pbar.set_postfix({"minor steps": minor_iter + 1})            
+            if log_every > 0 and (major_iter % log_every == 0 or major_iter == num_major_cycles - 1):
+                pbar.set_postfix({"minor steps": minor_iter + 1})            
 
-    return x, gap.item(), n_active, major_iter + 1
+    return x, duality_gap.item(), n_active, major_iter + 1
     
 
 def _solve_dual_cone_am(
