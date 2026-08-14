@@ -379,13 +379,13 @@ def _solve_dual_cone_pgm(
         else:
             raise ValueError(f"Not implemented yet")
 
-    for iter in (pbar := trange(num_steps, file=sys.stdout)):
+    for iter in (pbar := trange(num_steps + 1, file=sys.stdout)):
         obj_value, soft_obj_value, supergrad, perm, sorted_proj = _obj_and_supergrad(E, w)
         if obj_value > best_obj:
             best_obj, best_w, best_perm, best_sorted_proj = obj_value, w.clone(), perm, sorted_proj.clone()
 
         supergrad_norm = supergrad.norm()
-        if log_every > 0 and (iter % log_every == 0 or iter == num_steps - 1):
+        if log_every > 0 and (iter % log_every == 0 or iter == num_steps):
             pbar.set_postfix(
             {"obj value": obj_value, "soft obj value": soft_obj_value, "best obj value": best_obj, "||supergrad||": supergrad_norm.item()}
             )
@@ -393,14 +393,15 @@ def _solve_dual_cone_pgm(
             pbar.write(f"PGM dual cone: supergradient norm < 1e-12 at step {iter}, stopping.")
             break
 
-        eta = D / (L * sqrt(iter + 1))
-        w = w + eta * ((supergrad / supergrad_norm) if normalize else supergrad)
-        if norm == "2":
-            w /= w.norm()  
-        else:
-            w = torch.clamp(w, min=-1.0, max=1.0)
+        if iter < num_steps: # no update in last iteration
+            eta = D / (L * sqrt(iter + 1))
+            w = w + eta * ((supergrad / supergrad_norm) if normalize else supergrad)
+            if norm == "2":
+                w /= w.norm()
+            else:
+                w = torch.clamp(w, min=-1.0, max=1.0)
 
-    logging.info(f"PGM finished after {iter + 1} steps with best obj value {best_obj:.6g}.")
+    logging.info(f"PGM finished after {iter} steps with best obj value {best_obj:.6g}.")
     return best_w, best_obj, best_perm, best_sorted_proj
 
 
