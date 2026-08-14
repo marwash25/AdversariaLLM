@@ -1,6 +1,6 @@
 """Find a direction w in the dual cone of adjacent embedding differences."""
 from math import sqrt, inf
-import os
+from pathlib import Path
 import time
 import logging
 from typing import Tuple, Any, Literal
@@ -648,7 +648,7 @@ def _find_embeddings_dual_cone_w(
     solver: Literal["lp", "pgm", "am"] | None = None,
     solver_config: dict = {},
     seed: int = 0,
-    save_file: str | None = None,
+    save_file: str | Path | None = None,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor | None]:
     """Find a vector w in R^d in the interior of the dual cone of differences of
     adjacent embedding vectors after permuting them, i.e., 
@@ -743,10 +743,11 @@ def _find_embeddings_dual_cone_w(
         sorted_embedding_projections = (sorted_embedding_projections / t_opt).to(model.device)
 
     if save_file is not None:
-        os.makedirs(os.path.dirname(f"{save_file}"), exist_ok=True)
+        save_path = Path(save_file)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {"w_opt_scaled": w_opt, "t_opt": t_opt, "perm": perm, "inv_perm": inv_perm, "min_gap": min_gap, "lp_result": lp_result if solver == "lp" else None},
-            save_file,
+            save_path,
         ) # not storing premuted projections as it's cheaper to just recompute them
 
     return w_opt, perm, inv_perm, sorted_embedding_projections

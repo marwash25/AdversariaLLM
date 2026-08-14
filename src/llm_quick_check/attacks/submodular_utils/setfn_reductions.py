@@ -8,8 +8,8 @@ from typing import Callable, List, Optional, Tuple, Union
 from torch import Tensor
 from math import log2, ceil, inf
 import logging
+from pathlib import Path
 import time
-import os
 from .lattice_functions import CallableLatticeFunction, LatticeFunction, SequentialLatticeFunction
 
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
@@ -423,7 +423,7 @@ class SetFnReduction():
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
 
-    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Optional[Tensor] = None, save_file: Optional[str] = None) -> Tuple[Tensor, int, float]:
+    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Optional[Tensor] = None, save_file: str | Path | None = None) -> Tuple[Tensor, int, float]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
         We want to compute:
@@ -475,7 +475,8 @@ class SetFnReduction():
         flops = flops_singletons + flops_pairs
         time_taken = time.time() - t_start
         if save_file is not None:
-            os.makedirs(os.path.dirname(save_file), exist_ok=True)
+            save_path = Path(save_file)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(
                 {
                     "cross_vals": cross_vals.cpu(),
@@ -487,7 +488,7 @@ class SetFnReduction():
                     "flops": flops,
                     "time_taken": time_taken
                 },
-                save_file,
+                save_path,
             )
         return hessian_upperbd, flops, time_taken
 
