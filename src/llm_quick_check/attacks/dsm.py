@@ -334,7 +334,7 @@ class DSMAttack(Attack):
                 # TODO: we also need to recompute if anything else changes F, e.g., _embeddings_perm, optim_str_init, lm_reg_weight, normalized flag, 
                 # attack placement, etc. We can store in saved file and validate on load. For now, these are fixed.
                 save_path = Path(dca_config.dsm_cache_dir) / model_name_safe / f"hessian_upperbd_at_zero_idx{stable_idx}_seed{self.config.seed}.pt"
-                if save_path.exists():
+                if not dca_config.overwrite_cache and save_path.exists():
                     logging.info(f"Loading Hessian upper bound at zero from {save_path}")
                     cache = torch.load(save_path, map_location=device)
                     hessian_upperbd = cache["hessian_upperbd"]

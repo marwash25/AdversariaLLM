@@ -420,8 +420,8 @@ dsm:
           log_every: 1
       solver_config: ${.solver_configs[${.solver}]}
     hessian_upperbd: "hessian_upperbd_at_zero" # this is -alpha in DSMin paper # sanity check that DCA basically reduces to PGM when hessian_upperbd = 0
-    dsm_cache_dir: ${root_dir}/src/llm_quick_check/attacks/dsm_cache # place to store cached hessian upper bounds at zero 
-    overwrite_cache: True # for now used only for w cache, TODO: use it also for hessian upper bounds cache
+    dsm_cache_dir: ${root_dir}/src/llm_quick_check/attacks/dsm_cache # place to store cached embeddings_dual_cone_w and hessian_upperbd_at_zero
+    overwrite_cache: True # overwrite embeddings_dual_cone_w and hessian_upperbd_at_zero caches
     seed_w: 0
     outer_tol: 1e-5
     inner_gap_tol: 1e-4
