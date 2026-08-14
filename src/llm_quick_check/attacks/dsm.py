@@ -30,7 +30,7 @@ class DCAConfig:
     inner_gap_tol: float = 1e-4
     # num_outer_steps: will be set to num_steps / num_inner_steps 
     num_inner_steps: int = 1
-    inner_solver: str = "pgm"
+    inner_solver: Literal["pgm"] = "pgm"
     tie_break: Literal["random"] | None = None  
     # TODO: might want to also try using random tie breaking in PGM when used as inner solver, can potentially speed it up?
 
