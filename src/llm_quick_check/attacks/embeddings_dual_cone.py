@@ -486,8 +486,9 @@ def _min_norm_point(
 
         duality_gap = x_norm_squared - min_gap
         if log_every > 0 and (major_iter % log_every == 0 or major_iter == num_major_cycles):
+            relative_duality_gap = (0.0 if x_norm_squared.item() == 0.0 else (duality_gap / x_norm_squared).item())
             pbar.set_postfix(
-                {"||x||_2": torch.sqrt(x_norm_squared).item(), "min gap": min_gap.item(), "relative duality gap": (duality_gap/x_norm_squared).item(), "|active indices|": n_active}
+                {"||x||_2": torch.sqrt(x_norm_squared).item(), "min gap": min_gap.item(), "relative duality gap": relative_duality_gap, "|active indices|": n_active}
             )
 
         if duality_gap <= tol * x_norm_squared: 
