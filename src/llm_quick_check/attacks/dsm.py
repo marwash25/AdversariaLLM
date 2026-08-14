@@ -100,7 +100,7 @@ class DSMAttackStepResult(AttackStepResult):
     unfiltered_loss: float # discrete_obj_values + F_0
     continuous_loss: float
     duality_gaps: List[float] | float # inner_duality_gaps for DCA, duality_gap for PGM
-    # store these info for DCA, set to None for PGM. Later might want to store a separate result for each inner step of DCA.
+    # store the following info for DCA, set to None for PGM. Later might want to store a separate result for each inner step of DCA.
     inner_discrete_values: List[float] | None = None
     inner_discrete_values_filtered: List[float] | None = None
     inner_continuous_values: List[float] | None = None
@@ -134,7 +134,7 @@ def _masked_cross_entropy(
     sel_logits = shift_logits[:, logit_mask, :].contiguous()  # (batch_size, num_selected_tokens, vocab_size)
     sel_labels = shift_labels[:, logit_mask].contiguous()  # (batch_size, num_selected_tokens)
     flat_loss = torch.nn.functional.cross_entropy(
-        sel_logits.view(-1, vocab_size),  # flatten since cross-entropy expects class dimension to be 1
+        sel_logits.view(-1, vocab_size),  # flatten since cross-entropy expects class to be at index 1
         sel_labels.view(-1),
         reduction="none",
     )
@@ -144,7 +144,6 @@ def _masked_cross_entropy(
 
 @torch.no_grad()
 def compute_loss(
-    # logits: Tensor, #keeping this in case want to revert to logits input and do fwd pass elsewhere
     model: PreTrainedModel,
     attack_ids: Tensor,
     original_tokens: Tensor,
@@ -174,8 +173,6 @@ def compute_loss(
         Same scalar estimate for all since same sequence length.
 
     """
-    # TODO: if we revert to logits inputs, put back description logits: logits outputs for the full conversation. Tensor of shape (batch_size, seq_len, vocab_size)
-
     input_ids = original_tokens.unsqueeze(0).repeat(attack_ids.shape[0], 1)  # (batch_size, seq_len)
     input_ids[:, attack_mask] = attack_ids
     # TODO: add KV caching as done in GCG.
@@ -270,8 +267,8 @@ class DSMAttack(Attack):
             if self._sorted_embedding_projections is None:
                 self._sorted_embedding_projections = _sorted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
         else:
+            # TODO: test if PGM performs better with DCA's optimized embedding permutation.
             # define identity embedding permutation to be used by PGM
-            # TODO: it's interesting to check if PGM performs better with DCA's embedding permutation.
             self._embeddings_perm  = torch.arange(self.valid_vocab_size, device=model.device)
             self._embeddings_inv_perm = torch.arange(self.valid_vocab_size, device=model.device)
             
@@ -284,7 +281,7 @@ class DSMAttack(Attack):
         return AttackResult(runs=runs)
 
     def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask, stable_idx) -> SingleAttackRunResult:
-        #TODO: Compute the KV Cache for tokens that appear before the optimized tokens as done in GCG.
+        #TODO: Compute the KV Cache for tokens that appear before the optimized tokens to speed up fwd pass as done in GCG.
         #TODO: add early stopping if exact match found as done in GCG.
         #TODO: move things like building loss_fn, filter_fn, initialization to separate functions
         logging.info(f"Starting attack for conversation: {conversation}")
@@ -341,7 +338,7 @@ class DSMAttack(Attack):
 
         F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device, filter_fn, filter_zero)
        
-        # TODO: have a common clean interface for optimizers 
+        # TODO: Standardize optimizer interface 
         if self.config.optimizer == "pgm":
             # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
             _, _, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, \
