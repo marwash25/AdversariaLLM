@@ -11,7 +11,7 @@ from typing import List, Tuple, Callable, Literal
 import torch
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from ..dataset import PromptDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
@@ -22,23 +22,56 @@ from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_pr
 
 
 @dataclass
+class DualConePGMConfig:
+    """Config for the dual-cone PGM solver."""
+    sort_epsilon: float = 1.0  # when > 0, run on CPU (fast_soft_sort is CPU-only)
+    min_epsilon: float = 1.0
+    sort_reg: Literal["l2", "kl"] | None = "kl"
+    normalize: bool = True
+    num_steps: int = 100000
+    log_every: int = 100
+
+
+@dataclass
+class DualConeAMConfig:
+    """Config for the dual-cone alternating-maximization solver."""
+    num_outer_steps: int = 100
+    num_inner_steps: int = 5000
+    outer_tol: float = 1e-6
+    inner_tol: float = 1e-6
+    log_every: int = 1
+
+
+@dataclass
+class DualConeConfig:
+    """Config for finding w in the dual cone of embedding differences."""
+    init_w: Literal["random", "pca"] = "pca"
+    solver: Literal["lp", "pgm", "am"] | None = "am"
+    # Kept as dict because it is unpacked as kwargs into the dual-cone solvers.
+    solver_config: dict = field(default_factory=lambda: asdict(DualConeAMConfig()))
+
+
+@dataclass
 class DCAConfig:
     """Config for the DCA optimizer."""
-    hessian_upperbd: float | Literal["hessian_upperbd_at_zero"] = "hessian_upperbd_at_zero" # runs PGM in that case
+    dual_cone_config: DualConeConfig = field(default_factory=DualConeConfig)
+    hessian_upperbd: float | Literal["hessian_upperbd_at_zero"] = "hessian_upperbd_at_zero" 
     dsm_cache_dir: str = str(Path(__file__).resolve().parent / "dsm_cache")
+    overwrite_cache: bool = True 
+    seed_w: int = 0
     outer_tol: float = 1e-5
     inner_gap_tol: float = 1e-4
-    # num_outer_steps: will be set to num_steps / num_inner_steps 
-    num_inner_steps: int = 1
+    num_inner_steps: int = 500
     inner_solver: Literal["pgm"] = "pgm"
-    tie_break: Literal["random"] | None = None  
+    tie_break: Literal["random"] | None = None
     # TODO: might want to also try using random tie breaking in PGM when used as inner solver, can potentially speed it up?
+
 
 @dataclass
 class PGMConfig:
     """Config for the PGM optimizer."""
-    L: float | Literal["singletons", "normalize", "polyak"] = "polyak"  
-    tie_break: Literal["random"] | None = None 
+    L: float | Literal["singletons", "normalize", "polyak"] = "normalize"
+    tie_break: Literal["random"] | None = None
 
 
 @dataclass
@@ -54,9 +87,9 @@ class DSMConfig:
     placement: str = "suffix"
     optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
     num_steps: int = 1
-    lm_reg_weight: float = 0.0  # weight on -log p(x|q) when using reg_ce
+    lm_reg_weight: float = 0.0  
+    optimizer: Literal["pgm", "dca"] = "pgm" 
     pgm_config: PGMConfig = field(default_factory=PGMConfig)
-    optimizer: Literal["pgm", "dca"] = "pgm"  # "pgm" or "dca"
     dca_config: DCAConfig = field(default_factory=DCAConfig)
     allow_non_ascii: bool = False
     allow_special: bool = False

@@ -396,14 +396,14 @@ dsm:
   # "x x x x x x x x x x x x x x x x x x x x" # all tested tokenizers convert this to exactly 20 tokens
   num_steps: 1000
   lm_reg_weight: 0.0
-  pgm_config:
-    L: "polyak" # "singletons" or "normalize" or a float value
-    tie_break: null # "random" or null
   optimizer: "dca" # "pgm" or "dca"
+  pgm_config:
+    L: "normalize" # "singletons" or "normalize" or "polyak" or float
+    tie_break: null # "random" or null
   dca_config:
     dual_cone_config:
-      init_w: "pca"
-      solver: "am" # "pgm" or "am"
+      init_w: "pca" # "pca" or "random"
+      solver: "am" # "pgm" or "am" or "lp" or null
       solver_configs:
         pgm:
           sort_epsilon: 1.0 # when sort_epsilon > 0, run on CPU if just solving dual cone problem since fast_soft_sort works on CPU only
