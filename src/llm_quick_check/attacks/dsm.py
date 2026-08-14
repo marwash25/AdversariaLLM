@@ -25,7 +25,7 @@ from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_pr
 class DCAConfig:
     """Config for the DCA optimizer."""
     hessian_upperbd: float | Literal["hessian_upperbd_at_zero"] = "hessian_upperbd_at_zero" # runs PGM in that case
-    dsm_cache_dir: str | None = None
+    dsm_cache_dir: str = str(Path(__file__).resolve().parent / "dsm_cache")
     outer_tol: float = 1e-5
     inner_gap_tol: float = 1e-4
     # num_outer_steps: will be set to num_steps / num_inner_steps 
