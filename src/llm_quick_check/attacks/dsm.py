@@ -62,8 +62,6 @@ class DCAConfig:
     num_inner_steps: int = 500
     inner_solver: Literal["pgm"] = "pgm"
     tie_break: Literal["random"] | None = None
-    # TODO: might want to also try using random tie breaking in PGM when used as inner solver, can potentially speed it up?
-
 
 @dataclass
 class PGMConfig:
@@ -75,8 +73,6 @@ class PGMConfig:
 @dataclass
 class DSMConfig:
     """Config for the DSM attack."""
-    # not strictly necessary, but good for type checking config, clarity,
-    # and providing defaults if not specified in attacks.yaml
     name: str = "dsm"
     type: str = "discrete"
     version: str = ""
@@ -98,7 +94,7 @@ class DSMAttackStepResult(AttackStepResult):
     unfiltered_loss: float # discrete_obj_values + F_0
     continuous_loss: float
     duality_gaps: List[float] | float # inner_duality_gaps for DCA, duality_gap for PGM
-    # store the following info for DCA, set to None for PGM. Later might want to store a separate result for each inner step of DCA.
+    # store the following info for DCA, set to None for PGM. 
     inner_discrete_values: List[float] | None = None
     inner_discrete_values_filtered: List[float] | None = None
     inner_continuous_values: List[float] | None = None
@@ -132,7 +128,7 @@ def _masked_cross_entropy(
     sel_logits = shift_logits[:, logit_mask, :].contiguous()  # (batch_size, num_selected_tokens, vocab_size)
     sel_labels = shift_labels[:, logit_mask].contiguous()  # (batch_size, num_selected_tokens)
     flat_loss = torch.nn.functional.cross_entropy(
-        sel_logits.view(-1, vocab_size),  # flatten since cross-entropy expects class to be at index 1
+        sel_logits.view(-1, vocab_size),  
         sel_labels.view(-1),
         reduction="none",
     )
@@ -161,7 +157,6 @@ def compute_loss(
             (seq_len,)
         target_mask: bool mask of shape (seq_len,); True on tokens to apply
             loss to (target tokens shifted by one to the left).
-        #TODO: maybe simpler to not shift target_mask earlier
         attack_mask: bool mask of shape (seq_len,); True on attack tokens.
         lm_reg_weight: Multiplier for the language-model regularizer.
 
@@ -173,7 +168,6 @@ def compute_loss(
     """
     input_ids = original_tokens.unsqueeze(0).repeat(attack_ids.shape[0], 1)  # (batch_size, seq_len)
     input_ids[:, attack_mask] = attack_ids
-    # TODO: add KV caching as done in GCG.
     # use float32 for logits to avoid issues in optimization with lower precision
     # logits device can differ from masks when using several GPUs, move it to same device
     logits = model(input_ids).logits.to(dtype=torch.float32)
@@ -191,13 +185,6 @@ def compute_loss(
         atk_logit_mask = attack_mask[1:]  # shift to the left
         reg_loss = _masked_cross_entropy(shift_logits, shift_labels, atk_logit_mask)
         loss += lm_reg_weight * reg_loss
-
-
-    # TODO: If we add KV caching, maybe add these lines as done in GCG compute_candidates_loss to free memory?
-    # Should check if this is actually helpful.
-    # del outputs
-    # gc.collect()
-    # torch.cuda.empty_cache()
 
     return loss, torch.tensor(flops, device=loss.device, dtype=loss.dtype).expand_as(loss)
 
@@ -308,7 +295,6 @@ class DSMAttack(Attack):
     ) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens to speed up fwd pass as done in GCG.
         #TODO: add early stopping if exact match found as done in GCG.
-        #TODO: move things like building loss_fn, filter_fn, initialization to separate functions
         logging.info(f"Starting attack for conversation: {conversation}")
         t_start = time.time()
         # --- Optimize Attack ---
@@ -319,7 +305,7 @@ class DSMAttack(Attack):
         target_mask = target_mask.to(device)
         n_optim_tokens = int(attack_mask.sum().item())
         # Initialize with the token ids of optim_str_init
-        # TODO: experiment with different initial solutions (see notes.md)
+        # TODO: experiment with different initial solutions 
         optim_ids_init = tokens[attack_mask].detach().clone().unsqueeze(0) # (1, n_optim_tokens)
         reduced_ids_init = self.valid_token_id_to_reduced_idx[optim_ids_init]
         invalid_optim_ids = optim_ids_init[reduced_ids_init == -1]
@@ -384,8 +370,6 @@ class DSMAttack(Attack):
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
                 # F_set_batch depends on the following params in addition to model/tokenizer and conversation
                 fingerprint = make_fingerprint(
-                    # I'm assuming that attack_mask, target_mask and non-attack tokens will not change for a given conversation,
-                    # placement and model/tokenizer. Might be safer to include them in fingerprint.
                     {
                         "lm_reg_weight": self.config.lm_reg_weight,
                         "placement": self.config.placement,
@@ -423,7 +407,6 @@ class DSMAttack(Attack):
                 logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}")
 
 
-            # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
             # decompose F into the difference of two DR-submodular functions G and H
@@ -436,7 +419,7 @@ class DSMAttack(Attack):
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
 
             # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = - H((k-1) 1) where k = valid_vocab_size
-            # TODO: add flops_L_H, flops_L_F, flops_hessian_bd, flops_F_singletons to flops count of first step?
+            # TODO: add flops_L_H, flops_L_F, flops_hessian_bd, flops_F_singletons to flops count of first step
             H_max, flops_L_H= H_batch(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
             L_H = -H_max.item()
             L_G = L_F + L_H
@@ -481,7 +464,6 @@ class DSMAttack(Attack):
             f"Optimization loop completed. Best valid attack (step {valid_idx[best_sol_idx_filtered]}): {optim_strings[best_sol_idx_filtered][:80]!s}. "
             f"Optimization time: {time.time() - t_start:.2f}s."
         )
-        # logging.info(f"Optimization loop completed. Best attack: {optim_strings[-1][:80]} with loss: {losses[-1]}." # for now we're not saving best loss
 
         # --- Generate Completions ---
         # get tokens of attack conversations with optimized attack strings and empty assistant content
@@ -513,13 +495,12 @@ class DSMAttack(Attack):
             model,
             tokenizer,
             token_list=prompt_token_list,  # Generate from the prompt tokens
-            # embedding_list=embedding_list, # Or generate from the prompt embeddings
             max_new_tokens=self.config.generation_config.max_new_tokens,
             temperature=self.config.generation_config.temperature,
             top_p=self.config.generation_config.top_p,
             top_k=self.config.generation_config.top_k,
             num_return_sequences=self.config.generation_config.num_return_sequences,
-            initial_batch_size=len(optim_strings),  # change to size of the full dataset if we switch to batched optimization
+            initial_batch_size=len(optim_strings), 
         )
         t_end_gen = time.time()
         gen_time_total = t_end_gen - t_start_gen
@@ -607,9 +588,6 @@ class DSMAttack(Attack):
         )
 
 
-    # copied from PGDDiscreteAttack. Added assert for single-turn conversation and removed padding.
-    # if we're not doing batched optimization, no point preparing full dataset, can call _prepare_single_conversation
-    # inside _attack_single_conversation. For now let's keep this in case we switch to batched optimization.
     def _prepare_dataset(
         self, dataset, tokenizer
     ) -> Tuple[List[Tensor], List[Tensor], List[Tensor], List[Conversation], List[float]]:
@@ -637,7 +615,6 @@ class DSMAttack(Attack):
             pre_toks, attack_prefix_toks, prompt_toks, attack_suffix_toks, post_toks, target_toks = parts
             tokens = torch.cat(parts)
 
-            # TODO: do we really need to use masks in our case? maybe better to store ids as in GCG?
             # build attack_mask (tokens to optimize) and target_mask (tokens to apply loss to)
             attack_mask = torch.zeros_like(tokens, dtype=torch.bool)
             offset = pre_toks.size(0)
@@ -648,8 +625,7 @@ class DSMAttack(Attack):
             target_mask = torch.zeros_like(tokens, dtype=torch.bool)
             target_start_idx = len(tokens) - target_toks.size(0)
             target_mask[target_start_idx:] = True
-            # TODO: maybe better to shift when computing loss and not here for clarity?
-            # unless we need this shifted version elsewhere?
+ 
             target_mask = target_mask.roll(-1, 0)  # shift to the left
             target_mask[-1] = False
 
@@ -658,14 +634,8 @@ class DSMAttack(Attack):
             all_target_masks.append(target_mask)
             preparation_times.append(time.time() - preparation_start)
 
-        # remove padding for now since we're not doing batched optimization.
-        # TODO: add padding back if we switch to batched optimization, but not here inside attack_batch and just sort here
-        # we also will need an attention_mask in the forward pass as done in PGD Discrete in that case.
-        # all_tokens = pad_sequence(all_tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
-        # all_target_masks = pad_sequence(all_target_masks, batch_first=True)
-        # all_attack_masks = pad_sequence(all_attack_masks, batch_first=True)
-
         return all_tokens, all_attack_masks, all_target_masks, all_conversations, preparation_times
+
 
     def _prepare_single_conversation(
         self, conversation, tokenizer, optim_str, generation=False
