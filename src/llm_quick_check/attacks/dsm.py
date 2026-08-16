@@ -460,9 +460,6 @@ class DSMAttack(Attack):
         if not valid_idx:
             raise ValueError("Every optimization step has no valid filtered solution.")
         discrete_sols_filtered = discrete_sols_filtered[valid_idx]
-        # discrete_obj_values_filtered = [discrete_obj_values_filtered[i] for i in valid_idx]
-        # times = [times[i] for i in valid_idx]
-        # flops = [flops[i] for i in valid_idx]
 
         best_sol_idx_filtered = min(range(len(valid_idx)), key=lambda i: discrete_obj_values_filtered[valid_idx[i]]) 
         flops[valid_idx[0]] += F_0_flops
@@ -528,8 +525,9 @@ class DSMAttack(Attack):
         t_end = time.time() 
 
         # --- Assemble Results ---
-        # model_completions, model_input, and model_input_tokens have only valid steps aligned with optim_strings
-        # all other results lists have results for all steps including invalid ones
+        # model_completions, model_input, and model_input_tokens fields are aligned with optim_strings (only valid steps kept)
+        # other fields are looked up in full-length lists via valid_idx (those lists still include invalid steps)
+        
         steps_results = []
         for i in range(len(optim_strings)):
             step_result = DSMAttackStepResult(
