@@ -17,6 +17,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, SingleAttackRunResult
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix, with_max_batchsize
 from ..types import Conversation
+from .cache_utils import fingerprint_hash8, load_torch_cache_if_fingerprint_matches, make_fingerprint
 from .submodular_utils import EneSubmodularSetFnReduction, EneReductionMap, DR_submodular_decomposition, SetFnReduction, pgm_lovasz, dca_dsm
 from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_projections
 
@@ -243,26 +244,40 @@ class DSMAttack(Attack):
         # --- Find w to use in DR-submodular decomposition ---
         if self.config.optimizer == "dca":
             model_name_safe = model.name_or_path.replace("/", "-")
-            save_path = Path(self.config.dca_config.dsm_cache_dir) / model_name_safe / f"embeddings_dual_cone_w_seed{self.config.dca_config.seed_w}.pt"
-            
-            if not self.config.dca_config.overwrite_cache and save_path.exists():
-                    logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_path}")
-                    cache = torch.load(save_path,  map_location=model.device, weights_only=False)
-                    self._embeddings_dual_cone_w = cache["w_opt_scaled"]
-                    self._embeddings_perm = cache["perm"]
-                    self._embeddings_inv_perm = cache["inv_perm"]
-                    self._sorted_embedding_projections = None # will be computed below
+            dca_config = self.config.dca_config
+            dual_cone_config = dca_config.dual_cone_config
+            self.dca_hessian_cache_dir = Path(dca_config.dsm_cache_dir) / model_name_safe / dataset.config.name
+            # w depends on the following params in addition to model embeddings
+            find_w_kwargs = {
+                "valid_token_ids": self.valid_token_ids,
+                "init_w": dual_cone_config.init_w,
+                "solver": dual_cone_config.solver,
+                "solver_config": dual_cone_config.solver_config,
+                "seed": dca_config.seed_w,
+            }
+            fingerprint = make_fingerprint(find_w_kwargs)
+            fp_hash = fingerprint_hash8(fingerprint)
+            save_path = Path(dca_config.dsm_cache_dir) / model_name_safe / f"embeddings_dual_cone_w_seedw{dca_config.seed_w}_fp{fp_hash}.pt"
+
+            cache = None
+            if not dca_config.overwrite_cache:
+                cache = load_torch_cache_if_fingerprint_matches(save_path, fingerprint, map_location=model.device)
+
+            if cache is not None:
+                logging.info(f"Loading w found in the dual cone of forward differences of embedding vectors from {save_path}")
+                self._embeddings_dual_cone_w = cache["w_opt_scaled"]
+                self._embeddings_perm = cache["perm"]
+                self._embeddings_inv_perm = cache["inv_perm"]
+                self._sorted_embedding_projections = None  # will be computed below
             else:
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_path}")
-                dual_cone_config = self.config.dca_config.dual_cone_config
                 time_start = time.time()
                 self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._sorted_embedding_projections = _find_embeddings_dual_cone_w(
-                    model, self.valid_token_ids, init_w = dual_cone_config.init_w, solver=dual_cone_config.solver, solver_config=dual_cone_config.solver_config, 
-                    seed=self.config.dca_config.seed_w, save_file=save_path
+                    model, **find_w_kwargs, save_file=save_path, fingerprint=fingerprint
                 )
                 time_end = time.time()
                 logging.info(f"Time taken to find w: {time_end - time_start:.2f} seconds")
-                return AttackResult(runs=[]) #TODO: remove when done testing
+                return AttackResult(runs=[])  # TODO: remove when done testing
 
             if self._sorted_embedding_projections is None:
                 self._sorted_embedding_projections = _sorted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
@@ -359,21 +374,38 @@ class DSMAttack(Attack):
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 logging.info(f"DR-submodular decomposition using Hessian upper bound at zero") 
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons() 
-                model_name_safe = model.name_or_path.replace("/", "-")
-                # F changes with permutation of embeddings, which is fixed per seed, so we need to recompute hessian_upperbd for each seed
-                # TODO: we also need to recompute if anything else changes F, e.g., _embeddings_perm, optim_str_init, lm_reg_weight, normalized flag, 
-                # attack placement, etc. We can store in saved file and validate on load. For now, these are fixed.
-                save_path = Path(dca_config.dsm_cache_dir) / model_name_safe / f"hessian_upperbd_at_zero_idx{stable_idx}_seed{self.config.seed}.pt"
-                if not dca_config.overwrite_cache and save_path.exists():
+                # F_set_batch depends on the following params in addition to model/tokenizer and conversation
+                fingerprint = make_fingerprint(
+                    # I'm assuming that attack_mask, target_mask and non-attack tokens will not change for a given conversation, 
+                    # placement and model/tokenizer. Might be safer to include them in fingerprint.
+                    {
+                        "lm_reg_weight": self.config.lm_reg_weight,
+                        "placement": self.config.placement,
+                        "n_optim_tokens": n_optim_tokens,
+                        "valid_token_ids": self.valid_token_ids,
+                        "embeddings_perm": self._embeddings_perm,
+                    }
+                )
+                fp_hash = fingerprint_hash8(fingerprint)
+                save_path = self.dca_hessian_cache_dir / f"hessian_upperbd_at_zero_idx{stable_idx}_fp{fp_hash}.pt"
+
+                cache = None
+                if not dca_config.overwrite_cache:
+                    cache = load_torch_cache_if_fingerprint_matches(save_path, fingerprint, map_location=device)
+
+                if cache is not None:
                     logging.info(f"Loading Hessian upper bound at zero from {save_path}")
-                    cache = torch.load(save_path, map_location=device)
                     hessian_upperbd = cache["hessian_upperbd"]
                     flops_hessian_bd = cache["flops"]
                     time_hessian_bd = cache["time_taken"]
                 else:
                     logging.info(f"Computing Hessian upper bound at zero and saving to {save_path}")
-                    hessian_upperbd, flops_hessian_bd, time_taken = F_set_batch.hessian_upperbd_at_zero(singleton_vals=F_singleton_vals, save_file=save_path)
-                    logging.info(f"Time taken to compute Hessian upper bound at zero: {time_taken}")
+                    hessian_upperbd, flops_hessian_bd, time_hessian_bd = F_set_batch.hessian_upperbd_at_zero(
+                        singleton_vals=F_singleton_vals,
+                        save_file=save_path,
+                        fingerprint=fingerprint,
+                    )
+                    logging.info(f"Time taken to compute Hessian upper bound at zero: {time_hessian_bd}")
 
                 L_F, flops_L_F = F_set_batch.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
             else:

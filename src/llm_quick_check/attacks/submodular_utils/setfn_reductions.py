@@ -4,7 +4,7 @@ and related utilities.
 """
 from abc import ABC, abstractmethod
 import torch
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union, Any, Mapping
 from torch import Tensor
 from math import log2, ceil, inf
 import logging
@@ -423,7 +423,7 @@ class SetFnReduction():
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
 
-    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Optional[Tensor] = None, save_file: str | Path | None = None) -> Tuple[Tensor, int, float]:
+    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Optional[Tensor] = None, save_file: str | Path | None = None, fingerprint: Optional[Mapping[str, Any]] = None) -> Tuple[Tensor, int, float]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
         We want to compute:
@@ -486,7 +486,8 @@ class SetFnReduction():
                     "n": self.n,
                     "b": self.b,
                     "flops": flops,
-                    "time_taken": time_taken
+                    "time_taken": time_taken, 
+                    "fingerprint": fingerprint
                 },
                 save_path,
             )

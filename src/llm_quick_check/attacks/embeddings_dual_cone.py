@@ -3,7 +3,7 @@ from math import sqrt, inf
 from pathlib import Path
 import time
 import logging
-from typing import Tuple, Any, Literal
+from typing import Tuple, Any, Literal, Mapping, Optional
 from tqdm import trange
 import sys
 import numpy as np
@@ -651,6 +651,7 @@ def _find_embeddings_dual_cone_w(
     solver_config: dict = {},
     seed: int = 0,
     save_file: str | Path | None = None,
+    fingerprint: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor | None]:
     """Find a vector w in R^d in the interior of the dual cone of differences of
     adjacent embedding vectors after permuting them, i.e., 
@@ -684,7 +685,7 @@ def _find_embeddings_dual_cone_w(
 
         max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t
 
-    If save_file is set, cache results to that path.
+    If save_file is set, cache results and fingerprint to that path.
     """
 
     embedding_matrix = _valid_embeddings(model, valid_token_ids)
@@ -748,8 +749,16 @@ def _find_embeddings_dual_cone_w(
         save_path = Path(save_file)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
-            {"w_opt_scaled": w_opt, "t_opt": t_opt, "perm": perm, "inv_perm": inv_perm, "min_gap": min_gap, "lp_result": lp_result if solver == "lp" else None},
+            {
+                "w_opt_scaled": w_opt,
+                "t_opt": t_opt,
+                "perm": perm,
+                "inv_perm": inv_perm,
+                "min_gap": min_gap,
+                "lp_result": lp_result if solver == "lp" else None,
+                "fingerprint": fingerprint,
+            },
             save_path,
-        ) # not storing premuted projections as it's cheaper to just recompute them
+        ) # not storing permuted projections as it's cheaper to just recompute them
 
     return w_opt, perm, inv_perm, sorted_embedding_projections
