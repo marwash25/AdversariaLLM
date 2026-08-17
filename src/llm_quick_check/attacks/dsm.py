@@ -655,24 +655,29 @@ class DSMAttack(Attack):
                 {"role": "user", "content": conversation[0]["content"] + optim_str},
                 {"role": "assistant", "content": assistant_content},
             ]
+        # TODO: For now only suffix placement is supported when filter_ids is True. 
         elif self.config.placement == "prefix":
             attack_conversation = [
                 {"role": "user", "content": optim_str + conversation[0]["content"]},
                 {"role": "assistant", "content": assistant_content},
             ]
         elif self.config.placement == "prefix_suffix":
+            # TODO: _reconstruct_attack_conversation in PGDDiscreteAttack doesn't support this placement
+            # and we can't use the attack_conversation form below, we need separate optim_str_prefix and optim_str_suffix.
             raise ValueError(f"Prefix_suffix placement not supported yet for DSM attack.")
             # attack_conversation = [
-            #     {"role": "user", "content": optim_str_prefix + conversation[0]["content"] + optim_str_suffix},
+            #     {"role": "user", "content": optim_str + conversation[0]["content"] + optim_str},
             #     {"role": "assistant", "content": assistant_content},
             # ]
         elif self.config.placement == "prompt":
             attack_conversation = copy.deepcopy(conversation)
             if generation:
-                # matches _reconstruct_attack_conversation in PGDDiscreteAttack
-                # TODO: not sure why they re-add original prompt, ask authors
-                attack_conversation[0]["content"] = optim_str + attack_conversation[0]["content"]
+                # TODO: In _reconstruct_attack_conversation in PGDDiscreteAttack they re-add original 
+                # prompt to user content in attack_conversation, and keep original user content in 
+                # conversation, which I think is incorrect. Ask authors about this.
+                attack_conversation[0]["content"] = optim_str # + attack_conversation[0]["content"]
                 attack_conversation[1]["content"] = ""
+                conversation[0]["content"] = "" 
             else:
                 # matches _prepare_single_conversation in PGDDiscreteAttack
                 # initial optim_str is not used here
