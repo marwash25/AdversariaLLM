@@ -1,5 +1,4 @@
 """Difference of submodular minimization (DSM) attack"""
-import copy
 from math import isfinite
 from pathlib import Path
 import time
@@ -78,7 +77,7 @@ class DSMConfig:
     version: str = ""
     generation_config: GenerationConfig = field(default_factory=GenerationConfig)
     seed: int = 0
-    placement: str = "suffix"
+    placement: Literal["suffix"] = "suffix"
     optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
     num_steps: int = 1
     lm_reg_weight: float = 0.0
@@ -335,17 +334,13 @@ class DSMAttack(Attack):
         # define filter function
         filter_fn = None
         filter_zero = False
-        if self.config.filter_ids:
-            if self.config.placement == "suffix":
-                filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[self._embeddings_perm[attack_ids]].cpu()]], False)
-                # check if zero_attack_ids is reachable
-                retained_idx = filter_fn(zero_attack_ids)
-                if not retained_idx:
-                    filter_zero = True
-                    logging.warning("Zero attack ids is not reachable from any input string. Will not round to zero during optimization.")
-            else:
-                # TODO: adapt filter function for other placements
-                raise ValueError(f"Filtering for {self.config.placement} placement not supported yet.")
+        if self.config.filter_ids: 
+            filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[self._embeddings_perm[attack_ids]].cpu()]], False)
+            # check if zero_attack_ids is reachable
+            retained_idx = filter_fn(zero_attack_ids)
+            if not retained_idx:
+                filter_zero = True
+                logging.warning("Zero attack ids is not reachable from any input string. Will not round to zero during optimization.")
 
         F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device, filter_fn, filter_zero)
 
@@ -643,43 +638,15 @@ class DSMAttack(Attack):
         tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor],
         Conversation,
     ]:
-        # insert optimizable string optim_str in user content according to placement and get tokens of conversation split into six parts
+        # Append the optimizable string optim_str to user content and split the tokenized conversation into six parts.
         assistant_content = conversation[1]["content"] if not generation else ""
         if self.config.placement == "suffix":
             attack_conversation = [
                 {"role": "user", "content": conversation[0]["content"] + optim_str},
                 {"role": "assistant", "content": assistant_content},
             ]
-        # TODO: For now only suffix placement is supported when filter_ids is True.
-        elif self.config.placement == "prefix":
-            attack_conversation = [
-                {"role": "user", "content": optim_str + conversation[0]["content"]},
-                {"role": "assistant", "content": assistant_content},
-            ]
-        elif self.config.placement == "prefix_suffix":
-            # TODO: _reconstruct_attack_conversation in PGDDiscreteAttack doesn't support this placement
-            # and we can't use the attack_conversation form below, we need separate optim_str_prefix and optim_str_suffix.
-            raise ValueError("Prefix_suffix placement not supported yet for DSM attack.")
-            # attack_conversation = [
-            #     {"role": "user", "content": optim_str + conversation[0]["content"] + optim_str},
-            #     {"role": "assistant", "content": assistant_content},
-            # ]
-        elif self.config.placement == "prompt":
-            attack_conversation = copy.deepcopy(conversation)
-            if generation:
-                # TODO: In _reconstruct_attack_conversation in PGDDiscreteAttack they re-add original
-                # prompt to user content in attack_conversation, and keep original user content in
-                # conversation, which I think is incorrect. Ask authors about this.
-                attack_conversation[0]["content"] = optim_str # + attack_conversation[0]["content"]
-                attack_conversation[1]["content"] = ""
-                conversation[0]["content"] = ""
-            else:
-                # matches _prepare_single_conversation in PGDDiscreteAttack
-                # initial optim_str is not used here
-                conversation = copy.deepcopy(conversation)
-                conversation[0]["content"] = ""  # the whole prompt is optimized
         else:
-            raise ValueError(f"Invalid placement: {self.config.placement}")
+            raise ValueError("DSM currently only supports suffix placement.")
         parts = prepare_conversation(tokenizer, conversation, attack_conversation)[0]  # assumes single-turn conversation
 
         return parts, attack_conversation
