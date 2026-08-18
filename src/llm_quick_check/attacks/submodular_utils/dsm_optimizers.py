@@ -20,7 +20,7 @@ from .lattice_functions import make_zero_lattice_fn, LinearCombinationLatticeFn
 # TODO: might be good to actually define a PGM class with step method to have standardized interface for different optimization methods
 # for now let's implement it as a standalone function similar to Matlab code
 # Note that this is will be mostly used for non-submodular functions. In DCA, we will use MNP as inner solver.
-# TODO: if used for submodular functions, add ground set trimming and set L to upper bound sqrt(sum_i F_set(i)^2) if not provided
+# TODO: if used for submodular functions, add ground set trimming 
 def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: float | str, tie_break: Literal["random"] = None, gap_tol: Optional[float] = None):
     """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a set function reduction F_set: 2^([n] x [b]) -> R

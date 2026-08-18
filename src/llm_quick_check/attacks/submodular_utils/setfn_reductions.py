@@ -333,7 +333,7 @@ class SetFnReduction():
 
         x_neighbors = x.unsqueeze(0).expand(num_neighbors, self.n).clone()
 
-        if num_neighbors == 0: # never happens with our current reductions. Can happen if weights doesn't include 1 
+        if num_neighbors == 0: # never happens with current reductions. Can happen if weights doesn't include 1 
             return inf, x, inf, x, 0
 
         if num_add > 0:

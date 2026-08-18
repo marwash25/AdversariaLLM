@@ -219,7 +219,6 @@ def compute_loss_with_max_batchsize(
     compute_loss_fn = lambda attack_ids: compute_loss(model, attack_ids, original_tokens, target_mask, attack_mask, lm_reg_weight)
     if batch_size > 2**11: # adjust threshold as needed
         loss, flops = with_max_batchsize(compute_loss_fn, attack_ids)
-        logging.info(f"flops output of with_max_batchsize has shape: {flops.shape}")
     else:
         loss, flops = compute_loss_fn(attack_ids)
     return loss, flops.sum().item()
