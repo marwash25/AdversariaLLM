@@ -36,12 +36,13 @@ def _max_min_gap_coordinate_permutation(embedding_matrix: Tensor) -> Tuple[Tenso
 
     return best_perm, max_min_gap
 
-def _projections_min_gap(E: Tensor, w: Tensor) -> Tuple[float, Tensor, Tensor]:
+def _projections_min_gap(E: Tensor, w: Tensor) -> Tuple[float, Tensor, Tensor, Tensor]:
     proj = E @ w
     perm = proj.argsort(stable=True)
     sorted_proj = proj[perm]
-    min_gap = sorted_proj.diff().min().item()
-    return min_gap, perm, sorted_proj
+    gaps = sorted_proj.diff()
+    min_gap = gaps.min().item()
+    return min_gap, perm, sorted_proj, gaps
 
 def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Tensor]:
     """
@@ -66,7 +67,7 @@ def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Te
     k = embedding_matrix.shape[0]
     embeddings_mean = embedding_matrix.mean(dim=0, keepdim=True) # shape (1, d)
     # w = embeddings_mean[0].T / embeddings_mean.norm() # shape (d,)
-    # min_gap, perm, sorted_proj = _projections_min_gap(embedding_matrix, w)
+    # min_gap, perm, sorted_proj, _ = _projections_min_gap(embedding_matrix, w)
     # logging.info(f"Min gap achieved with embeddings mean unit vector w: {min_gap:.6g}") # 2.78673e-11 for Llama-3.2-1B-Instruct
 
     E_centered = embedding_matrix - embeddings_mean
@@ -77,7 +78,7 @@ def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Te
     w = eigenvectors[:, -1]
     w = w / w.norm()
 
-    min_gap, perm, sorted_proj = _projections_min_gap(embedding_matrix, w)
+    min_gap, perm, sorted_proj, _ = _projections_min_gap(embedding_matrix, w)
     logging.info(f"Min gap achieved with PCA unit vector w: {min_gap:.6g}")
 
     return w, perm, min_gap, sorted_proj
@@ -97,7 +98,7 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor, num_samples: int = 1)
     for i in range(num_samples):
         w = torch.randn(d, dtype=torch.float64, device=embedding_matrix.device)
         w = w / w.norm()
-        min_gap, perm, sorted_proj = _projections_min_gap(embedding_matrix, w)
+        min_gap, perm, sorted_proj, _ = _projections_min_gap(embedding_matrix, w)
         if min_gap > best_min_gap:
             best_min_gap = min_gap
             best_w = w
@@ -202,7 +203,7 @@ def _embeddings_min_dist(E: Tensor, block_size: int = 2048) -> float:
     )
 
     w = (E[min_i] - E[min_j]) / min_dist
-    min_gap, perm, sorted_proj = _projections_min_gap(E, w)
+    min_gap, perm, sorted_proj, _ = _projections_min_gap(E, w)
     logging.info(f"Min gap achieved with min dist unit vector w: {min_gap:.6g}") # min_gap = 0 for Llama-3.2-1B-Instruct
 
     return min_dist
@@ -280,16 +281,10 @@ def _solve_dual_cone_pgm(
 
     def _obj_and_supergrad(E: Tensor, w: Tensor) -> Tuple[float, float, Tensor, Tensor, Tensor]:
         # evaluate objective and a supergradient at w
-        # Match float64 precision used in _randomly_permute_embeddings
-        # TODO: use _projections_min_gap instead of rewriting things here (can make the function output gaps or min_indices)
         if hard_sort and hard_min:
-            proj = E @ w  
-            perm = proj.argsort(stable=True)
-            sorted_proj = proj[perm]
-            gaps = sorted_proj.diff()  
-            min_gap = gaps.min()
+            min_gap, perm, sorted_proj, gaps = _projections_min_gap(E, w)
             min_indices = (gaps == min_gap).nonzero(as_tuple=True)[0]
-            obj_value = min_gap.item()
+            obj_value = min_gap
             supergrad = (E[perm[min_indices + 1]] - E[perm[min_indices]]).mean(dim=0)
             soft_obj_value = obj_value
         else:
@@ -428,7 +423,7 @@ def _min_norm_point(
     """
     device, dtype = U.device, U.dtype
 
-    def min_gaps(x: Tensor) -> Tuple[Tensor, Tensor]: # not using _projections_min_gap because we don't need to sort
+    def min_gaps(x: Tensor) -> Tuple[Tensor, Tensor]: 
         gaps = U @ x 
         min_gap, min_index = gaps.min(dim=0)
         return min_gap, min_index.item()
@@ -562,7 +557,7 @@ def _solve_dual_cone_am(
     prev_obj_value = -inf
 
     for iter in (pbar := trange(num_outer_steps, file=sys.stdout)):
-        obj_value, perm, sorted_proj = _projections_min_gap(E, w)
+        obj_value, perm, sorted_proj, _ = _projections_min_gap(E, w)
         if iter == 0:
             assert obj_value > 0, "w_init should have non-zero minimum gap."
 
