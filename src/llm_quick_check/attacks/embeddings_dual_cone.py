@@ -183,7 +183,11 @@ def _embeddings_pairwise_ext_dist(
 
 
 def _embeddings_min_dist(E: Tensor, block_size: int = 2048) -> float:
-    """Compute min_{i < j} ||E_i - E_j||_2 over embedding rows and log it."""
+    """Compute min_{i < j} ||E_i - E_j||_2 over embedding rows and log it.
+    
+    This gives an upper bound on the maximum achievable minimum gap between 
+    embedding projections on any unit vector w.
+    """
     t0 = time.time()
     min_dist, min_i, min_j = _embeddings_pairwise_ext_dist(E, mode="min", block_size=block_size)
     elapsed = time.time() - t0
@@ -222,7 +226,7 @@ def _embeddings_max_dist(E: Tensor, block_size: int = 2048) -> float:
     return max_dist
 
 
-# TODO: refactor to have one common PGM solver used both here and in pgm_lovasz in dsm_optimizers.py
+# TODO: refactor into one common PGM solver used both here and in pgm_lovasz in dsm_optimizers.py
 def _solve_dual_cone_pgm(
     E: Tensor,
     w_init: Tensor,
@@ -388,7 +392,8 @@ def _affine_min_norm_point(A: Tensor) -> Tensor:
         
     return v / v.sum()
 
-# TODO: when we want to use this for DCA inner problem, add option to restart from a point in conv(A)
+# TODO: refactor into a general MNP solver to be used both here and as a DCA inner problem solver
+# add option to restart from a point in conv(A) in general version (needed in DCA)
 def _min_norm_point(
     U: Tensor,
     w_init: Tensor | None = None,
@@ -620,8 +625,8 @@ def _find_embeddings_dual_cone_w(
         then sort the rows in non-decreasing order of their projections onto w.
 
     If solver == "pgm":
-        Find unit vector w and permutation sigma that maximize the min gap between adjacent embedding vectors 
-        permuted by sigma, i.e.,
+        Find unit vector w and permutation sigma that maximize the min gap between the projections of 
+        adjacent rows of E onto w, i.e.,
 
         \max_{\| w\| <= 1} \max_{\sigma} \min_{i \in [k-1]} w^\top(E_{\sigma_{i+1}} - E_{\sigma_i})
         = \max_{\| w\| <= 1} \min_{i \in [k-1]} (B ~\mathrm{sort}(E w))_i, 
