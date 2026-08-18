@@ -142,8 +142,6 @@ class SequentialLatticeFunction(LatticeFunction):
     Overrides _eval_chain to use add and remove methods. Default add and remove methods are provided.
     Override these methods and _set_state for more efficient updates.
     """
-    #TODO: refactor this class to have a state object that contains current_x and current_val which gets updated
-    # when _set_state is called.
 
     def __init__(self, k: int, n: int):
         super().__init__(k, n)
@@ -238,7 +236,6 @@ class SequentialLatticeFunction(LatticeFunction):
         """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n,
         then all x - weights[j] e_i in V^n."""
         # set state to x
-        # TODO: add option to provide F(x) so we don't need to recompute it. Can just call self._set_state(x, F_val) in this case.
         F_val, flops = self.eval_update(x)
         Fvalues = torch.empty((x_neighbors.shape[0],), dtype=F_val.dtype, device=x.device)
         b = weights.shape[0]
