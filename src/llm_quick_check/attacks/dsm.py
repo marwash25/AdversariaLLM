@@ -23,11 +23,6 @@ from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_pr
 
 
 @dataclass
-class DualConeLPConfig:
-    """Config for the dual-cone LP solver."""
-    time_limit: float = 3600
-
-@dataclass
 class DualConePGMConfig:
     """Config for the dual-cone PGM solver."""
     sort_epsilon: float = 1.0  # when > 0, run on CPU (fast_soft_sort is CPU-only)
@@ -52,7 +47,7 @@ class DualConeAMConfig:
 class DualConeConfig:
     """Config for finding w in the dual cone of embedding differences."""
     init_w: Literal["random", "pca"] = "pca"
-    solver: Literal["lp", "pgm", "am"] | None = "am"
+    solver: Literal["pgm", "am"] | None = "am"
     # Kept as dict because it is unpacked as kwargs into the dual-cone solvers.
     solver_config: dict = field(default_factory=lambda: asdict(DualConeAMConfig()))
 

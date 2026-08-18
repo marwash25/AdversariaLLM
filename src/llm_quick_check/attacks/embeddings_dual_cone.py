@@ -6,9 +6,7 @@ import logging
 from typing import Tuple, Any, Literal, Mapping, Optional
 from tqdm import trange
 import sys
-import numpy as np
 import torch
-from scipy.optimize import linprog
 from torch import Tensor
 from fast_soft_sort.pytorch_ops import soft_sort
 from transformers import PreTrainedModel
@@ -222,50 +220,6 @@ def _embeddings_max_dist(E: Tensor, block_size: int = 2048) -> float:
     )
 
     return max_dist
-
-
-def _solve_dual_cone_lp(
-    neg_U: Tensor,
-    time_limit: float = 300 #3600, 
-) -> Tuple[Tensor, float, Any]:
-    """Solve the LP problem:
-       max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t.
-    """
-    #TODO: maybe we should use float64 here too?
-    dtype = np.float64
-    n_ineq, d = neg_U.shape
-    # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
-    # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0,
-    # bounds = [-1, 1]^d x [0, None].
-    A_ub = np.empty((n_ineq, d + 1), dtype=dtype)
-    A_ub[:, :d] = neg_U
-    A_ub[:, d] = 1.0
-
-    c = np.zeros(d + 1, dtype=dtype)
-    c[-1] = -1.0
-    b_ub = np.zeros(n_ineq, dtype=dtype)
-    bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
-
-    logging.info(
-        f"Solving LP with {d + 1} variables and {n_ineq} constraints"
-    )
-    # set disp to False when done debugging
-    options={"disp": True, "time_limit": time_limit} # time_limit is in seconds
-    lp_result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs",options=options)  
-    if not lp_result.success:
-        raise RuntimeError(f"LP failed: {lp_result.message}")
-
-    t_opt = float(-lp_result.fun)
-    
-    w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float64 if dtype == np.float64 else torch.float32)
-
-    lambdas = -lp_result.ineqlin.marginals  # dual variables / Lagrange multipliers
-    if not (lambdas >= 0.0).all():
-        logging.warning("Lambdas are not non-negative.")
-    if abs(lambdas.sum() - 1.0) > 1e-12:
-        logging.warning(f"Lambdas do not sum to 1.")
-
-    return w_opt, t_opt, lp_result
 
 
 # TODO: refactor to have one common PGM solver used both here and in pgm_lovasz in dsm_optimizers.py
@@ -649,7 +603,7 @@ def _find_embeddings_dual_cone_w(
     model: PreTrainedModel,
     valid_token_ids: Tensor,
     init_w: Literal["random", "pca"] = "random",
-    solver: Literal["lp", "pgm", "am"] | None = None,
+    solver: Literal["pgm", "am"] | None = None,
     solver_config: dict = {},
     seed: int = 0,
     save_file: str | Path | None = None,
@@ -679,14 +633,6 @@ def _find_embeddings_dual_cone_w(
         Solve the same problem as "pgm" (l2 norm only) by alternating maximization
         initialized with init_w.
 
-    If solver == "lp":
-        Find w that maximizes the min gap between adjacent embedding vectors sorted based on random w.
-        Let U be the matrix with rows {E_{\sigma_{i+1}} - E_{\sigma_i} : i in V}, where \sigma
-        is the fixed permutation corresponding to the random w.
-        Solve the LP problem:
-
-        max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t
-
     If save_file is set, cache results and fingerprint to that path.
     """
 
@@ -708,21 +654,7 @@ def _find_embeddings_dual_cone_w(
     else:
         raise ValueError(f"Invalid init_w: {init_w}")
 
-    if solver == "lp":
-        # TODO: We can remove this solver. _min_norm_point solves same problem (but only for l2-norm) faster. 
-        # LP took > 3hrs to solve after permuting embeddings according to random w. For now, keep it to verify _min_norm_point
-        # and if we want to use another norm. 
-        # linprog doesn't accept initial solution, so we can't warm start with init_w 
-
-        # linprog solver requires numpy inputs on CPU
-        embedding_matrix = embedding_matrix[perm].to("cpu").numpy()
-        neg_U = (embedding_matrix[:-1] - embedding_matrix[1:])
-        del embedding_matrix
-        w_opt, t_opt, lp_result = _solve_dual_cone_lp(neg_U)
-        #TODO: update perm to the sorted order of projections onto w_opt (since this is optimal perm for fixed w_opt)
-        sorted_embedding_projections = None # no need to compute here they will be computed in dsm 
-
-    elif solver == "pgm":
+    if solver == "pgm":
         if solver_config["sort_epsilon"] > 0: # fast_soft_sort requires inputs to be on CPU (will convert to numpy internally)
             embedding_matrix = embedding_matrix.to("cpu")
             w = w.to("cpu")
@@ -744,7 +676,7 @@ def _find_embeddings_dual_cone_w(
     perm = perm.to(model.device)
     inv_perm = torch.empty_like(perm)
     inv_perm[perm] = torch.arange(k, device=model.device)
-    # normalize by t_opt. We can recover t_opt from 1/||w_opt||_\infty if solver=="lp" or 
+    # normalize by t_opt. We can recover t_opt from 1/||w_opt||_\infty if solver=="pgm" and norm=="inf" or 
     # 1/||w_opt||_2 otherwise
     w_opt = (w_opt / t_opt).to(model.device)
     if sorted_embedding_projections is not None:  
@@ -760,7 +692,6 @@ def _find_embeddings_dual_cone_w(
                 "perm": perm,
                 "inv_perm": inv_perm,
                 "min_gap": min_gap,
-                "lp_result": lp_result if solver == "lp" else None,
                 "fingerprint": fingerprint,
             },
             save_path,

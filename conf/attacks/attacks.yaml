@@ -403,7 +403,7 @@ dsm:
   dca_config:
     dual_cone_config:
       init_w: "pca" # "pca" or "random"
-      solver: "am" # "pgm" or "am" or "lp" or null
+      solver: "am" # "pgm" or "am" or null
       solver_configs:
         pgm:
           sort_epsilon: 1.0 # when sort_epsilon > 0, run on CPU if just solving dual cone problem since fast_soft_sort works on CPU only
@@ -418,8 +418,6 @@ dsm:
           outer_tol: 1e-6
           inner_tol: 1e-6
           log_every: 1
-        lp:
-          time_limit: 300 #3600 (1hr)
       solver_config: ${.solver_configs[${.solver}]} # set to {} if solver is null
     hessian_upperbd: "hessian_upperbd_at_zero" # this is -alpha in DSMin paper # sanity check that DCA basically reduces to PGM when hessian_upperbd = 0
     dsm_cache_dir: ${root_dir}/src/llm_quick_check/attacks/dsm_cache # place to store cached embeddings_dual_cone_w and hessian_upperbd_at_zero
