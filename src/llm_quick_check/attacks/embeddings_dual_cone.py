@@ -89,8 +89,6 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor, num_samples: int = 1)
     Sample max_retries random unit vectors w. Return one with largest minimum gap between adjacent embedding projections on w, 
     and the corresponding permutation that sorts the projections in non-decreasing order.
     """
-    # we need to use float64 precision, otherwise couldn't find valid w even after 100 attempts 
-    # for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors 
     if embedding_matrix.dtype != torch.float64:
         logging.warning("Converting E to float64 precision")
         embedding_matrix = embedding_matrix.double()
@@ -228,34 +226,38 @@ def _embeddings_max_dist(E: Tensor, block_size: int = 2048) -> float:
 
 def _solve_dual_cone_lp(
     neg_U: Tensor,
+    time_limit: float = 300 #3600, 
 ) -> Tuple[Tensor, float, Any]:
     """Solve the LP problem:
        max_{t >= 0, w in [-1, 1]^d} t  subject to  U w >= t.
     """
     #TODO: maybe we should use float64 here too?
+    dtype = np.float64
     n_ineq, d = neg_U.shape
     # Solve LP with linprog: min c^T x subject to A_ub x <= b_ub, x in bounds.
     # x = [w_0, ..., w_{d-1}, t], c = [0, ..., 0, -1], A_ub = [-U, 1], b_ub = 0,
     # bounds = [-1, 1]^d x [0, None].
-    A_ub = np.empty((n_ineq, d + 1), dtype=np.float32)
+    A_ub = np.empty((n_ineq, d + 1), dtype=dtype)
     A_ub[:, :d] = neg_U
     A_ub[:, d] = 1.0
 
-    c = np.zeros(d + 1, dtype=np.float32)
+    c = np.zeros(d + 1, dtype=dtype)
     c[-1] = -1.0
-    b_ub = np.zeros(n_ineq, dtype=np.float32)
+    b_ub = np.zeros(n_ineq, dtype=dtype)
     bounds = [(-1.0, 1.0)] * d + [(0.0, None)]
 
     logging.info(
         f"Solving LP with {d + 1} variables and {n_ineq} constraints"
     )
-    lp_result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs", options={"disp": True})  # set disp to False when done debugging
+    # set disp to False when done debugging
+    options={"disp": True, "time_limit": time_limit} # time_limit is in seconds
+    lp_result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs",options=options)  
     if not lp_result.success:
         raise RuntimeError(f"LP failed: {lp_result.message}")
 
     t_opt = float(-lp_result.fun)
     
-    w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float32)
+    w_opt = torch.tensor(lp_result.x[:-1], dtype=torch.float64 if dtype == np.float64 else torch.float32)
 
     lambdas = -lp_result.ineqlin.marginals  # dual variables / Lagrange multipliers
     if not (lambdas >= 0.0).all():
@@ -707,8 +709,11 @@ def _find_embeddings_dual_cone_w(
         raise ValueError(f"Invalid init_w: {init_w}")
 
     if solver == "lp":
-        # LP took > 3hrs to solve after permuting embeddings according to random w.
-        # TODO: try initializing lp solver with random w. Also, try to solve problem with SVM instead of LP
+        # TODO: We can remove this solver. _min_norm_point solves same problem (but only for l2-norm) faster. 
+        # LP took > 3hrs to solve after permuting embeddings according to random w. For now, keep it to verify _min_norm_point
+        # and if we want to use another norm. 
+        # linprog doesn't accept initial solution, so we can't warm start with init_w 
+
         # linprog solver requires numpy inputs on CPU
         embedding_matrix = embedding_matrix[perm].to("cpu").numpy()
         neg_U = (embedding_matrix[:-1] - embedding_matrix[1:])

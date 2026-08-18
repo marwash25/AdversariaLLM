@@ -23,6 +23,11 @@ from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_pr
 
 
 @dataclass
+class DualConeLPConfig:
+    """Config for the dual-cone LP solver."""
+    time_limit: float = 3600
+
+@dataclass
 class DualConePGMConfig:
     """Config for the dual-cone PGM solver."""
     sort_epsilon: float = 1.0  # when > 0, run on CPU (fast_soft_sort is CPU-only)
