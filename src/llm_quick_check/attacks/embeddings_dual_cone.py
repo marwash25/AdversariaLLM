@@ -15,12 +15,12 @@ from transformers import PreTrainedModel
 
 
 #TODO: remove if not used
-def _find_min_gap_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
+def _max_min_gap_coordinate_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
     r"""Sort rows of embedding matrix based on their jth coordinate in non-decreasing order, 
-    for j \in [d] with the largest minimal gap between adjacent rows, i.e.,  
+    for j \in [d] with the largest minimum gap between adjacent rows, i.e.,  
     \max_{j \in [d]} \min_{i \in [k-1]} (E_{\sigma^j_{i+1}, j} - E_{\sigma^j_i, j}), 
     where \sigma^j is such that E_{\sigma_k, j} \geq \ldots \geq E_{\sigma_0, j}.
-    Return reordered embedding matrix and the corresponding permutation.
+    Return the corresponding permutation and minimum gap.
     """
     k, d = embedding_matrix.shape
     max_min_gap = -float("inf")
@@ -689,7 +689,7 @@ def _find_embeddings_dual_cone_w(
     """
 
     embedding_matrix = _valid_embeddings(model, valid_token_ids)
-    # float64 precision needed in _randomly_permute_embeddings and likely needed in _solve_dual_cone_pgm too (TODO: check)
+    # float64 precision needed since min gap can be very small (e.g., 1e-12)
     embedding_matrix = embedding_matrix.double()
     k = embedding_matrix.shape[0]
     # TODO:remove when done debugging
