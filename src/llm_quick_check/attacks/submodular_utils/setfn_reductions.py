@@ -10,7 +10,7 @@ from math import log2, ceil, inf
 import logging
 from pathlib import Path
 import time
-from .lattice_functions import CallableLatticeFunction, LatticeFunction, SequentialLatticeFunction
+from .lattice_functions import CallableLatticeFunction, LatticeFunction
 
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
 # specific to the reduction.

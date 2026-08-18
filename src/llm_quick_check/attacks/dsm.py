@@ -2,15 +2,12 @@
 import copy
 from math import isfinite
 from pathlib import Path
-import sys
 import time
 import logging
-import gc
 import matplotlib.pyplot as plt
-from typing import List, Tuple, Callable, Literal
+from typing import List, Tuple, Literal
 import torch
 from torch import Tensor
-from torch.nn.utils.rnn import pad_sequence
 from dataclasses import asdict, dataclass, field
 from ..dataset import PromptDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -18,7 +15,7 @@ from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, Si
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix, with_max_batchsize
 from ..types import Conversation
 from .cache_utils import fingerprint_hash8, load_torch_cache_if_fingerprint_matches, make_fingerprint
-from .submodular_utils import EneSubmodularSetFnReduction, EneReductionMap, DR_submodular_decomposition, SetFnReduction, pgm_lovasz, dca_dsm
+from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decomposition, SetFnReduction, pgm_lovasz, dca_dsm
 from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_projections
 
 

@@ -2,9 +2,9 @@
 Difference of submodular minimization optimizers
 """
 import torch
-from typing import Callable, List, Optional, Tuple, Literal
+from typing import List, Optional, Literal
 from torch import Tensor
-from math import log2, inf, sqrt
+from math import inf, sqrt
 from tqdm import trange
 import sys
 import logging

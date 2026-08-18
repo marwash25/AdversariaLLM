@@ -3,10 +3,9 @@ Lattice function base classes
 """
 
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Tuple, List, Union
+from typing import Callable, Optional, Tuple, List
 import torch
 from torch import Tensor
-import logging
 
 # TODO: for now we only use flops for forward passes. Create a class for GCG loss that tracks flops count 
 # in its state, and remove flops everywhere else
