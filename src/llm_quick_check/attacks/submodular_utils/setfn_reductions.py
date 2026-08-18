@@ -40,8 +40,6 @@ def subgradient_lovasz_extension(
         x_chain: Tensor of shape (n x b, n) with x_chain[i] = x^{i+1} corresponding to S^{i+1}.
         flops: flop count, int.
     """
-    # TODO: for now assume x is a 2D tensor, not sure if there's a reason to vectorize it
-    # if X is already flattened, we can pass (n, b) to reshape it to (n, b) here
     assert X.dim() == 2, "X must be a 2D tensor"
     n, b = X.shape
     assert weights.dim() == 1 and weights.shape[0] == b, "weights must be a 1D tensor of shape (b,)"
@@ -86,7 +84,7 @@ class SetToLatticeMap(ABC):
 
     def __init__(
         self,
-        k: int, # TODO: k is not used in this class, we can let subclasses handle this
+        k: int, 
         n: int,
         device: torch.device,
     ):
@@ -118,7 +116,7 @@ class SetToLatticeMap(ABC):
             Each X[i] = binary_matrices[i] represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
         """
 
-    def ints2set(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:  # TODO: not used anywhere yet, remove if not needed
+    def ints2set(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:  
         """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b] represented
         by paired rows and cols indices, i.e., S = {(rows[j], cols[j]) for j in range(rows.shape[0])}.
 
@@ -140,7 +138,7 @@ class SetToLatticeMap(ABC):
             cols_list.append(cols[batch_mask].long())
         return rows_list, cols_list
 
-    def set2ints(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tensor:  # used in F_set_batch
+    def set2ints(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tensor:  
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by paired rows and cols indices.
 
@@ -157,91 +155,21 @@ class SetToLatticeMap(ABC):
             rows_list[i].device == self.device and cols_list[i].device == self.device
             for i in range(len(rows_list))
         ), "all rows_list and cols_list must be on the same device"
-        # TODO: Replace per-set lists with a sparse COO representation (batch_idx, rows, cols) for efficiency (see version below).
-        # For now will keep this simpler implementation.
+        # TODO: Replace per-set lists with a sparse COO representation (batch_idx, rows, cols) for efficiency.
 
         x = torch.zeros((len(rows_list), self.n), dtype=torch.long, device=self.device)
         for i, (rows, cols) in enumerate(zip(rows_list, cols_list)):
             assert rows.shape[0] == cols.shape[0], "rows and cols must have the same length"
             if cols.numel() > 0:
                 # duplicated pairs would silently add weights[col] twice below, giving the wrong M(S^i).
-                # TODO: modify input to be sets of indices in [n x b] to avoid converting to flat indices when checking for uniqueness?
                 assert (rows * self.b + cols).unique().numel() == rows.numel(), (
                     f"(row, col) pairs must be unique, got duplicates in set {i}"
                 )
                 x[i].index_add_(0, rows, self.weights[cols])  # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
-    # TODO: potentially move to these versions of ints2set and set2ints for efficiency.
-    # Issue: zero vectors which correspond to empty sets are not included in the output!
-    # This can be fixed by making batch_size not optional in set2ints_batched.
-    # def ints2set_batched(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-    #     """Same map as older ``ints2set``, but returns a single sparse COO layout instead of per-batch lists.
 
-    #     Args:
-    #         x: Tensor of type long and shape (batch_size, n). Each row is an integer vector in V^n.
-
-    #     Returns:
-    #         batch_idx, rows, cols: 1D long tensors of equal length ``total`` such that for each t,
-    #         (rows[t], cols[t]) lies in S^{batch_idx[t]} and M(S^i) = x[i] for all i. Batches with no
-    #         elements do not appear (no rows for that ``i`` in ``batch_idx``).
-    #     """
-    #     assert x.dim() == 2 and x.shape[1] == self.n, "x must have shape (batch_size, n)"
-    #     assert x.dtype == torch.long, "x must be of type long"
-    #     assert x.device == self.device, "x must be on the same device as self.device"
-    #     mask = self.ints2binary(x)
-    #     batch_idx, rows, cols = mask.nonzero(as_tuple=True)
-    #     return batch_idx.long(), rows.long(), cols.long()
-
-    # def set2ints_batched(
-    #     self,
-    #     batch_idx: Tensor,
-    #     rows: Tensor,
-    #     cols: Tensor,
-    #     batch_size: int | None = None,
-    # ) -> Tensor:
-    #     """Same map as ``set2ints``, but sets are given as one COO stream (``batch_idx``, ``rows``, ``cols``).
-
-    #     For each index t, element (rows[t], cols[t]) belongs to S^{batch_idx[t]}. Multiple entries with the
-    #     same ``batch_idx`` and ``rows`` (different ``cols``) accumulate like ``index_add_``.
-
-    #     Args:
-    #         batch_idx: 1D long tensor, batch index in [0, batch_size) for each set element.
-    #         rows: 1D long tensor in [0, n).
-    #         cols: 1D long tensor in [0, b).
-    #         batch_size: Number of batches (rows of the output ``x``). If ``None``, inferred as
-    #             ``int(batch_idx.max().item()) + 1`` when there is at least one element; if there are no
-    #             elements, must be provided (use ``0`` for an empty output of shape ``(0, n)``).
-
-    #     Returns:
-    #         x: Tensor of shape (batch_size, n) with the same semantics as ``set2ints``.
-    #     """
-    #     assert batch_idx.dim() == 1 and rows.dim() == 1 and cols.dim() == 1
-    #     assert batch_idx.shape == rows.shape == cols.shape, "batch_idx, rows, cols must have the same shape"
-    #     assert batch_idx.device == rows.device == cols.device == self.device
-    #     assert batch_idx.dtype == rows.dtype == cols.dtype == torch.long
-
-    #     total = batch_idx.numel()
-    #     if total == 0:
-    #         if batch_size is None:
-    #             return torch.zeros((0, self.n), dtype=torch.long, device=self.device)
-    #         return torch.zeros((batch_size, self.n), dtype=torch.long, device=self.device)
-
-    #     if batch_size is None:
-    #         batch_size = int(batch_idx.max().item()) + 1
-    #     assert batch_size > 0, "batch_size must be positive when there is at least one set element"
-    #     assert (batch_idx >= 0).all() and (batch_idx < batch_size).all(), (
-    #         "batch_idx must be in [0, batch_size)"
-    #     )
-    #     assert (rows >= 0).all() and (rows < self.n).all(), "rows must be in [0, n)"
-    #     assert (cols >= 0).all() and (cols < self.b).all(), "cols must be in [0, b)"
-
-    #     flat_idx = batch_idx * self.n + rows
-    #     x_flat = torch.zeros(batch_size * self.n, dtype=torch.long, device=self.device)
-    #     x_flat.scatter_add_(0, flat_idx, self.weights[cols])
-    #     return x_flat.view(batch_size, self.n)
-
-    def binary2ints(self, X: Tensor) -> Tensor: # TODO: not used anywhere yet, remove if not needed.
+    def binary2ints(self, X: Tensor) -> Tensor: 
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by binary matrices X in {0,1}^n x b:
 
@@ -295,7 +223,7 @@ class SetFnReduction():
     def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
         return self.set_fn(rows_list, cols_list)
 
-    def set_fn(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:  # used in singleton_L_upperbd
+    def set_fn(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:  
         """Batched version of F_set: 2^([n] x [b]) -> R: Compute F_set(S^i) for the set
         S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
         """
@@ -377,8 +305,6 @@ class SetFnReduction():
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Tensor | None = None):
         return subgradient_lovasz_extension(self.lattice_fn, self.map.weights, X, tie_breaker)
 
-    # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class
-    # or as separate functions?
 
     def eval_singletons(self) -> Tuple[Tensor, int]:
         """Evaluate F_set({(i, j)}) for all (i, j) in [n] x [b] in one batched call"""
@@ -390,7 +316,7 @@ class SetFnReduction():
         singleton_vals, flops = self.set_fn(rows_list, cols_list)
         return singleton_vals, flops
 
-    def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> Tuple[float, int]:  # used in pgm and DCA
+    def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> Tuple[float, int]:  
         """Compute sqrt(sum_{(i, j) in [n] x [b]} F_set({(i, j)})^2)
 
            If F_set is submodular, this is a valid bound on the Lipschitz constant
@@ -474,9 +400,9 @@ class SetFnReduction():
         hessian_upperbd = hessian_upperbd_flat.view(self.n, self.n)
         hessian_upperbd = torch.maximum(hessian_upperbd, hessian_upperbd.mT) # copy values of Q_{i1, i2} to Q_{i2, i1}
 
-        hessian_max = hessian_upperbd_flat.max().item()
-        logging.info(f"cross_vals_max: {cross_vals.max().item()}") # 0.51898 for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors
-        logging.info(f"hessian_max: {hessian_max}") # becomes 0.07127 with normalized=True
+        hessian_max = hessian_upperbd_flat.max().item() 
+        logging.info(f"cross_vals_max: {cross_vals.max().item()}") 
+        logging.info(f"hessian_max: {hessian_max}") 
 
         flops = flops_singletons + flops_pairs
         time_taken = time.time() - t_start
@@ -605,9 +531,9 @@ class EneReductionMap(SetToLatticeMap):
         weights = torch.cat((one, base_weights, base_weights[self.v_max_non_zero_bits]))
         return weights
 
-    # TODO: Maybe it's better to actually store the map from integers in V to sets, instead of recomputing it every time.
-    def ints2binary(self, x: Tensor) -> Tensor:  # used to convert x_init in V^n to X in {0,1}^n x b in pgm and DCA and in ints2set
-        """Decompose each entry in x into a sum of a subset of the weights a_i's:
+
+    def ints2binary(self, x: Tensor) -> Tensor: 
+        """Decompose each entry in x into a sum of a subset of the weights a_i's: 
         x[i,j] = sum_{c in [b]} X[i, j, c] * a_c, where X is a bool tensor of shape (batch_size, n, b).
         """
         assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
@@ -689,7 +615,7 @@ class BinaryRepresentationMap(SetToLatticeMap):
 
     def get_weights(self) -> Tensor:
         b = ceil(log2(self.k))
-        weights = 1 << torch.arange(b, dtype=torch.long, device=self.device)  # more efficient than 2**torch.arange(b)
+        weights = 1 << torch.arange(b, dtype=torch.long, device=self.device)  
         return weights
 
     def ints2binary(self, x: Tensor) -> Tensor:
@@ -708,7 +634,7 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
     k should be a power of 2 for F_set to be submodular.
 
     TODO: If k is not a power of 2, k' = ceil(log2(k)) can be used and any integer >= k cut off.
-    The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
+    The resulting reduction would then only preserve DR-submodularity if F is non-decreasing.
     This can be an alternative to Ene-Nguyen's reduction if we decompose into non-decreasing DR-submodular functions.
     """
 

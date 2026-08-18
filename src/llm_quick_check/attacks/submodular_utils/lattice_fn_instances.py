@@ -60,9 +60,7 @@ class QuadraticFn(SequentialLatticeFunction):
             new_val = self.current_val + weight * (self.Q[i, :] * self.current_x).sum() + 0.5 * weight**2 * self.Q[i, i]
         return new_val, new_x, 0
 
-    # new_sum already computed in add/remove, so it's a bit inefficient to recompute it in add_update/remove_update,
-    # but want to keep return of add/remove consistent with base class.
-    # TODO: if we refactor SequentialLatticeFunction to maintain a state object this can be avoided
+
     def add_update(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         new_val, new_x, flops = self.add(i, weight)
         new_sum = self._sum_x + weight if self.Q.dim() == 0 else None
@@ -94,18 +92,14 @@ class EmbeddingQuadraticFn(QuadraticFn):
         self.embedding_projections = embedding_projections
         zero_x = torch.zeros(1, self.n, dtype=torch.long, device=self.Q.device)
         self.p_0 = self._projections(zero_x) if normalize else zero_x
-        # if normalize:
-        #     self.F_0, _ = super()._eval_batch(self._projections(zero_x))
-        # else:
-        #     self.F_0 = torch.zeros(1, device=self.Q.device)
+
 
     def _projections(self, x: Tensor) -> Tensor:
         return self.embedding_projections[x]
 
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
-        return super()._eval_batch(self._projections(x) - self.p_0)
-        # Fvalues, flops = super()._eval_batch(self._projections(x))
-        # return Fvalues - self.F_0, flops
+    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:  
+        return super()._eval_batch(self._projections(x) - self.p_0)   
+        
 
     def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
@@ -118,27 +112,6 @@ class EmbeddingQuadraticFn(QuadraticFn):
         return new_val, new_x, 0
 
 
-
-class ModularFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remove if not needed
-    """Modular lattice function F(x) = w^T x."""
-
-    def __init__(self, w: Tensor, k: int):
-        super().__init__(k, w.shape[0])
-        self.w = w
-
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
-        assert x.device == self.w.device, "x and w must be on the same device"
-        return (x * self.w).sum(dim=1), 0
-
-    def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
-        assert weight.device == self.w.device == self.current_x.device, "weight, current_x and w must be on the same device"
-        new_x = self.current_x.clone()
-        new_x[i] += weight
-        self._assert_in_Vn(new_x[i])
-        new_val = self.current_val + weight * self.w[i]
-        return new_val, new_x, 0
-
-
 class LatticeFnWithModReduction(LatticeFunction):
     """Lattice function F: V^n -> R whose set function reduction F_set: 2^([n] x [b]) -> R is modular, i.e.,
     F_set(S) = sum_{(i, j) in S} W[i, j] for some weight matrix W of shape (n, b).
@@ -146,13 +119,7 @@ class LatticeFnWithModReduction(LatticeFunction):
     F_set is given by F_set(S) = F(M(S)) where M: 2^([n] x [b]) -> V^n is [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
     Conversely, F is given by F(x) = F_set(M^{-1}(x)) where M^{-1}: V^n -> 2^([n] x [b]) is the inverse map of M.
     """
-    # This doesn't have a simple closed form that doesn't require going through M^{-1}.
-    # This function is needed in DCA for H_lowerbd which is combined with G and their set function reduction is minimized by the inner solver
-    # It's inefficient to go through this lattice function when we already have the form of the set function reduction.
-    # Evaluating corresponding SetFnReduction.set_fn will map from sets to ints and back to sets in eval_batch. But we currently only use
-    # this method in singleton_L_bound which is not used for this function.
-    # We override _eval_chain to avoid unecessary map to ints and back.
-    # TODO: refactor code to have set fn class and linear combination of set fns that can be both from reductions or not.
+    # DCA needs this as a LatticeFunction for H_lowerbd. There's no simple closed form that doesn't require going through M^{-1}.
 
     def __init__(self, map: SetToLatticeMap, W: Tensor):
         assert W.shape[0] == map.n and W.shape[1] == map.b, "W must have shape (map.n, map.b)"

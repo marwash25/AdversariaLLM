@@ -12,30 +12,6 @@ from fast_soft_sort.pytorch_ops import soft_sort
 from transformers import PreTrainedModel
 
 
-#TODO: remove if not used
-def _max_min_gap_coordinate_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
-    r"""Sort rows of embedding matrix based on their jth coordinate in non-decreasing order,
-    for j \in [d] with the largest minimum gap between adjacent rows, i.e.,
-    \max_{j \in [d]} \min_{i \in [k-1]} (E_{\sigma^j_{i+1}, j} - E_{\sigma^j_i, j}),
-    where \sigma^j is such that E_{\sigma_k, j} \geq \ldots \geq E_{\sigma_0, j}.
-    Return the corresponding permutation and minimum gap.
-    """
-    k, d = embedding_matrix.shape
-    max_min_gap = -float("inf")
-    best_perm = torch.arange(k, device=embedding_matrix.device)
-    best_j = None
-    for j in range(d):
-        perm = embedding_matrix[:, j].argsort(stable=True)
-        gaps = embedding_matrix[perm, j].diff()
-        min_gap = gaps.min().item()
-        if min_gap > max_min_gap:
-            max_min_gap = min_gap
-            best_perm = perm
-            best_j = j
-    logging.info(f"Max min gap: {max_min_gap:.6g}, achieved at j = {best_j}")
-
-    return best_perm, max_min_gap
-
 def _projections_min_gap(E: Tensor, w: Tensor) -> Tuple[float, Tensor, Tensor, Tensor]:
     proj = E @ w
     perm = proj.argsort(stable=True)
@@ -66,9 +42,6 @@ def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Te
 
     k = embedding_matrix.shape[0]
     embeddings_mean = embedding_matrix.mean(dim=0, keepdim=True) # shape (1, d)
-    # w = embeddings_mean[0].T / embeddings_mean.norm() # shape (d,)
-    # min_gap, perm, sorted_proj, _ = _projections_min_gap(embedding_matrix, w)
-    # logging.info(f"Min gap achieved with embeddings mean unit vector w: {min_gap:.6g}") # 2.78673e-11 for Llama-3.2-1B-Instruct
 
     E_centered = embedding_matrix - embeddings_mean
     M = 2 * k * (E_centered.T @ E_centered) # shape (d, d)
@@ -204,7 +177,7 @@ def _embeddings_min_dist(E: Tensor, block_size: int = 2048) -> float:
 
     w = (E[min_i] - E[min_j]) / min_dist
     min_gap, perm, sorted_proj, _ = _projections_min_gap(E, w)
-    logging.info(f"Min gap achieved with min dist unit vector w: {min_gap:.6g}") # min_gap = 0 for Llama-3.2-1B-Instruct
+    logging.info(f"Min gap achieved with min dist unit vector w: {min_gap:.6g}") 
 
     return min_dist
 
@@ -569,7 +542,6 @@ def _solve_dual_cone_am(
         )
         x_mnp_norm = x_mnp.norm()
 
-        # TODO: add a check that obj_value increased up to accuracy achieved for inner problem.
         if obj_value > best_obj:
             best_obj, best_w, best_perm, best_sorted_proj = (
                 obj_value, w.clone(), perm, sorted_proj.clone()
@@ -640,14 +612,9 @@ def _find_embeddings_dual_cone_w(
     # float64 precision needed since min gap can be very small (e.g., 1e-12)
     embedding_matrix = embedding_matrix.double()
     k = embedding_matrix.shape[0]
-    # TODO:remove when done debugging
-    # min_dist = _embeddings_min_dist(embedding_matrix) # 0.0166836 for Llama-3.2-1B-Instruct
-    # n_unique_rows = np.unique(embedding_matrix, axis=0).shape[0]
-    # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
     if init_w == "random":
-        torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm
-        #TODO: run solver with different random initializations and pick the best final solution
+        torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm 
         w, perm, min_gap, sorted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
     elif init_w == "pca":
         w, perm, min_gap, sorted_embedding_projections = _embeddings_pca(embedding_matrix)

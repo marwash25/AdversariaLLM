@@ -14,12 +14,7 @@ from .setfn_reductions import SetFnReduction
 from .lattice_fn_instances import LatticeFnWithModReduction
 from .lattice_functions import make_zero_lattice_fn, LinearCombinationLatticeFn
 
-# TODO: Both PGM and DCA essentially ignore filtering for the opt itself for now, except for storing filtered solutions at each iteration.
-# This would change if we modify GCG loss to return larger values for unreachable solutions.
 
-# TODO: might be good to actually define a PGM class with step method to have standardized interface for different optimization methods
-# for now let's implement it as a standalone function similar to Matlab code
-# Note that this is will be mostly used for non-submodular functions. In DCA, we will use MNP as inner solver.
 # TODO: add ground set trimming for submodular F (add flag to enable/disable)
 def pgm_lovasz(
     F_set_batch: SetFnReduction,
@@ -71,13 +66,6 @@ def pgm_lovasz(
         times: List of T floats, wall clock time of each iteration (the update step is counted in the next iteration).
         flops: List of T ints, flops for each iteration.
     """
-
-    # TODO: add option to only store solutions that improve best objective.
-    # Keeping old doc string to reuse in this case:
-    # discrete_obj_values: List of best discrete objective values min_{i <= t} F(x^i) for each iteration t.
-    # continuous_obj_values: List of continuous objective values f_L(X^i*(b)) corresponding to best discrete solution
-    # x^i*(b) = argmin_{i <= t} F(x^i) for each iteration t.
-    # discrete_sols: List of best discrete solution x^i*(b) for each iteration b.
 
     logging.info(f"Running PGM for {num_steps} iterations, L set to {L}, and gap tolerance to {gap_tol}")
     time_start = time.time() # include initialization time in iter 0 time
@@ -131,7 +119,6 @@ def pgm_lovasz(
     best_discrete_obj = inf
     best_continuous_sol = None # needed when used as inner solver for DCA
     best_discrete_sol = None # needed when used as inner solver for DCA
-    # best_continuous_obj = inf
 
     for iter in (pbar := trange(num_steps+1, file=sys.stdout)):
         if isinstance(tie_break, Tensor):
@@ -148,26 +135,21 @@ def pgm_lovasz(
             best_discrete_obj = F_round
             best_discrete_sol = x_round.clone()
             best_continuous_sol = X.clone()
-            # best_continuous_obj = cont_value
 
-        discrete_obj_values[iter] = F_round # best_discrete_obj
-        discrete_obj_values_filtered[iter] = F_round_filtered
-        continuous_obj_values[iter] = cont_value # best_continuous_obj
-        discrete_sols_filtered[iter] = x_round_filtered.clone() # x_best
+        discrete_obj_values[iter] = F_round 
+        discrete_obj_values_filtered[iter] = F_round_filtered 
+        continuous_obj_values[iter] = cont_value 
+        discrete_sols_filtered[iter] = x_round_filtered.clone() 
 
-        # if gap_tol is not None: # not used if gap_tol is None but we can still compute it since it's relatively cheap
         dual_avg = (dual_avg * iter + subgradient) / (iter + 1)
-        # see Bach_learning_new Section 10.8 Proposition 10.4  #TODO: add proper reference here
         dual_value = torch.clamp(dual_avg, max=0).sum().item()
         duality_gap = best_discrete_obj - dual_value
         duality_gaps[iter] = duality_gap
 
         # PGM update is included in next iteration time
         times[iter] = time.time() - time_start
-
-         # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill
-        flops[iter] = flops_subgrad # only subgradient involves function evaluations
-        if iter == 0:
+        flops[iter] = flops_subgrad # only subgradient involves function evaluations 
+        if iter == 0: 
             flops[iter] += flops_L
 
         pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Discrete obj value filtered": discrete_obj_values_filtered[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
@@ -181,7 +163,6 @@ def pgm_lovasz(
                 subgradient_norm = subgradient.norm().item()
                 if subgradient_norm < 1e-12:
                     logging.info(f"Subgradient norm {subgradient_norm:.4f} < 1e-12.")
-                    #TODO: if F is submodular we should stop. Otherwise still stop?
                     if gap_tol is not None:
                         break
                 if polyak:
@@ -205,7 +186,7 @@ def pgm_lovasz(
 
     return best_discrete_sol, best_continuous_sol, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, times, flops
 
-# TODO: replace lengthy names like discrete_obj_values with F_values here and in pgm_lovasz?
+
 def dca_dsm(
     F_set_batch: SetFnReduction,
     G_set_batch: SetFnReduction,
@@ -273,10 +254,7 @@ def dca_dsm(
         inner_times: List of T lists of floats, times of the inner iterations of each outer step.
         inner_flops: List of T lists of ints, flops of the inner iterations of each outer step.
         All inner_*[0] are empty (initialization result, inner solver not run).
-    """
-    # Decided to implement DCA-Restart version for now since simpler and faster.
-    # TODO: add DCA-LS version from our ContDSMin paper later since it can perform better in practice
-    # when a good initialization is not provided.
+    """  
     logging.info(f"Running DCA for {num_outer_steps} outer iterations and {num_inner_steps} inner iterations")
     time_start = time.time()
 
@@ -344,14 +322,12 @@ def dca_dsm(
             raise NotImplementedError("MNP is not implemented yet.")
         else:
             raise ValueError(f"Inner solver {inner_solver} not supported. Must be 'pgm' or 'mnp'.")
+        
+        X = inner_best_continuous_sol 
 
-        # TODO: alternatively use integral X = F_set_batch.map.ints2binary(inner_best_discrete_sol)[0].to(dtype=torch.long)
-        X = inner_best_continuous_sol
-
-        # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol).
-        # TODO: if we use integral solutions, no need to keep track of continuous obj values since they'll be equal to discrete ones.
-        subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
-        F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)
+        # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol). 
+        subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) 
+        F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
         continuous_obj_values[result_idx] = F_set_batch.lovasz_extension(X, subgradient_F, Fvalues)
 
         if continuous_obj_values[result_idx] > prev_cont_value + inner_duality_gaps[result_idx][-1]:
