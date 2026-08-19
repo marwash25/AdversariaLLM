@@ -316,8 +316,8 @@ class SetFnReduction():
         assert x.device == self.device, "x must be on the same device as self.device"
         assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
 
-        # TODO: if self.lattice_fn is a SequentialLatticeFunction, we don't really need to build x_neighbors 
-        # for now keep it for testing, remove later.
+        # TODO: If self.lattice_fn is a SequentialLatticeFunction, no need to build x_neighbors here.
+        # Instead, collect and return the new_x values already produced in _eval_neighbors (check if actually faster).
 
         # get neighbors of x in V^n in the order:
         # 1) all x + weights[j] e_i in V^n for all i, j 
@@ -532,7 +532,6 @@ class SetFnReduction():
         If filtering is enabled, F_min_filtered, x_min_filtered correspond to the minimum over only 
         retained x^i's in the chain. If none are retained, F_min_filtered is inf and x_min_filtered is
         an empty tensor. Otherwise, they're the same as F_min, x_min. 
-        #TODO: remove this when done testing to avoid cost of two min?
         """
         if Fvalues is None or x_chain is None:
             assert X is not None, "X must be provided if Fvalues and x_chain are not provided"
@@ -707,10 +706,12 @@ class BinaryRepresentationMap(SetToLatticeMap):
 class BinarySubmodularSetFnReduction(SetFnReduction):
     """Set function reduction using BinaryRepresentationMap
     k should be a power of 2 for F_set to be submodular.
+
+    TODO: If k is not a power of 2, k' = ceil(log2(k)) can be used and any integer >= k cut off.
+    The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
+    This can be an alternative to Ene-Nguyen's reduction if we decompose into non-decreasing DR-submodular functions.
     """
-    # If k is not a power of 2, we can use k' = ceil(log2(k)) and cut off any integer >= k.
-    # The resulting reduction would then only preserve DR-submodularity if F is non-decreasing (see overleaf notes)
-    # Keep this for now, might use it if we decompose into non-decreasing DR-submodular functions.
+
     def __init__(
         self,
         lattice_fn: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
