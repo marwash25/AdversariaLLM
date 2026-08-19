@@ -7,11 +7,12 @@ from typing import Callable, Optional, Tuple, List
 import torch
 from torch import Tensor
 
-# TODO: for now we only use flops for forward passes. Create a class for GCG loss that tracks flops count 
+# TODO: for now we only use flops for forward passes. Create a class for cross-entropy loss that tracks flops count 
 # in its state, and remove flops everywhere else
 
 class LatticeFunction(ABC):
-    """Base class for lattice functions F: V^n -> R with batched evaluation and evaluation along a chain of inputs.
+    """Base class for lattice functions F: V^n -> R, with batched evaluation, evaluation along a chain of inputs, 
+    and evaluation of neighbors.
 
     Public methods eval_* validate inputs, then call _eval_*. Subclasses should implement _eval_batch and can override 
     _eval_chain, _eval_neighbors to provide a more efficient implementation.
@@ -20,6 +21,20 @@ class LatticeFunction(ABC):
     def __init__(self, k: int, n: int):
         self.n = n
         self.k = k
+
+    def eval_single(self, x: Tensor) -> Tuple[Tensor, int]:
+        """Evaluate F on a single input in V^n.
+
+        Args:
+            x: Tensor of shape (n,).
+        Returns:
+            Fvalue: 0-dimensional tensor F(x).
+            flops: flop count, int.
+        """
+        assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
+        assert x.dtype == torch.long, "x must be of type long"
+        vals, flops = self._eval_batch(x.unsqueeze(0))
+        return vals[0], flops
 
     def eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
         """Evaluate F on a batch of inputs in V^n.
@@ -39,7 +54,8 @@ class LatticeFunction(ABC):
         """Core batched evaluation; x has already been validated by eval_batch."""
 
     def __call__(self, x: Tensor) -> Tuple[Tensor, int]:
-        # TODO: make this work both for single input and batch of inputs
+        if x.dim() == 1:
+            return self.eval_single(x)
         return self.eval_batch(x)
 
     def eval_chain(
@@ -146,7 +162,7 @@ class SequentialLatticeFunction(LatticeFunction):
 
         Returns:
             current_val: 0-dimensional tensor, F(x).
-            flops: flop count from eval_batch, int.
+            flops: flop count from eval_single, int.
         """
         if x.dim() == 2:
             assert x.shape[0] == 1, "if x is 2D it must have shape (1, n)"
@@ -154,8 +170,8 @@ class SequentialLatticeFunction(LatticeFunction):
         assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
         assert x.dtype == torch.long, "x must be of type long"
 
-        vals, flops = self.eval_batch(x.unsqueeze(0))
-        self.set_state(x, vals[0])
+        val, flops = self.eval_single(x)
+        self.set_state(x, val)
         assert self.current_val.device == self.current_x.device, "current_val must be on the same device as current_x"
         return self.current_val, flops
 
@@ -163,7 +179,7 @@ class SequentialLatticeFunction(LatticeFunction):
     # Add these checks later
     def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         """Evaluate F(current_x + weight * e_i). Don't update current state
-        Default: call eval_batch. Override for more efficient update.
+        Default: call eval_single. Override for more efficient update.
         
         Args:
             i: coordinate index in [0, n).
@@ -177,8 +193,8 @@ class SequentialLatticeFunction(LatticeFunction):
         assert weight.device == self.current_x.device, "weight must be on the same device as current_x"
         new_x = self.current_x.clone()
         new_x[i] += weight
-        new_vals, flops = self.eval_batch(new_x.unsqueeze(0))
-        return new_vals[0], new_x, flops
+        new_val, flops = self.eval_single(new_x)
+        return new_val, new_x, flops
 
     def add_update(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         """Evaluate F(current_x + weight * e_i) and update state

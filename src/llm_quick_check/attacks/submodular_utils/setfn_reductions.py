@@ -47,7 +47,7 @@ def subgradient_lovasz_extension(
     assert weights.dim() == 1 and weights.shape[0] == b, "weights must be a 1D tensor of shape (b,)"
     assert lattice_fn.n == n, "lattice_fn.n must match X.shape[0]"
     assert (
-        lattice_fn.eval_batch(torch.zeros(1, n, dtype=torch.long, device=X.device))[0].item() == 0
+        lattice_fn.eval_single(torch.zeros(n, dtype=torch.long, device=X.device))[0].item() == 0
     ), "F must be normalized"
     if tie_breaker is not None:
         assert tie_breaker.shape == X.shape, "tie_breaker must be the same shape as X"
