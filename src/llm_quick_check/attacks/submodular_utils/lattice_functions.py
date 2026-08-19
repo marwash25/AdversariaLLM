@@ -22,6 +22,9 @@ class LatticeFunction(ABC):
         self.n = n
         self.k = k
 
+    def _assert_in_Vn(self, x: Tensor) -> None:
+        assert x.dtype == torch.long and (x >= 0).all() and (x < self.k).all(), "x must have values in {0, ..., k - 1}"
+
     def eval_single(self, x: Tensor) -> Tuple[Tensor, int]:
         """Evaluate F on a single input in V^n.
 
@@ -32,7 +35,7 @@ class LatticeFunction(ABC):
             flops: flop count, int.
         """
         assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
-        assert x.dtype == torch.long, "x must be of type long"
+        self._assert_in_Vn(x)
         vals, flops = self._eval_batch(x.unsqueeze(0))
         return vals[0], flops
 
@@ -46,7 +49,7 @@ class LatticeFunction(ABC):
             flops: flop count, int.
         """
         assert x.dim() == 2 and x.shape[1] == self.n, "x must have shape (batch_size, n)"
-        assert x.dtype == torch.long, "x must be of type long"
+        self._assert_in_Vn(x)
         return self._eval_batch(x)
 
     @abstractmethod
@@ -82,6 +85,7 @@ class LatticeFunction(ABC):
         device = rows.device
         if m == 0:
             return torch.empty((0,), device=device), 0
+        self._assert_in_Vn(x_chain)
 
         Fvalues, flops = self._eval_chain(rows, cols, weights, x_chain)
         assert Fvalues.shape[0] == m, "_eval_chain must return one scalar per chain step"
@@ -100,8 +104,9 @@ class LatticeFunction(ABC):
             "x, weights, and x_neighbors must be on the same device"
         )
         assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
-        assert x.dtype == torch.long, "x must be of type long"
+        self._assert_in_Vn(x)
         assert x_neighbors.shape[1] == self.n, "x_neighbors must have shape (num_neighbors, n)"
+        self._assert_in_Vn(x_neighbors)
 
     def eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> Tuple[Tensor, int]:
         """Evaluate F for all neighbors x ± weight[j] e_i of x in V^n.
@@ -135,21 +140,21 @@ class SequentialLatticeFunction(LatticeFunction):
     """Base class for lattice functions F: V^n -> R with incremental add / remove along one coordinate from current state.
 
     Overrides _eval_chain to use add and remove methods. Default add and remove methods are provided.
-    Override these methods and set_state for more efficient updates.
+    Override these methods and _set_state for more efficient updates.
     """
     #TODO: refactor this class to have a state object that contains current_x and current_val which gets updated 
-    # when set_state is called.
+    # when _set_state is called.
 
     def __init__(self, k: int, n: int):
         super().__init__(k, n)
         self.current_x: Optional[Tensor] = None
         self.current_val: Optional[Tensor] = None
 
-    def set_state(self, x: Tensor, F_val: Tensor):
+    def _set_state(self, x: Tensor, F_val: Tensor):
         """Set current_x to a copy of x and current_val to F_val.
 
         Used by eval_update, add_update, and remove_update. Subclasses with extra
-        cached fields should also update them.
+        cached fields should override this to update them.
         """
         self.current_x = x.clone()
         self.current_val = F_val
@@ -167,16 +172,12 @@ class SequentialLatticeFunction(LatticeFunction):
         if x.dim() == 2:
             assert x.shape[0] == 1, "if x is 2D it must have shape (1, n)"
             x = x.squeeze(0)
-        assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
-        assert x.dtype == torch.long, "x must be of type long"
-
+        
         val, flops = self.eval_single(x)
-        self.set_state(x, val)
+        self._set_state(x, val)
         assert self.current_val.device == self.current_x.device, "current_val must be on the same device as current_x"
         return self.current_val, flops
 
-    # TODO: current add/remove methods don't check if new_x is in V^n. For now that's fine since they're only used in eval_neighbors.
-    # Add these checks later
     def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         """Evaluate F(current_x + weight * e_i). Don't update current state
         Default: call eval_single. Override for more efficient update.
@@ -193,6 +194,7 @@ class SequentialLatticeFunction(LatticeFunction):
         assert weight.device == self.current_x.device, "weight must be on the same device as current_x"
         new_x = self.current_x.clone()
         new_x[i] += weight
+        self._assert_in_Vn(new_x[i])
         new_val, flops = self.eval_single(new_x)
         return new_val, new_x, flops
 
@@ -200,7 +202,7 @@ class SequentialLatticeFunction(LatticeFunction):
         """Evaluate F(current_x + weight * e_i) and update state
         """
         new_val, new_x, flops = self.add(i, weight)
-        self.set_state(new_x, new_val)
+        self._set_state(new_x, new_val)
         return new_val, new_x, flops
 
     def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
@@ -236,7 +238,7 @@ class SequentialLatticeFunction(LatticeFunction):
         """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n, 
         then all x - weights[j] e_i in V^n."""
         # set state to x
-        # TODO: add option to provide F(x) so we don't need to recompute it. Can just call self.set_state(x, F_val) in this case.
+        # TODO: add option to provide F(x) so we don't need to recompute it. Can just call self._set_state(x, F_val) in this case.
         F_val, flops = self.eval_update(x)
         Fvalues = torch.empty((x_neighbors.shape[0],), dtype=F_val.dtype, device=x.device)
         b = weights.shape[0]

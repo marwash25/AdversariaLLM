@@ -102,6 +102,9 @@ class SetToLatticeMap(ABC):
     def get_weights(self) -> Tensor:
         """Return weight vector of shape (b,) for the reduction."""
 
+    def _assert_in_Vn(self, x: Tensor) -> None:
+        assert x.dtype == torch.long and (x >= 0).all() and (x < self.k).all(), "x must have values in {0, ..., k - 1}"
+        
     @abstractmethod
     def ints2binary(self, x: Tensor) -> Tensor:
         """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b]
@@ -308,7 +311,6 @@ class SetFnReduction():
         """
         assert x.device == self.device, "x must be on the same device as self.device"
         assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
-        assert x.dtype == torch.long, "x must be of type long"
 
         # TODO: if self.lattice_fn is a SequentialLatticeFunction, we don't really need to build x_neighbors 
         # for now keep it for testing, remove later.
@@ -606,8 +608,7 @@ class EneReductionMap(SetToLatticeMap):
         x[i,j] = sum_{c in [b]} X[i, j, c] * a_c, where X is a bool tensor of shape (batch_size, n, b).
         """
         assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
-        assert x.dtype == torch.long, "x must be of type long"
-        assert (x >= 0).all() and (x < self.k).all(), "x must have values in {0,..,self.k - 1}"
+        self._assert_in_Vn(x)
         assert x.device == self.device, "x must be on the same device as the reduction"
 
         m = self.m
@@ -691,8 +692,7 @@ class BinaryRepresentationMap(SetToLatticeMap):
     def ints2binary(self, x: Tensor) -> Tensor:
         """Map each entry in x to its binary representation"""
         assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
-        assert x.dtype == torch.long, "x must be of type long"
-        assert (x >= 0).all() and (x < self.k).all(), "x must have values in {0,..,self.k - 1}"
+        self._assert_in_Vn(x)
         assert x.device == self.device, "x must be on the same device as the reduction"
 
         idx_bits = torch.arange(self.b, device=self.device, dtype=torch.long)

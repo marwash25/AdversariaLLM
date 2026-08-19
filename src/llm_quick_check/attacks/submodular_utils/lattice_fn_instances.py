@@ -40,9 +40,9 @@ class QuadraticFn(SequentialLatticeFunction):
             Fvalues = 0.5 * (x * xq).sum(dim=1)
         return Fvalues, 0
 
-    def set_state(self, x: Tensor, F_val: Tensor, *, sum_x: Optional[Tensor] = None) -> None:
+    def _set_state(self, x: Tensor, F_val: Tensor, *, sum_x: Optional[Tensor] = None) -> None:
         """For scalar Q, pass sum_x to set _sum_x in O(1) when it is already known."""
-        super().set_state(x, F_val)
+        super()._set_state(x, F_val)
         if self.Q.dim() == 0:
             self._sum_x = sum_x if sum_x is not None else self.current_x.sum()
 
@@ -51,6 +51,7 @@ class QuadraticFn(SequentialLatticeFunction):
         assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
         new_x = self.current_x.clone()
         new_x[i] += weight
+        self._assert_in_Vn(new_x[i])
         if self.Q.dim() == 0:
             assert self._sum_x is not None
             new_sum = self._sum_x + weight
@@ -65,7 +66,7 @@ class QuadraticFn(SequentialLatticeFunction):
     def add_update(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         new_val, new_x, flops = self.add(i, weight)
         new_sum = self._sum_x + weight if self.Q.dim() == 0 else None 
-        self.set_state(new_x, new_val, sum_x=new_sum)
+        self._set_state(new_x, new_val, sum_x=new_sum)
         return new_val, new_x, flops
 
 
@@ -110,6 +111,7 @@ class EmbeddingQuadraticFn(QuadraticFn):
         assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
         new_x = self.current_x.clone()
         new_x[i] += weight
+        self._assert_in_Vn(new_x[i])
         delta_p = self.embedding_projections[new_x[i]] - self.embedding_projections[self.current_x[i]]
         current_p = self._projections(self.current_x)
         new_val = self.current_val + delta_p * (self.Q[i, :] * (current_p - self.p_0)).sum() + 0.5 * delta_p**2 * self.Q[i, i]
@@ -132,6 +134,7 @@ class ModularFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remov
         assert weight.device == self.w.device == self.current_x.device, "weight, current_x and w must be on the same device"
         new_x = self.current_x.clone()
         new_x[i] += weight
+        self._assert_in_Vn(new_x[i])
         new_val = self.current_val + weight * self.w[i]
         return new_val, new_x, 0
 
