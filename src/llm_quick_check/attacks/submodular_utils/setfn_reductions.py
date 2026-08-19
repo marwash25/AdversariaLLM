@@ -147,7 +147,8 @@ class SetToLatticeMap(ABC):
         Args:
             rows_list: List of 1D tensors of type long and length <= n x b
             cols_list: List of 1D tensors of type long and length <= n x b
-            Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b].
+            Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b]. The
+            (row, col) pairs within each set must be unique.
         Returns:
             x: Tensor of type long and shape (batch_size, n). Each row x[i] is an integer vector in V^n such that M(S^i) = x[i].
         """
@@ -156,21 +157,24 @@ class SetToLatticeMap(ABC):
             rows_list[i].device == self.device and cols_list[i].device == self.device
             for i in range(len(rows_list))
         ), "all rows_list and cols_list must be on the same device"
-        # TODO: this doesn't check if (row, col) pairs are unique (so true set). Add this check,
-        # or modify input to be sets of indices in [n x b] which can easily checked for uniqueness before
-        # splitting into rows and cols. 
-        # TODO: might be more efficient to take as input batch_idx, rows, cols instead, but for now will keep this
-        # simpler implementation.
+        # TODO: Replace per-set lists with a sparse COO representation (batch_idx, rows, cols) for efficiency (see version below). 
+        # For now will keep this simpler implementation.
 
         x = torch.zeros((len(rows_list), self.n), dtype=torch.long, device=self.device)
         for i, (rows, cols) in enumerate(zip(rows_list, cols_list)):
             assert rows.shape[0] == cols.shape[0], "rows and cols must have the same length"
             if cols.numel() > 0:
+                # duplicated pairs would silently add weights[col] twice below, giving the wrong M(S^i).
+                # TODO: modify input to be sets of indices in [n x b] to avoid converting to flat indices when checking for uniqueness?
+                assert (rows * self.b + cols).unique().numel() == rows.numel(), (
+                    f"(row, col) pairs must be unique, got duplicates in set {i}"
+                )
                 x[i].index_add_(0, rows, self.weights[cols])  # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
     # TODO: potentially move to these versions of ints2set and set2ints for efficiency. 
     # Issue: zero vectors which correspond to empty sets are not included in the output!
+    # This can be fixed by making batch_size not optional in set2ints_batched.
     # def ints2set_batched(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
     #     """Same map as older ``ints2set``, but returns a single sparse COO layout instead of per-batch lists.
 
