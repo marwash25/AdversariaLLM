@@ -238,7 +238,11 @@ class DSMAttack(Attack):
         self._build_valid_vocab(tokenizer, model)
 
         # --- Find w to use in DR-submodular decomposition ---
-        if self.config.optimizer == "dca":
+        hessian_upperbd_cfg = self.config.dca_config.hessian_upperbd
+        # DCA reduces to its submodular minimization inner solver (H = 0) if hessian_upperbd is a non-positive value.
+        # No need to find w in this case.
+        positive_hessian_upperbd = (hessian_upperbd_cfg == "hessian_upperbd_at_zero" or hessian_upperbd_cfg > 0)
+        if self.config.optimizer == "dca" and positive_hessian_upperbd:
             model_name_safe = model.name_or_path.replace("/", "-")
             dca_config = self.config.dca_config
             dual_cone_config = dca_config.dual_cone_config
@@ -279,9 +283,10 @@ class DSMAttack(Attack):
                 self._sorted_embedding_projections = _sorted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
         else:
             # TODO: test if PGM performs better with DCA's optimized embedding permutation.
-            # define identity embedding permutation to be used by PGM
+            # define identity embedding permutation to be used by PGM and DCA with hessian_upperbd <= 0.
             self._embeddings_perm  = torch.arange(self.valid_vocab_size, device=model.device)
             self._embeddings_inv_perm = torch.arange(self.valid_vocab_size, device=model.device)
+            self._sorted_embedding_projections = None
             
 
         runs = []

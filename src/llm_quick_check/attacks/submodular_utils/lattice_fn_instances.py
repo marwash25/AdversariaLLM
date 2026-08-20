@@ -198,7 +198,7 @@ def DR_submodular_decomposition(
     and
         ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2]
     """
-    if hessian_upperbd.max().item() <= 0: # if alpha == 0, DCA reduces to its submodular minimization inner solver
+    if hessian_upperbd.max().item() <= 0: # DCA reduces to its submodular minimization inner solver in this case
         logging.info("hessian_upperbd <= 0 implies F is already DR-submodular, returning F as G and zero lattice function as H")
         H_batch = make_zero_lattice_fn(F_batch.k, F_batch.n)
         return F_batch, H_batch

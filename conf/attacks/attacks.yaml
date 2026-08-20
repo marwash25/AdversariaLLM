@@ -425,8 +425,7 @@ dsm:
     seed_w: 0
     outer_tol: 1e-5
     inner_gap_tol: 1e-4
-    # num_outer_steps: will be set to num_steps / num_inner_steps # for now 1
-    num_inner_steps: 500
+    num_inner_steps: 500 # num_outer_steps will be set to num_steps / num_inner_steps 
     inner_solver: "pgm"
     tie_break: null # "random" or null
   allow_non_ascii: False
