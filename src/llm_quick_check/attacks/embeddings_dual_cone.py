@@ -252,7 +252,7 @@ def _solve_dual_cone_pgm(
         sort_epsilon: if 0, use hard sort; if > 0, use soft sort (via fast-soft-sort).
         min_epsilon: if 0, use hard min; if > 0, use soft min via log-sum-exp,
         sort_reg: regularization method to use in soft sort; "l2" or "kl" (None for hard sort).
-        num_steps: number of subgradient steps.
+        num_steps: maximum number of optimization steps.
         log_every: log progress every this many steps (<= 0 disables).
 
     Returns:

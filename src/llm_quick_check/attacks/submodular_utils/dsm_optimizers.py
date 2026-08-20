@@ -20,38 +20,49 @@ from .lattice_functions import make_zero_lattice_fn, LinearCombinationLatticeFn
 # TODO: might be good to actually define a PGM class with step method to have standardized interface for different optimization methods
 # for now let's implement it as a standalone function similar to Matlab code
 # Note that this is will be mostly used for non-submodular functions. In DCA, we will use MNP as inner solver.
-# TODO: if used for submodular functions, add ground set trimming 
-def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: float | str, tie_break: Literal["random"] = None, gap_tol: Optional[float] = None):
+# TODO: add ground set trimming for submodular F (add flag to enable/disable)
+def pgm_lovasz(F_set_batch: SetFnReduction, x_init: Tensor, num_steps: int, L: float | Literal["singletons", "normalize", "polyak"], tie_break: Literal["random"] = None, gap_tol: Optional[float] = None):
     """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a set function reduction F_set: 2^([n] x [b]) -> R
     of a discrete function F: V^n -> R.
+
+    At each iteration, X is updated as X = proj_[0,1]^{n x b}(X - eta * s) with s a subgradient of f_L at X
+    obtained by Edmonds' greedy algorithm, then rounded to a discrete solution x in V^n
+    satisfying F(x) <= f_L(X).
 
     Args:
         F_set_batch: SetFnReduction instance.
         x_init: Initial solution.
             - Discrete init in V^n: Tensor of type long and shape (n,) or (1, n).
             - Continuous init in [0,1]^(n x b): Tensor of shape (n, b) of type float or long.
-        num_steps: Number of iterations.
-        L: Positive float or string. Lipschitz constant of the Lovasz extension f_L. 
+        num_steps: Maximum number of optimization steps.
+        L: Positive float or one of "singletons", "normalize", "polyak". Determines the step size eta. 
+        If a float, it is used as the Lipschitz constant of f_L, with eta = D / (L sqrt(t+1)) and D = sqrt(n b).
         If F_set is monotone, set to F_set(V), which holds even if F_set is not submodular.
-        If F is submodular set to 3 max_S |F_set(S)| if known, otherwise set to 'singletons' to use sqrt(sum_i F_set(i)^2) bound.
-        If F is neither, set to 'normalize' to normalize the subgradient or 'singletons' as heuristic.
+        If F_set is submodular set to 3 max_S |F_set(S)| if known, or to 'singletons' to use sqrt(sum_i F_set(i)^2) bound,
+        or to 'polyak' to use the Polyak step size eta = (f_L(X^t) - best dual value) / ||s||^2.
+        If F_set is neither, set to 'normalize' to normalize the subgradient (L = ||s||) or 'singletons'/'polyak' as heuristics
+       
+        tie_break: If "random", ties in the sorting used by Edmonds' greedy algorithm are broken by a random
+        permutation drawn at each iteration. Otherwise ties are broken by the original order.
         gap_tol: Stop when duality gap is less than gap_tol. 
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
 
     Returns:
+        best_discrete_sol: Tensor of shape (n,) and type long, unfiltered discrete solution with the lowest
+        objective value over all iterations. None if no iteration was run.
+        best_continuous_sol: Tensor of shape (n, b), the iterate X^t that produced best_discrete_sol.
         discrete_obj_values: List of T floats, discrete objective values F(x^t) for each iteration t.
+        T is number of iterations ran (includes initial iter, can be less than num_steps + 1 if converged earlier).
         discrete_obj_values_filtered: same as discrete_obj_values but with filtered solutions if filtering is enabled.
-        T is number of iterations ran (includes initial iter, can be less than num_steps + 1 if converged before)
-        continuous_obj_values: List of floats, continuous objective values f_L(X^t) for each iteration t.
-        duality_gaps: List of floats, duality gaps for each iteration. Not true duality gaps if F_set is not submodular.
-        discrete_sols: Tensor of shape (T, n) and type long, discrete solutions x^t in V^n for each iteration t. 
-        If filtering is enabled, these are the filtered solutions.
-        best_sol_idx: int, index of best discrete solution in discrete_sols.
-        times: List of floats, times for each iteration.
-        flops: List of ints, flops for each iteration. 
-
-    #TODO: update doc string
+        Entries are inf for iterations where no candidate solution was retained by the filter.
+        continuous_obj_values: List of T floats, continuous objective values f_L(X^t) for each iteration t.
+        duality_gaps: List of T floats, gap between the best discrete objective so far and the dual value of the
+        averaged subgradient. True duality gaps only if F_set is submodular.
+        discrete_sols_filtered: Tensor of shape (T, n) and type long, discrete solutions x^t in V^n for each
+        iteration t. If filtering is enabled, these are the filtered solutions.
+        times: List of T floats, wall clock time of each iteration (the update step is counted in the next iteration).
+        flops: List of T ints, flops for each iteration. 
     """
 
     # TODO: add option to only store solutions that improve best objective. 
@@ -196,13 +207,45 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
       year={2023},
     }
 
+    At each outer step, h_L is linearized at the current iterate X using a subgradient s of h_L, and the
+    resulting convex upper bound f_upperbd(X) = g_L(X) - <s, X> on f_L is (approximately) minimized by the
+    inner solver, warm started at X. At convergence, the algorithm restarts from the best neighbor of the 
+    current discrete solution, or stops if the current solution is already a local min.
+
     Args:
-        F_set_batch: SetFnReduction instance. 
+        F_set_batch: SetFnReduction instance for F. Used for logging and for the local search at convergence.
+        G_set_batch: SetFnReduction instance for the submodular component G.
+        H_set_batch: SetFnReduction instance for the submodular component H.
         x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
-    
+        num_outer_steps: Maximum number of DCA (outer) iterations.
+        num_inner_steps: Maximum number of iterations of the inner solver.
+        inner_solver: "pgm" for pgm_lovasz, "mnp" (minimum norm point) is not implemented yet.
+        outer_tol: Stop (or restart from the best neighbor) when f_L(X^t) - f_L(X^{t-1}) <= outer_tol.
+        inner_gap_tol: Duality gap tolerance passed to the inner solver.
+        tie_break: If "random", ties in the sorting used by Edmonds' greedy algorithm are broken by a random
+        permutation drawn at each outer iteration. Otherwise ties are broken by the original order.
+        L_G: Positive float or 'singletons'. Lipschitz constant of g_L, used to derive the Lipschitz constant
+        L_G + ||s|| of the upper bound passed to PGM. 'singletons' uses the sqrt(sum_{i} G_set({i})^2) bound.
+
     Returns:
-    
-    #TODO: finish doc string
+        discrete_obj_values: List of T floats, discrete objective values F(x^t) for each outer step t, where x^t
+        is obtained by rounding the iterate X^t. T is the number of outer steps ran (can be less than
+        num_outer_steps if DCA converged to a local min earlier).
+        discrete_obj_values_filtered: same as discrete_obj_values but with filtered solutions if filtering is enabled.
+        Entries are inf for outer steps where no candidate solution was retained by the filter.
+        continuous_obj_values: List of T floats, continuous objective values f_L(X^t) for each outer step t.
+        discrete_sols_filtered: Tensor of shape (T, n) and type long, discrete solutions x^t in V^n for each outer
+        step t. If filtering is enabled, these are the filtered solutions.
+        times: List of T floats, wall clock time of each outer step (including its inner steps).
+        flops: List of T ints, flops of each outer step (including its inner steps).
+        inner_discrete_values: List of T lists of floats, discrete objective values of the inner solver
+        for each outer step. Note these are values of the upper bound F_upperbd, not of F.
+        inner_discrete_values_filtered: same as inner_discrete_values but with filtered solutions if filtering is enabled.
+        inner_continuous_values: List of T lists of floats, continuous objective values of the inner solver
+        for each outer step. 
+        inner_duality_gaps: List of T lists of floats, duality gaps of the inner solver for each outer step.
+        inner_times: List of T lists of floats, times of the inner iterations of each outer step.
+        inner_flops: List of T lists of ints, flops of the inner iterations of each outer step.
     """
     # Decided to implement DCA-Restart version for now since simpler and faster. 
     # TODO: add DCA-LS version from our ContDSMin paper later since it can perform better in practice 
@@ -296,7 +339,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
         discrete_sols_filtered[iter] = x_round_filtered
         times[iter] = time.time() - time_start
         # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill
-        # flops_subgrad_H is 0 since H doesn't involve model fwd pass, but keeping it in case we flops for other functions later
+        # flops_subgrad_H is 0 since current H doesn't involve a forward pass of the model, but keeping it to handle general case 
         flops[iter] += sum(inner_flops[iter]) + flops_subgrad_F + flops_subgrad_H 
         if iter == 0: 
             flops[iter] += flops_L_G
