@@ -7,7 +7,7 @@ This repository provides a unified framework for running various attack methods,
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/LLM-QC/AdversiaraLLM
+git clone https://github.com/LLM-QC/AdversariaLLM
 cd AdversariaLLM
 ```
 
@@ -24,8 +24,8 @@ pip install -e .
 ## ⚙️ Configuration
 
 ### Step 1: Configure Paths
-Update the following configuration files with your environment-specific paths:
-- `conf/paths.yaml` - Root directory
+
+Add your environment-specific paths to the configuration file `conf/paths.yaml` (see template `conf/paths.example.yaml`). The `root_dir` is required. Several dataset configs also interpolate `data_dir` (`adv_behaviors`, `refusal_direction_data`, `strong_reject`, `rf_test`). Add that key if you use those datasets.
 
 
 ## 🚀 Quick Start
@@ -69,8 +69,9 @@ The framework supports various adversarial attack algorithms:
 - **Random Search** - Baseline random optimization
 - **Human Jailbreaks** - Curated human-written prompts
 - **Direct** - Direct prompt testing without optimization
-- **BEAST** - Gradient-based discrete optimization
+- **BEAST** - Gradient-free discrete optimization
 - **Best-of-N** - Jailbreaking with simple string perturbations
+- **DSM** - Difference-of-submodular minimization for discrete prompt optimization (`pgm` supported; `dca` experimental)
 
 
 ## 📊 Evaluation and Judging
@@ -88,33 +89,37 @@ For a complete list of supported judges, see: [JudgeZoo](https://github.com/LLM-
 ### Running Judges Separately
 ```bash
 python run_judges.py \
-    judge=strong_reject
+    classifier=strong_reject
 ```
-will judge all files with strong_reject which havent been judged yet.
+will judge all files with strong_reject which haven't been judged yet.
 
 ## 📁 Project Structure
 
 ```
-llm-quick-check/
-├── src/
-│   ├── attacks/           # Attack implementations
-│   │   ├── gcg.py        # GCG attack
-│   │   ├── pair.py       # PAIR attack
-│   │   ├── autodan.py    # AutoDAN attack
+AdversariaLLM/
+├── src/llm_quick_check/
+│   ├── attacks/                 # Attack implementations
+│   │   ├── gcg.py
+│   │   ├── pair.py
+│   │   ├── autodan.py
+│   │   ├── dsm.py
 │   │   └── ...
-│   ├── dataset.py        # Dataset handling
-│   ├── io_utils/         # I/O utilities
-│   ├── lm_utils/         # Language model utilities
-│   └── types.py          # Type definitions
-├── conf/                 # Configuration files
-│   ├── config.yaml       # Main config
-│   ├── attacks/          # Attack-specific configs
-│   ├── datasets/         # Dataset configs
-│   └── models/           # Model configs
-├── run_attacks.py        # Main attack runner
-├── run_judges.py         # Judge evaluation
-├── run_sampling.py       # Sampling utilities
-└── requirements.txt      # Dependencies
+│   ├── dataset/                 # Dataset handling
+│   ├── io_utils/                # I/O utilities
+│   ├── lm_utils/                # Language model utilities
+│   └── types.py                 # Type definitions
+├── conf/                        # Configuration files
+│   ├── config.yaml              # Main config
+│   ├── paths.example.yaml       # Template for local paths
+│   ├── attacks/                 # Attack-specific configs
+│   ├── datasets/                # Dataset configs
+│   └── models/                  # Model configs
+├── evaluate/
+│   └── visualize_results.ipynb
+├── run_attacks.py               # Main attack runner
+├── run_judges.py                # Judge evaluation
+├── run_sampling.py              # Sampling utilities
+└── requirements.txt             # Dependencies
 ```
 
 ## 🔧 Advanced Usage
@@ -124,9 +129,9 @@ You can override specific attack parameters:
 
 ```bash
 python run_attacks.py -m \
-    attack=gcg \
-    attacks.gcg.num_steps=500 \
-    attacks.gcg.search_width=512
+    attack=dsm \
+    attacks.dsm.num_steps=1000
+    attacks.dsm.optimizer=pgm
 ```
 
 ### Custom Generation Parameters
@@ -143,16 +148,15 @@ generation_config:
 
 ## 📈 Results and Analysis
 
-Results are saved in the configured output directory with the following structure:
+Results are saved under the configured `save_dir` (default `${root_dir}/outputs/${name}/${attack}/results/`).
+With `save_format: "default"`, each run is written as:
 ```
-outputs/
-├── YYYY-MM-DD/HH-MM-SS/{i}/run.json
-...
-└── YYYY-MM-DD/HH-MM-SS/{i}/run.json
+.../YYYY-MM-DD/HHhMMmSSs/{i}/run.json
 ```
+With `save_format: "noDB"` (the default in `conf/config.yaml`), files are named `run-{idx}__{date}__{time}.json` in `save_dir`.
 
 ### Visualization & Evaluation (WIP)
-Generate plots and analysis with `visualize_results.ipynb` in `evaluations/`
+Generate plots and analysis with `visualize_results.ipynb` in `evaluate/`
 
 ## 🤝 Contributing
 
@@ -160,7 +164,7 @@ Contributions welcome!
 
 ## 🙏 Acknowledgments
 
-Please be sure to cite the underlying work if build on it.
+Please be sure to cite the underlying work if you build on it.
 
 Datasets
 - [Alpaca](https://github.com/tatsu-lab/stanford_alpaca)
@@ -177,6 +181,7 @@ Attacks
 - [AutoDAN](https://arxiv.org/abs/2310.04451)
 - [BEAST](https://arxiv.org/abs/2402.15570)
 - [Best-of-N Jailbreaking](https://arxiv.org/abs/2412.03556)
+- [DSM](work in progress, based on https://arxiv.org/abs/2305.11046)
 - [GCG](https://arxiv.org/abs/2307.15043)
 - [GCG (REINFORCE)](https://arxiv.org/abs/2502.17254)
 - [PAIR](https://arxiv.org/abs/2310.08419)
