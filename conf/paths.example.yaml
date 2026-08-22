@@ -1,1 +1,2 @@
 root_dir: /put/your/own/path/here
+data_dir: ${root_dir}/data
