@@ -352,7 +352,8 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
 
         if prev_cont_value - continuous_obj_values[iter] <= outer_tol:
                 F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops_local_search = F_set_batch.get_best_neighbors(x_round)
-                times[iter] = time.time() - time_start
+                times[iter] = time.time() - time_start # include local search time
+                
                 if F_best_neighbor < F_round:
                     logging.info(f"DCA converged after {iter} outer steps but not to a local min, restarting from best neighbor "
                                  f"with discrete obj value {F_best_neighbor:.4f} and discrete obj value filtered {F_best_neighbor_filtered:.4f}.")
@@ -368,6 +369,7 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
                     logging.info(f"DCA converged after {iter} outer steps to a local min, stopping.")
                     break
 
+        time_start = time.time()
         # no need to update prev_cont_value here, it will be computed in first inner iteration of next outer step
         # prev_cont_value = continuous_obj_values[iter]
 

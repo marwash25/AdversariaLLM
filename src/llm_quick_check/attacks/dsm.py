@@ -364,8 +364,6 @@ class DSMAttack(Attack):
                 gap_tol=None,
             )
 
-            plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, F_0.item())
-
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
             time_hessian_bd = 0
@@ -447,9 +445,6 @@ class DSMAttack(Attack):
                 tie_break=dca_config.tie_break,
                 L_G=L_G,
             )
-            
-            for i in range(len(inner_discrete_values)): # plot pgm curves for each outer iteration
-                plot_pgm_curves(inner_discrete_values[i], inner_discrete_values_filtered[i], inner_continuous_values[i], inner_duality_gaps[i], F_0.item(), outer_step=i)
 
         else:
             raise ValueError(f"Optimizer {self.config.optimizer} not supported. Must be 'pgm' or 'dca'.")
@@ -522,6 +517,20 @@ class DSMAttack(Attack):
         )
 
         t_end = time.time() 
+
+        # plot objective values and duality gaps for PGM (standalone or for each DCA outer iteration)
+        if self.config.optimizer == "pgm":
+            plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, F_0.item())
+        else:
+            for i in range(len(inner_discrete_values)): 
+                plot_pgm_curves(
+                    inner_discrete_values[i],
+                    inner_discrete_values_filtered[i],
+                    inner_continuous_values[i],
+                    inner_duality_gaps[i],
+                    F_0.item(),
+                    outer_step=i,
+                )
 
         # --- Assemble Results ---
         # model_completions, model_input, and model_input_tokens fields are aligned with optim_strings (only valid steps kept)
