@@ -229,7 +229,6 @@ class DSMAttack(Attack):
 
     @torch.no_grad()
     def run(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, dataset: PromptDataset) -> AttackResult:
-        # TODO: add time tracking
         # --- Prepare Conversations ---
         tokens, attack_masks, target_masks, conversations = self._prepare_dataset(dataset, tokenizer)
         logging.info(f"Prepared {len(conversations)} conversations for attack")
@@ -271,12 +270,10 @@ class DSMAttack(Attack):
                 self._sorted_embedding_projections = None  # will be computed below
             else:
                 logging.info(f"Searching for w in the interior of the dual cone of forward differences of embedding vectors and saving it to {save_path}")
-                time_start = time.time()
-                self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._sorted_embedding_projections = _find_embeddings_dual_cone_w(
+                self._embeddings_dual_cone_w, self._embeddings_perm, self._embeddings_inv_perm, self._sorted_embedding_projections, time_taken = _find_embeddings_dual_cone_w(
                     model, **find_w_kwargs, save_file=save_path, fingerprint=fingerprint
                 )
-                time_end = time.time()
-                logging.info(f"Time taken to find w: {time_end - time_start:.2f} seconds")
+                logging.info(f"Time taken to find w: {time_taken:.2f} seconds") # not added to attack's time in SingleAttackRunResult since this is only computed once for each model
                 return AttackResult(runs=[])  # TODO: remove when done testing
 
             if self._sorted_embedding_projections is None:

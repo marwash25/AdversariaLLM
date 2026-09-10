@@ -635,7 +635,7 @@ def _find_embeddings_dual_cone_w(
 
     If save_file is set, cache results and fingerprint to that path.
     """
-
+    t_start = time.time()
     embedding_matrix = _valid_embeddings(model, valid_token_ids)
     # float64 precision needed since min gap can be very small (e.g., 1e-12)
     embedding_matrix = embedding_matrix.double()
@@ -682,6 +682,7 @@ def _find_embeddings_dual_cone_w(
     if sorted_embedding_projections is not None:  
         sorted_embedding_projections = (sorted_embedding_projections / t_opt).to(model.device)
 
+    time_taken = time.time() - t_start
     if save_file is not None:
         save_path = Path(save_file)
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -692,6 +693,7 @@ def _find_embeddings_dual_cone_w(
                 "perm": perm,
                 "inv_perm": inv_perm,
                 "min_gap": min_gap,
+                "time_taken": time_taken,
                 "fingerprint": fingerprint,
             },
             save_path,
