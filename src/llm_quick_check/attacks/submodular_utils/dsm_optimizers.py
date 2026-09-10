@@ -269,8 +269,9 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
     L_G = max(L_G, 1e-12) # L_G < 1e-12 shouldn't happen unless G = 0 but just in case
     assert L_G > 0, "Lipschitz constant L_G must be positive"
 
-    # create set function reduction with place holder lattice_fn and same reduction map as F_set_batch
-    F_set_upperbd = SetFnReduction(make_zero_lattice_fn(F_set_batch.k, n), F_set_batch.map) 
+    # create set function reduction with place holder lattice_fn and same reduction map and filter params as F_set_batch
+    F_set_upperbd = SetFnReduction(make_zero_lattice_fn(F_set_batch.k, n), F_set_batch.map, filter_fn=F_set_batch.filter_fn, filter_zero=F_set_batch.filter_zero) 
+
 
     discrete_obj_values = [0.0 for _ in range(num_outer_steps)]
     inner_discrete_values: List[List[float]] = [[] for _ in range(num_outer_steps)]
