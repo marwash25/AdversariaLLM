@@ -401,12 +401,13 @@ class DSMAttack(Attack):
                     time_hessian_bd = cache["time_taken"]
                 else:
                     logging.info(f"Computing Hessian upper bound at zero and saving to {save_path}")
-                    hessian_upperbd, flops_hessian_bd, time_hessian_bd = F_set_batch.hessian_upperbd_at_zero(
+                    hessian_upperbd, flops_hessian_bd, time_taken = F_set_batch.hessian_upperbd_at_zero(
                         singleton_vals=F_singleton_vals,
                         save_file=save_path,
                         fingerprint=fingerprint,
                     )
-                    logging.info(f"Time taken to compute Hessian upper bound at zero: {time_hessian_bd}")
+                    logging.info(f"Time taken to compute Hessian upper bound at zero: {time_taken}")
+                    # Keep time_hessian_bd=0: this computation is already inside the global t_start/t_end window.
 
                 L_F, flops_L_F = F_set_batch.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
             else:
