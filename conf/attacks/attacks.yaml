@@ -394,7 +394,7 @@ dsm:
   optim_str_init: "x x x x x x x x x x x x x x x x x x x x" # all tested tokenizers convert this to exactly 20 tokens
   num_steps: 300
   lm_reg_weight: 0.0
-  optimizer: "dca" # "pgm" or "dca"
+  optimizer: "pgm" # "pgm" or "dca"
   pgm_config:
     L: "normalize" # "singletons" or "normalize" or "polyak" or float
     tie_break: null # "random" or null
