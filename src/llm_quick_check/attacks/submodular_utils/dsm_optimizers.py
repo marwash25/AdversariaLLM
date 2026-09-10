@@ -307,7 +307,9 @@ tie_break: Literal["random"] = None, L_G: float | str = "singletons"):
                 pgm_lovasz(F_set_upperbd, X, num_inner_steps, L_upperbd, gap_tol=inner_gap_tol)
                 
             prev_cont_value = inner_continuous_values[iter][0] # f_L_upperbd(X) = g_L(X) - <subgrad_H, X> = g_L(X) - h_L(X) = f_L(X)
-            assert abs(prev_cont_value - (continuous_obj_values[iter-1] if iter > 0 else  F_set_batch.lovasz_extension(X)))  < 1e-12, \
+            # X.float() is needed to avoid assertion being triggered due to difference between batched and single cross entropy loss evaluations, 
+            # since inner_continuous_values is set to Fvalues[nnz-1] in pgm while lovasz_extension(X) returns F_set(S) if X is of type long.
+            assert abs(prev_cont_value - (continuous_obj_values[iter-1] if iter > 0 else  F_set_batch.lovasz_extension(X.float())))  < 1e-12, \
             "prev_cont_value should match the continuous obj value of the previous outer step."
             
         elif inner_solver == "mnp":
