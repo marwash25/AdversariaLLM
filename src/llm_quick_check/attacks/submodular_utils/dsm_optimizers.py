@@ -315,8 +315,8 @@ def dca_dsm(
             # X.float() is needed to avoid assertion being triggered due to difference between batched and single cross entropy loss evaluations,
             # since inner_continuous_values is set to Fvalues[nnz-1] in pgm while lovasz_extension(X) returns F_set(S) if X is of type long.
             assert abs(prev_cont_value - (continuous_obj_values[result_idx-1] if iter > 0 else  F_set_batch.lovasz_extension(X.float())))  < 1e-12, \
-            "prev_cont_value should match the continuous obj value of the previous outer step." # TODO: remove the check for iter==0 when done debugging
-
+            "prev_cont_value should match the continuous obj value of the previous outer step." 
+            
         elif inner_solver == "mnp":
             # TODO: implement MNP
             raise NotImplementedError("MNP is not implemented yet.")
@@ -344,11 +344,9 @@ def dca_dsm(
             continuous_obj_values[0] = prev_cont_value
             discrete_sols_filtered[0] = inner_discrete_sols_filtered[0].clone()
             # include time/flops to evaluate objective in initialization time/flops
-            # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill later
-            times[0] = initialization_time + inner_times[result_idx][0]
-            flops[0] = flops_L_G + inner_flops[result_idx][0]
+            times[0] = initialization_time + inner_times[result_idx][0] 
+            flops[0] = flops_L_G + inner_flops[result_idx][0] 
 
-        # TODO: check if complement set is better, use that as current sol instead. See Prop G.8 in DSMin paper.
         discrete_obj_values[result_idx] = F_round
         discrete_obj_values_filtered[result_idx] = F_round_filtered
         discrete_sols_filtered[result_idx] = x_round_filtered
