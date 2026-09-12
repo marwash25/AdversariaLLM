@@ -230,7 +230,7 @@ class DSMAttack(Attack):
     @torch.no_grad()
     def run(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, dataset: PromptDataset) -> AttackResult:
         # --- Prepare Conversations ---
-        tokens, attack_masks, target_masks, conversations = self._prepare_dataset(dataset, tokenizer)
+        tokens, attack_masks, target_masks, conversations, preparation_times = self._prepare_dataset(dataset, tokenizer)
         logging.info(f"Prepared {len(conversations)} conversations for attack")
 
         # --- Build Valid Vocab ---
@@ -289,11 +289,24 @@ class DSMAttack(Attack):
         runs = []
         for idx, conversation in enumerate(conversations):
             stable_idx = int(dataset.idx[idx].item()) # conversation index in the original dataset (before shuffle)
-            runs.append(self._attack_single_conversation(model, tokenizer, conversation, tokens[idx], attack_masks[idx], target_masks[idx], stable_idx))
+            runs.append(
+                self._attack_single_conversation(
+                    model,
+                    tokenizer,
+                    conversation,
+                    tokens[idx],
+                    attack_masks[idx],
+                    target_masks[idx],
+                    preparation_times[idx],
+                    stable_idx
+                )
+            )
 
         return AttackResult(runs=runs)
 
-    def _attack_single_conversation(self, model, tokenizer, conversation, tokens, attack_mask, target_mask, stable_idx) -> SingleAttackRunResult:
+    def _attack_single_conversation(
+        self, model, tokenizer, conversation, tokens, attack_mask, target_mask, preparation_time, stable_idx
+    ) -> SingleAttackRunResult:
         #TODO: Compute the KV Cache for tokens that appear before the optimized tokens to speed up fwd pass as done in GCG.
         #TODO: add early stopping if exact match found as done in GCG.
         #TODO: move things like building loss_fn, filter_fn, initialization to separate functions
@@ -521,8 +534,8 @@ class DSMAttack(Attack):
         # plot objective values and duality gaps for PGM (standalone or for each DCA outer iteration)
         if self.config.optimizer == "pgm":
             plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, F_0.item())
-        else:
-            for i in range(len(inner_discrete_values)): 
+        elif self.config.optimizer == "dca":
+            for i in range(1, len(inner_discrete_values)): # initial step does not run pgm
                 plot_pgm_curves(
                     inner_discrete_values[i],
                     inner_discrete_values_filtered[i],
@@ -560,7 +573,7 @@ class DSMAttack(Attack):
         run_result = SingleAttackRunResult(
             original_prompt=conversation,
             steps=steps_results,
-            total_time=t_end - t_start + (time_hessian_bd if self.config.optimizer == "dca" else 0),
+            total_time=preparation_time + t_end - t_start + (time_hessian_bd if self.config.optimizer == "dca" else 0),
         )
         return run_result
 
@@ -598,13 +611,17 @@ class DSMAttack(Attack):
     # copied from PGDDiscreteAttack. Added assert for single-turn conversation and removed padding.
     # if we're not doing batched optimization, no point preparing full dataset, can call _prepare_single_conversation
     # inside _attack_single_conversation. For now let's keep this in case we switch to batched optimization.
-    def _prepare_dataset(self, dataset, tokenizer) -> Tuple[List[Tensor], List[Tensor], List[Tensor], List[Conversation]]:
+    def _prepare_dataset(
+        self, dataset, tokenizer
+    ) -> Tuple[List[Tensor], List[Tensor], List[Tensor], List[Conversation], List[float]]:
         all_tokens = []
         all_attack_masks = []
         all_target_masks = []
         all_conversations = []
+        preparation_times = []
 
         for conversation in dataset:
+            preparation_start = time.time()
             assert len(conversation) == 2, "DSM attack currently assumes single-turn conversation."
 
             all_conversations.append(conversation)
@@ -640,6 +657,7 @@ class DSMAttack(Attack):
             all_tokens.append(tokens)
             all_attack_masks.append(attack_mask)
             all_target_masks.append(target_mask)
+            preparation_times.append(time.time() - preparation_start)
 
         # remove padding for now since we're not doing batched optimization.
         # TODO: add padding back if we switch to batched optimization, but not here inside attack_batch and just sort here
@@ -648,7 +666,7 @@ class DSMAttack(Attack):
         # all_target_masks = pad_sequence(all_target_masks, batch_first=True)
         # all_attack_masks = pad_sequence(all_attack_masks, batch_first=True)
 
-        return all_tokens, all_attack_masks, all_target_masks, all_conversations
+        return all_tokens, all_attack_masks, all_target_masks, all_conversations, preparation_times
 
     def _prepare_single_conversation(
         self, conversation, tokenizer, optim_str, generation=False
