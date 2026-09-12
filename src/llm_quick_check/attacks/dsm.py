@@ -353,11 +353,15 @@ class DSMAttack(Attack):
         if self.config.filter_ids:
             if self.config.placement == "suffix":
                 filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[self._embeddings_perm[attack_ids]].cpu()]], False)
-                # check if zero_attack_ids is reachable
+                # check if zero_attack_ids is decode–encode invariant
                 retained_idx = filter_fn(zero_attack_ids)
                 if not retained_idx:
                     filter_zero = True
-                    logging.warning("Zero attack ids is not reachable from any input string. Will not round to zero during optimization.")
+                    logging.warning("The zero solution is not decode–encode invariant; filtered rounding will not return zero as its fallback.")
+                # check if initial solution is decode–encode invariant
+                retained_idx = filter_fn(inv_perm_ids_init)
+                if not retained_idx:
+                    raise ValueError("The initial solution is not decode–encode invariant. Try a different `optim_str_init`")
             else:
                 # TODO: adapt filter function for other placements
                 raise ValueError(f"Filtering for {self.config.placement} placement not supported yet.")
@@ -366,6 +370,8 @@ class DSMAttack(Attack):
 
         # TODO: Standardize optimizer interface
         if self.config.optimizer == "pgm":
+            setup_time = time.time() - t_start
+            setup_flops = F_0_flops
             # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)
             _, _, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, \
             times, flops = pgm_lovasz(
@@ -379,7 +385,7 @@ class DSMAttack(Attack):
 
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
-            time_hessian_bd = 0
+            time_cached_hessian_bd = 0
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 logging.info("DR-submodular decomposition using Hessian upper bound at zero")
                 F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
@@ -406,20 +412,21 @@ class DSMAttack(Attack):
                     logging.info(f"Loading Hessian upper bound at zero from {save_path}")
                     hessian_upperbd = cache["hessian_upperbd"]
                     flops_hessian_bd = cache["flops"]
-                    time_hessian_bd = cache["time_taken"]
+                    time_cached_hessian_bd = cache["time_taken"]
                 else:
                     logging.info(f"Computing Hessian upper bound at zero and saving to {save_path}")
-                    hessian_upperbd, flops_hessian_bd, time_taken = F_set_batch.hessian_upperbd_at_zero(
+                    hessian_upperbd, flops_hessian_bd, time_hessian_bd = F_set_batch.hessian_upperbd_at_zero(
                         singleton_vals=F_singleton_vals,
                         save_file=save_path,
                         fingerprint=fingerprint,
                     )
-                    logging.info(f"Time taken to compute Hessian upper bound at zero: {time_taken}")
-                    # Keep time_hessian_bd=0: this computation is already inside the global t_start/t_end window.
+                    logging.info(f"Time taken to compute Hessian upper bound at zero: {time_hessian_bd}")
 
                 L_F, flops_L_F = F_set_batch.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
+                flops_L_F += flops_F_singletons
             else:
                 hessian_upperbd = torch.tensor(dca_config.hessian_upperbd, device=device, dtype=torch.float32)
+                flops_hessian_bd = 0
                 L_F, flops_L_F = F_set_batch.singletons_L_bound()
                 logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}")
 
@@ -437,11 +444,12 @@ class DSMAttack(Attack):
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
 
             # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = - H((k-1) 1) where k = valid_vocab_size
-            # TODO: add flops_L_H, flops_L_F, flops_hessian_bd, flops_F_singletons to flops count of first step?
             H_max, flops_L_H= H_batch(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
             L_H = -H_max.item()
             L_G = L_F + L_H
 
+            setup_time = time.time() - t_start + time_cached_hessian_bd
+            setup_flops = F_0_flops + flops_L_F + flops_L_H + flops_hessian_bd
             # run DCA with initial optim_ids as initial solution
             discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, discrete_sols_filtered, times, flops, \
             inner_discrete_values, inner_discrete_values_filtered, inner_continuous_values, inner_duality_gaps, inner_times, inner_flops = \
@@ -462,6 +470,10 @@ class DSMAttack(Attack):
         else:
             raise ValueError(f"Optimizer {self.config.optimizer} not supported. Must be 'pgm' or 'dca'.")
 
+        # add setup time and flops to initial step
+        times[0] += setup_time
+        flops[0] += setup_flops
+
         # Drop steps with no valid filtered solution
         valid_idx = [i for i in range(len(discrete_obj_values_filtered)) if isfinite(discrete_obj_values_filtered[i])]
         if not valid_idx:
@@ -469,7 +481,6 @@ class DSMAttack(Attack):
         discrete_sols_filtered = discrete_sols_filtered[valid_idx]
 
         best_sol_idx_filtered = min(range(len(valid_idx)), key=lambda i: discrete_obj_values_filtered[valid_idx[i]])
-        flops[valid_idx[0]] += F_0_flops
 
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[self._embeddings_perm[discrete_sols_filtered]]
@@ -573,7 +584,7 @@ class DSMAttack(Attack):
         run_result = SingleAttackRunResult(
             original_prompt=conversation,
             steps=steps_results,
-            total_time=preparation_time + t_end - t_start + (time_hessian_bd if self.config.optimizer == "dca" else 0),
+            total_time=preparation_time + t_end - t_start + (time_cached_hessian_bd if self.config.optimizer == "dca" else 0),
         )
         return run_result
 
