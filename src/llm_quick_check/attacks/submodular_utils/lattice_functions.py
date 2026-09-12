@@ -3,18 +3,18 @@ Lattice function base classes
 """
 
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Tuple, List
+from typing import Callable, Tuple, List
 import torch
 from torch import Tensor
 
-# TODO: for now we only use flops for forward passes. Create a class for cross-entropy loss that tracks flops count 
+# TODO: for now we only use flops for forward passes. Create a class for cross-entropy loss that tracks flops count
 # in its state, and remove flops everywhere else
 
 class LatticeFunction(ABC):
-    """Base class for lattice functions F: V^n -> R, with batched evaluation, evaluation along a chain of inputs, 
+    """Base class for lattice functions F: V^n -> R, with batched evaluation, evaluation along a chain of inputs,
     and evaluation of neighbors.
 
-    Public methods eval_* validate inputs, then call _eval_*. Subclasses should implement _eval_batch and can override 
+    Public methods eval_* validate inputs, then call _eval_*. Subclasses should implement _eval_batch and can override
     _eval_chain, _eval_neighbors to provide a more efficient implementation.
     """
 
@@ -142,13 +142,13 @@ class SequentialLatticeFunction(LatticeFunction):
     Overrides _eval_chain to use add and remove methods. Default add and remove methods are provided.
     Override these methods and _set_state for more efficient updates.
     """
-    #TODO: refactor this class to have a state object that contains current_x and current_val which gets updated 
+    #TODO: refactor this class to have a state object that contains current_x and current_val which gets updated
     # when _set_state is called.
 
     def __init__(self, k: int, n: int):
         super().__init__(k, n)
-        self.current_x: Optional[Tensor] = None
-        self.current_val: Optional[Tensor] = None
+        self.current_x: Tensor | None = None
+        self.current_val: Tensor | None = None
 
     def _set_state(self, x: Tensor, F_val: Tensor):
         """Set current_x to a copy of x and current_val to F_val.
@@ -172,7 +172,7 @@ class SequentialLatticeFunction(LatticeFunction):
         if x.dim() == 2:
             assert x.shape[0] == 1, "if x is 2D it must have shape (1, n)"
             x = x.squeeze(0)
-        
+
         val, flops = self.eval_single(x)
         self._set_state(x, val)
         assert self.current_val.device == self.current_x.device, "current_val must be on the same device as current_x"
@@ -181,7 +181,7 @@ class SequentialLatticeFunction(LatticeFunction):
     def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
         """Evaluate F(current_x + weight * e_i). Don't update current state
         Default: call eval_single. Override for more efficient update.
-        
+
         Args:
             i: coordinate index in [0, n).
             weight: 0-dimensional tensor
@@ -235,7 +235,7 @@ class SequentialLatticeFunction(LatticeFunction):
         return Fvalues, flops
 
     def _eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> Tuple[Tensor, int]:
-        """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n, 
+        """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n,
         then all x - weights[j] e_i in V^n."""
         # set state to x
         # TODO: add option to provide F(x) so we don't need to recompute it. Can just call self._set_state(x, F_val) in this case.

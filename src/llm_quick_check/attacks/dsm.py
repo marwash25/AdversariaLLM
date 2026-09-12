@@ -53,9 +53,9 @@ class DualConeConfig:
 class DCAConfig:
     """Config for the DCA optimizer."""
     dual_cone_config: DualConeConfig = field(default_factory=DualConeConfig)
-    hessian_upperbd: float | Literal["hessian_upperbd_at_zero"] = "hessian_upperbd_at_zero" 
+    hessian_upperbd: float | Literal["hessian_upperbd_at_zero"] = "hessian_upperbd_at_zero"
     dsm_cache_dir: str = str(Path(__file__).resolve().parent / "dsm_cache")
-    overwrite_cache: bool = True 
+    overwrite_cache: bool = True
     seed_w: int = 0
     outer_tol: float = 1e-5
     inner_gap_tol: float = 1e-4
@@ -85,8 +85,8 @@ class DSMConfig:
     placement: str = "suffix"
     optim_str_init: str = "x x x x x x x x x x x x x x x x x x x x"
     num_steps: int = 1
-    lm_reg_weight: float = 0.0  
-    optimizer: Literal["pgm", "dca"] = "pgm" 
+    lm_reg_weight: float = 0.0
+    optimizer: Literal["pgm", "dca"] = "pgm"
     pgm_config: PGMConfig = field(default_factory=PGMConfig)
     dca_config: DCAConfig = field(default_factory=DCAConfig)
     allow_non_ascii: bool = False
@@ -102,7 +102,7 @@ class DSMAttackStepResult(AttackStepResult):
     inner_discrete_values: List[float] | None = None
     inner_discrete_values_filtered: List[float] | None = None
     inner_continuous_values: List[float] | None = None
-    inner_times: List[float] | None = None  
+    inner_times: List[float] | None = None
     inner_flops: List[int] | None = None
 
 
@@ -211,8 +211,8 @@ def compute_loss_with_max_batchsize(
 ) -> Tuple[Tensor, int]:
     """Wrap compute_loss in with_max_batchsize only if batch_size is large enough to trigger OOM error
     to avoid unnecessary overhead of with_max_batchsize if batch_size is small.
-    I did not encounter OOM error with eval_chain and eval_neighbors which have batch_size n*b and 2*n*b 
-    respectively (2*n*b = 1040 for Llama-3.2-1B-Instruct with n=20). 
+    I did not encounter OOM error with eval_chain and eval_neighbors which have batch_size n*b and 2*n*b
+    respectively (2*n*b = 1040 for Llama-3.2-1B-Instruct with n=20).
     I did get OOM error with eval_all_pairs which uses batch_size n*b*(n*b-1)/2.
     """
     batch_size = attack_ids.shape[0]
@@ -284,7 +284,7 @@ class DSMAttack(Attack):
             self._embeddings_perm  = torch.arange(self.valid_vocab_size, device=model.device)
             self._embeddings_inv_perm = torch.arange(self.valid_vocab_size, device=model.device)
             self._sorted_embedding_projections = None
-            
+
 
         runs = []
         for idx, conversation in enumerate(conversations):
@@ -334,7 +334,7 @@ class DSMAttack(Attack):
         inv_perm_ids_init = self._embeddings_inv_perm[reduced_ids_init]
 
         # define loss_fn over V^n where V = {0, 1, ..., valid_vocab_size - 1} and n = n_optim_tokens
-        # on the permuted embedding matrix. Need to apply embeddings_perm (defined on V^n, so should be applied first)  
+        # on the permuted embedding matrix. Need to apply embeddings_perm (defined on V^n, so should be applied first)
         # and map back to original token ids
         loss_fn = lambda attack_ids: compute_loss_with_max_batchsize(
             model, self.valid_token_ids[self._embeddings_perm[attack_ids]], tokens, target_mask, attack_mask, self.config.lm_reg_weight
@@ -350,23 +350,23 @@ class DSMAttack(Attack):
         # define filter function
         filter_fn = None
         filter_zero = False
-        if self.config.filter_ids: 
+        if self.config.filter_ids:
             if self.config.placement == "suffix":
                 filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[self._embeddings_perm[attack_ids]].cpu()]], False)
                 # check if zero_attack_ids is reachable
                 retained_idx = filter_fn(zero_attack_ids)
                 if not retained_idx:
                     filter_zero = True
-                    logging.warning("Zero attack ids is not reachable from any input string. Will not round to zero during optimization.") 
+                    logging.warning("Zero attack ids is not reachable from any input string. Will not round to zero during optimization.")
             else:
                 # TODO: adapt filter function for other placements
                 raise ValueError(f"Filtering for {self.config.placement} placement not supported yet.")
 
         F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device, filter_fn, filter_zero)
-       
-        # TODO: Standardize optimizer interface 
+
+        # TODO: Standardize optimizer interface
         if self.config.optimizer == "pgm":
-            # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)       
+            # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)
             _, _, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, \
             times, flops = pgm_lovasz(
                 F_set_batch,
@@ -381,11 +381,11 @@ class DSMAttack(Attack):
             dca_config = self.config.dca_config
             time_hessian_bd = 0
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
-                logging.info(f"DR-submodular decomposition using Hessian upper bound at zero") 
-                F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons() 
+                logging.info("DR-submodular decomposition using Hessian upper bound at zero")
+                F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
                 # F_set_batch depends on the following params in addition to model/tokenizer and conversation
                 fingerprint = make_fingerprint(
-                    # I'm assuming that attack_mask, target_mask and non-attack tokens will not change for a given conversation, 
+                    # I'm assuming that attack_mask, target_mask and non-attack tokens will not change for a given conversation,
                     # placement and model/tokenizer. Might be safer to include them in fingerprint.
                     {
                         "lm_reg_weight": self.config.lm_reg_weight,
@@ -420,10 +420,10 @@ class DSMAttack(Attack):
                 L_F, flops_L_F = F_set_batch.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
             else:
                 hessian_upperbd = torch.tensor(dca_config.hessian_upperbd, device=device, dtype=torch.float32)
-                L_F, flops_L_F = F_set_batch.singletons_L_bound() 
-                logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}") 
+                L_F, flops_L_F = F_set_batch.singletons_L_bound()
+                logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}")
 
-            
+
             # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
@@ -435,7 +435,7 @@ class DSMAttack(Attack):
             )
             G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
-      
+
             # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = - H((k-1) 1) where k = valid_vocab_size
             # TODO: add flops_L_H, flops_L_F, flops_hessian_bd, flops_F_singletons to flops count of first step?
             H_max, flops_L_H= H_batch(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
@@ -468,7 +468,7 @@ class DSMAttack(Attack):
             raise ValueError("Every optimization step has no valid filtered solution.")
         discrete_sols_filtered = discrete_sols_filtered[valid_idx]
 
-        best_sol_idx_filtered = min(range(len(valid_idx)), key=lambda i: discrete_obj_values_filtered[valid_idx[i]]) 
+        best_sol_idx_filtered = min(range(len(valid_idx)), key=lambda i: discrete_obj_values_filtered[valid_idx[i]])
         flops[valid_idx[0]] += F_0_flops
 
         # map back to original token ids and decode to strings
@@ -494,7 +494,7 @@ class DSMAttack(Attack):
         for i, attack in enumerate(optim_strings):
             try:
                 parts, attack_conversation = self._prepare_single_conversation(conversation, tokenizer, attack, generation=True)
-            except TokenMergeError: 
+            except TokenMergeError:
                 if self.config.filter_ids:
                     raise ValueError(f"TokenMergeError encountered for attack: {attack} at step {valid_idx[i]}. This should not happen when filtering is enabled.")
                 else:
@@ -529,7 +529,7 @@ class DSMAttack(Attack):
             f"Generation time: {gen_time_total:.2f}s."
         )
 
-        t_end = time.time() 
+        t_end = time.time()
 
         # plot objective values and duality gaps for PGM (standalone or for each DCA outer iteration)
         if self.config.optimizer == "pgm":
@@ -548,7 +548,7 @@ class DSMAttack(Attack):
         # --- Assemble Results ---
         # model_completions, model_input, and model_input_tokens fields are aligned with optim_strings (only valid steps kept)
         # other fields are looked up in full-length lists via valid_idx (those lists still include invalid steps)
-        
+
         steps_results = []
         for i in range(len(optim_strings)):
             step_result = DSMAttackStepResult(
@@ -681,7 +681,7 @@ class DSMAttack(Attack):
                 {"role": "user", "content": conversation[0]["content"] + optim_str},
                 {"role": "assistant", "content": assistant_content},
             ]
-        # TODO: For now only suffix placement is supported when filter_ids is True. 
+        # TODO: For now only suffix placement is supported when filter_ids is True.
         elif self.config.placement == "prefix":
             attack_conversation = [
                 {"role": "user", "content": optim_str + conversation[0]["content"]},
@@ -690,7 +690,7 @@ class DSMAttack(Attack):
         elif self.config.placement == "prefix_suffix":
             # TODO: _reconstruct_attack_conversation in PGDDiscreteAttack doesn't support this placement
             # and we can't use the attack_conversation form below, we need separate optim_str_prefix and optim_str_suffix.
-            raise ValueError(f"Prefix_suffix placement not supported yet for DSM attack.")
+            raise ValueError("Prefix_suffix placement not supported yet for DSM attack.")
             # attack_conversation = [
             #     {"role": "user", "content": optim_str + conversation[0]["content"] + optim_str},
             #     {"role": "assistant", "content": assistant_content},
@@ -698,12 +698,12 @@ class DSMAttack(Attack):
         elif self.config.placement == "prompt":
             attack_conversation = copy.deepcopy(conversation)
             if generation:
-                # TODO: In _reconstruct_attack_conversation in PGDDiscreteAttack they re-add original 
-                # prompt to user content in attack_conversation, and keep original user content in 
+                # TODO: In _reconstruct_attack_conversation in PGDDiscreteAttack they re-add original
+                # prompt to user content in attack_conversation, and keep original user content in
                 # conversation, which I think is incorrect. Ask authors about this.
                 attack_conversation[0]["content"] = optim_str # + attack_conversation[0]["content"]
                 attack_conversation[1]["content"] = ""
-                conversation[0]["content"] = "" 
+                conversation[0]["content"] = ""
             else:
                 # matches _prepare_single_conversation in PGDDiscreteAttack
                 # initial optim_str is not used here

@@ -4,7 +4,7 @@ and related utilities.
 """
 from abc import ABC, abstractmethod
 import torch
-from typing import Callable, List, Optional, Tuple, Union, Any, Mapping
+from typing import Callable, List, Tuple, Any, Mapping
 from torch import Tensor
 from math import log2, ceil, inf
 import logging
@@ -19,7 +19,7 @@ def subgradient_lovasz_extension(
     lattice_fn: LatticeFunction,
     weights: Tensor,
     X: Tensor,
-    tie_breaker: Optional[Tensor] = None,
+    tie_breaker: Tensor | None = None,
 ):
     """Compute a subgradient of the Lovasz extension f_L of a submodular set function F_set: 2^([n] x [b]) -> R
     using Edmonds' greedy algorithm.
@@ -35,7 +35,7 @@ def subgradient_lovasz_extension(
             X.flatten(). If not provided, original order is used.
     Returns:
         subgradient: Tensor of shape (n, b)
-        Fvalues: Tensor of shape (n x b,) with Fvalues[i] = F_set(S^{i+1}) (F_set(S^0) not included), 
+        Fvalues: Tensor of shape (n x b,) with Fvalues[i] = F_set(S^{i+1}) (F_set(S^0) not included),
         with S^i the set of first i elements in the sorted order of X.flatten().
         x_chain: Tensor of shape (n x b, n) with x_chain[i] = x^{i+1} corresponding to S^{i+1}.
         flops: flop count, int.
@@ -61,8 +61,8 @@ def subgradient_lovasz_extension(
     rows, cols = torch.unravel_index(sorted_idx, X.shape)  # both are (n x b,)
 
     # evaluate F(x^i) for all x^i corresponding to S^i = {(rows[0], cols[0]), ..., (rows[i-1], cols[i-1])} for i in [n * b]
-    # compute x^i's sequentially which is more efficient than calling SetFnReduction.set_fn on S^i's which will compute 
-    # each x^i separately (O(n * b) vs O((n * b)^2)) 
+    # compute x^i's sequentially which is more efficient than calling SetFnReduction.set_fn on S^i's which will compute
+    # each x^i separately (O(n * b) vs O((n * b)^2))
     x_chain = torch.empty((rows.shape[0], n), dtype=torch.long, device=X.device)  # (m, n)
     x = torch.zeros(n, dtype=torch.long, device=X.device)
     for i in range(rows.shape[0]):
@@ -86,7 +86,7 @@ class SetToLatticeMap(ABC):
 
     def __init__(
         self,
-        k: int, # TODO: k is not used in this class, we can let subclasses handle this 
+        k: int, # TODO: k is not used in this class, we can let subclasses handle this
         n: int,
         device: torch.device,
     ):
@@ -104,17 +104,17 @@ class SetToLatticeMap(ABC):
 
     def _assert_in_Vn(self, x: Tensor) -> None:
         assert x.dtype == torch.long and (x >= 0).all() and (x < self.k).all(), "x must have values in {0, ..., k - 1}"
-        
+
     @abstractmethod
     def ints2binary(self, x: Tensor) -> Tensor:
         """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b]
-        represented by binary matrices X in {0,1}^n x b such that X[j, c] = 1 iff (j, c) in S. 
-        
+        represented by binary matrices X in {0,1}^n x b such that X[j, c] = 1 iff (j, c) in S.
+
         Args:
             x: Tensor of type long and shape (batch_size, n). Each row is an integer vector in V^n.
-        
+
         Returns:
-            binary_matrices: Tensor of type bool and shape (batch_size, n, b). 
+            binary_matrices: Tensor of type bool and shape (batch_size, n, b).
             Each X[i] = binary_matrices[i] represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
         """
 
@@ -157,7 +157,7 @@ class SetToLatticeMap(ABC):
             rows_list[i].device == self.device and cols_list[i].device == self.device
             for i in range(len(rows_list))
         ), "all rows_list and cols_list must be on the same device"
-        # TODO: Replace per-set lists with a sparse COO representation (batch_idx, rows, cols) for efficiency (see version below). 
+        # TODO: Replace per-set lists with a sparse COO representation (batch_idx, rows, cols) for efficiency (see version below).
         # For now will keep this simpler implementation.
 
         x = torch.zeros((len(rows_list), self.n), dtype=torch.long, device=self.device)
@@ -172,7 +172,7 @@ class SetToLatticeMap(ABC):
                 x[i].index_add_(0, rows, self.weights[cols])  # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
-    # TODO: potentially move to these versions of ints2set and set2ints for efficiency. 
+    # TODO: potentially move to these versions of ints2set and set2ints for efficiency.
     # Issue: zero vectors which correspond to empty sets are not included in the output!
     # This can be fixed by making batch_size not optional in set2ints_batched.
     # def ints2set_batched(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
@@ -198,7 +198,7 @@ class SetToLatticeMap(ABC):
     #     batch_idx: Tensor,
     #     rows: Tensor,
     #     cols: Tensor,
-    #     batch_size: Optional[int] = None,
+    #     batch_size: int | None = None,
     # ) -> Tensor:
     #     """Same map as ``set2ints``, but sets are given as one COO stream (``batch_idx``, ``rows``, ``cols``).
 
@@ -241,10 +241,10 @@ class SetToLatticeMap(ABC):
     #     x_flat.scatter_add_(0, flat_idx, self.weights[cols])
     #     return x_flat.view(batch_size, self.n)
 
-    def binary2ints(self, X: Tensor) -> Tensor: # TODO: not used anywhere yet, remove if not needed. 
+    def binary2ints(self, X: Tensor) -> Tensor: # TODO: not used anywhere yet, remove if not needed.
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by binary matrices X in {0,1}^n x b:
-        
+
         x[i, j] = sum_c X[i, j, c] * weights[c].
 
         Args:
@@ -271,9 +271,9 @@ class SetFnReduction():
 
     def __init__(
         self,
-        lattice_fn: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
+        lattice_fn: Callable[[Tensor], Tuple[Tensor, int]] | LatticeFunction,
         reduction_map: SetToLatticeMap,
-        filter_fn: Optional[Callable[[Tensor], List[int]]] = None,
+        filter_fn: Callable[[Tensor], List[int]] | None = None,
         filter_zero: bool = False,
     ):
         self.map = reduction_map
@@ -290,7 +290,7 @@ class SetFnReduction():
         self.filter_fn = filter_fn
         self.filter_zero = filter_zero
         self.device = reduction_map.device
- 
+
 
     def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
         return self.set_fn(rows_list, cols_list)
@@ -320,7 +320,7 @@ class SetFnReduction():
         # Instead, collect and return the new_x values already produced in _eval_neighbors (check if actually faster).
 
         # get neighbors of x in V^n in the order:
-        # 1) all x + weights[j] e_i in V^n for all i, j 
+        # 1) all x + weights[j] e_i in V^n for all i, j
         # 2) all x - weights[j] e_i in V^n for all i, j
 
         # enumerate all (i, j) pairs in [n] x [b]
@@ -339,16 +339,16 @@ class SetFnReduction():
 
         x_neighbors = x.unsqueeze(0).expand(num_neighbors, self.n).clone()
 
-        if num_neighbors == 0: # never happens with current reductions. Can happen if weights doesn't include 1 
+        if num_neighbors == 0: # never happens with current reductions. Can happen if weights doesn't include 1
             return inf, x, inf, x, 0
 
         if num_add > 0:
-            add_cols = i_idx[add_valid] 
+            add_cols = i_idx[add_valid]
             add_rows = torch.arange(num_add, device=self.device, dtype=torch.long)
             x_neighbors[add_rows, add_cols] += weights[add_valid]
 
         if num_rmv > 0:
-            rmv_cols = i_idx[rmv_valid]  
+            rmv_cols = i_idx[rmv_valid]
             rmv_rows = torch.arange(num_rmv, device=self.device, dtype=torch.long) + num_add
             x_neighbors[rmv_rows, rmv_cols] -= weights[rmv_valid]
 
@@ -372,9 +372,9 @@ class SetFnReduction():
             F_best_neighbor_filtered = F_best_neighbor
             best_neighbor_filtered = best_neighbor
 
-        return F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops 
+        return F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops
 
-    def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Optional[Tensor] = None):
+    def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Tensor | None = None):
         return subgradient_lovasz_extension(self.lattice_fn, self.map.weights, X, tie_breaker)
 
     # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class
@@ -390,7 +390,7 @@ class SetFnReduction():
         singleton_vals, flops = self.set_fn(rows_list, cols_list)
         return singleton_vals, flops
 
-    def singletons_L_bound(self, singleton_vals: Optional[Tensor] = None) -> Tuple[float, int]:  # used in pgm and DCA
+    def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> Tuple[float, int]:  # used in pgm and DCA
         """Compute sqrt(sum_{(i, j) in [n] x [b]} F_set({(i, j)})^2)
 
            If F_set is submodular, this is a valid bound on the Lipschitz constant
@@ -429,16 +429,16 @@ class SetFnReduction():
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
 
-    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Optional[Tensor] = None, save_file: str | Path | None = None, fingerprint: Optional[Mapping[str, Any]] = None) -> Tuple[Tensor, int, float]:
+    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Tensor | None = None, save_file: str | Path | None = None, fingerprint: Mapping[str, Any] | None = None) -> Tuple[Tensor, int, float]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
         We want to compute:
         max_{x, a_i1, a_i2} ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) / (a_i1 a_i2)
-        for all i1, i2 in [n]. This can be viewed as a discrete Hessian bound because if F is differentiable, taking a_i1, a_i2 -> 0, 
+        for all i1, i2 in [n]. This can be viewed as a discrete Hessian bound because if F is differentiable, taking a_i1, a_i2 -> 0,
         gives ∇^2F(x)_{i1, i2}. It's enough to consider a_j1 = a_j2 = 1 (max is reached there), but since we're only computing
-        the bound at x=0, that's not enough. Bound at x=0 costs O(n^2 k^2) evaluations of F. 
+        the bound at x=0, that's not enough. Bound at x=0 costs O(n^2 k^2) evaluations of F.
 
-        We instead consider the maximum over only weights of the map a_j1 = weights[j1], a_j2 = weights[j2], i.e.,  
+        We instead consider the maximum over only weights of the map a_j1 = weights[j1], a_j2 = weights[j2], i.e.,
         Q_{i1, i2} = max_{j1, j2 in [b]} ((F(a_j1 e_i1 + a_j2 e_i2) - F(a_j2 e_i2)) - (F(a_j1 e_i1) - F(0))) / (a_j1 a_j2)
                    = max_{j1, j2 in [b]} (F_set({v1, v2}) - F_set(v1) - F_set(v2)) / (a_j1 a_j2) where v1 = (i1, j1), v2 = (i2, j2),
         since F is normalized. This costs O(n^2 b^2) evaluations of F_set / F.
@@ -469,13 +469,13 @@ class SetFnReduction():
         if normalized:
             hessian_upperbd_flat.scatter_reduce_(0, i1 * self.n + i2, normalized_cross_vals, reduce="amax", include_self=True)
         else:
-            hessian_upperbd_flat.scatter_reduce_(0, i1 * self.n + i2, cross_vals, reduce="amax", include_self=True)   
-            
-        hessian_upperbd = hessian_upperbd_flat.view(self.n, self.n)
-        hessian_upperbd = torch.maximum(hessian_upperbd, hessian_upperbd.mT) # copy values of Q_{i1, i2} to Q_{i2, i1} 
+            hessian_upperbd_flat.scatter_reduce_(0, i1 * self.n + i2, cross_vals, reduce="amax", include_self=True)
 
-        hessian_max = hessian_upperbd_flat.max().item() 
-        logging.info(f"cross_vals_max: {cross_vals.max().item()}") # 0.51898 for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors 
+        hessian_upperbd = hessian_upperbd_flat.view(self.n, self.n)
+        hessian_upperbd = torch.maximum(hessian_upperbd, hessian_upperbd.mT) # copy values of Q_{i1, i2} to Q_{i2, i1}
+
+        hessian_max = hessian_upperbd_flat.max().item()
+        logging.info(f"cross_vals_max: {cross_vals.max().item()}") # 0.51898 for Llama-3.2-1B-Instruct, 1st conversation in adv_behaviors
         logging.info(f"hessian_max: {hessian_max}") # becomes 0.07127 with normalized=True
 
         flops = flops_singletons + flops_pairs
@@ -492,16 +492,16 @@ class SetFnReduction():
                     "n": self.n,
                     "b": self.b,
                     "flops": flops,
-                    "time_taken": time_taken, 
+                    "time_taken": time_taken,
                     "fingerprint": fingerprint
                 },
                 save_path,
             )
         return hessian_upperbd, flops, time_taken
 
-    def lovasz_extension(self, X: Tensor, subgradient: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None) -> float:
+    def lovasz_extension(self, X: Tensor, subgradient: Tensor | None = None, Fvalues: Tensor | None = None) -> float:
         """Evaluate the Lovasz extension f_L of F_set at X (n x b tensor): f_L(X) = <X, subgradient>
-        If X is of type long (assumed to be a binary matrix), f_L(X) = F_set(S) where S 
+        If X is of type long (assumed to be a binary matrix), f_L(X) = F_set(S) where S
         is the set of non-zeros indices in X, return F_set(S) directly for better numerical accuracy.
         """
         if X.dtype == torch.long:
@@ -521,17 +521,17 @@ class SetFnReduction():
 
         if subgradient is None:
             subgradient = self.subgradient_lovasz_extension(X)[0]
-        
+
         return (X * subgradient).sum().item()
 
     def round_lovasz_extension(
-        self, X: Optional[Tensor] = None, Fvalues: Optional[Tensor] = None, x_chain: Optional[Tensor] = None
+        self, X: Tensor | None = None, Fvalues: Tensor | None = None, x_chain: Tensor | None = None
     ) -> Tuple[float, Tensor, float, Tensor]:
         """Round X in [0,1]^n x b to a subset S_min in [n] x [b] such that F_set(S_min) <= f_L(X)
         and map to corresponding x_min = M(S_min) in V^n
-        If filtering is enabled, F_min_filtered, x_min_filtered correspond to the minimum over only 
+        If filtering is enabled, F_min_filtered, x_min_filtered correspond to the minimum over only
         retained x^i's in the chain. If none are retained, F_min_filtered is inf and x_min_filtered is
-        an empty tensor. Otherwise, they're the same as F_min, x_min. 
+        an empty tensor. Otherwise, they're the same as F_min, x_min.
         """
         if Fvalues is None or x_chain is None:
             assert X is not None, "X must be provided if Fvalues and x_chain are not provided"
@@ -556,7 +556,7 @@ class SetFnReduction():
                 x_min_filtered = torch.empty((self.n,), dtype=torch.long, device=x_chain.device)
             else:
                 F_min_filtered, x_min_filtered = round(Fvalues[retain_idx], x_chain[retain_idx], self.filter_zero)
-        else:    
+        else:
             F_min_filtered, x_min_filtered = F_min, x_min
 
         return F_min, x_min, F_min_filtered, x_min_filtered
@@ -588,7 +588,7 @@ class EneReductionMap(SetToLatticeMap):
         """Multiset of b weights a_1, ..., a_b summing to v_max = k-1.
 
         Base weights: a_1 = 1, a_i = 2^{i-2} for 2 <= i <= m+1 (indices 0...m).
-        Remainder weights: a_{m+1+j} = 2^{c_j} for 1 <= j <= p, where c_j is the j-th non-zero bit 
+        Remainder weights: a_{m+1+j} = 2^{c_j} for 1 <= j <= p, where c_j is the j-th non-zero bit
         in the binary representation of v_max other than m. Total # of weights is b = (m + 1) + p.
         """
         m = self.v_max.bit_length() - 1
@@ -607,7 +607,7 @@ class EneReductionMap(SetToLatticeMap):
 
     # TODO: Maybe it's better to actually store the map from integers in V to sets, instead of recomputing it every time.
     def ints2binary(self, x: Tensor) -> Tensor:  # used to convert x_init in V^n to X in {0,1}^n x b in pgm and DCA and in ints2set
-        """Decompose each entry in x into a sum of a subset of the weights a_i's: 
+        """Decompose each entry in x into a sum of a subset of the weights a_i's:
         x[i,j] = sum_{c in [b]} X[i, j, c] * a_c, where X is a bool tensor of shape (batch_size, n, b).
         """
         assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
@@ -657,11 +657,11 @@ class EneSubmodularSetFnReduction(SetFnReduction):
     """Ene-Nguyen's set function reduction using EneReductionMap"""
     def __init__(
         self,
-        lattice_fn: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
+        lattice_fn: Callable[[Tensor], Tuple[Tensor, int]] | LatticeFunction,
         k: int,
         n: int,
         device: torch.device,
-        filter_fn: Optional[Callable[[Tensor], List[int]]] = None,
+        filter_fn: Callable[[Tensor], List[int]] | None = None,
         filter_zero: bool = False,
     ):
         ene_map = EneReductionMap(k, n, device)
@@ -671,7 +671,7 @@ class EneSubmodularSetFnReduction(SetFnReduction):
 
 class BinaryRepresentationMap(SetToLatticeMap):
     """Binary representation map M: 2^([n] x [b]) -> V^n:
-    x = M(S) is such that each x_i is the integer with binary representation X[i, :], 
+    x = M(S) is such that each x_i is the integer with binary representation X[i, :],
     where X is the binary matrix with 1 at indices in S, 0 elsewhere.
     Least significant bit is at column index 0 (bit index matches column index).
 
@@ -714,11 +714,11 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
 
     def __init__(
         self,
-        lattice_fn: Union[Callable[[Tensor], Tuple[Tensor, int]], LatticeFunction],
+        lattice_fn: Callable[[Tensor], Tuple[Tensor, int]] | LatticeFunction,
         k: int,
         n: int,
         device: torch.device,
-        filter_fn: Optional[Callable[[Tensor], List[int]]] = None,
+        filter_fn: Callable[[Tensor], List[int]] | None = None,
         filter_zero: bool = False,
     ):
         binary_map = BinaryRepresentationMap(k, n, device)
@@ -726,4 +726,3 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         super().__init__(lattice_fn, binary_map, filter_fn, filter_zero)
 
 
-            

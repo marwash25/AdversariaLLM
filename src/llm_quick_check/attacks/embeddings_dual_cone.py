@@ -3,7 +3,7 @@ from math import sqrt, inf
 from pathlib import Path
 import time
 import logging
-from typing import Tuple, Any, Literal, Mapping, Optional
+from typing import Tuple, Any, Literal, Mapping
 from tqdm import trange
 import sys
 import torch
@@ -14,9 +14,9 @@ from transformers import PreTrainedModel
 
 #TODO: remove if not used
 def _max_min_gap_coordinate_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
-    r"""Sort rows of embedding matrix based on their jth coordinate in non-decreasing order, 
-    for j \in [d] with the largest minimum gap between adjacent rows, i.e.,  
-    \max_{j \in [d]} \min_{i \in [k-1]} (E_{\sigma^j_{i+1}, j} - E_{\sigma^j_i, j}), 
+    r"""Sort rows of embedding matrix based on their jth coordinate in non-decreasing order,
+    for j \in [d] with the largest minimum gap between adjacent rows, i.e.,
+    \max_{j \in [d]} \min_{i \in [k-1]} (E_{\sigma^j_{i+1}, j} - E_{\sigma^j_i, j}),
     where \sigma^j is such that E_{\sigma_k, j} \geq \ldots \geq E_{\sigma_0, j}.
     Return the corresponding permutation and minimum gap.
     """
@@ -45,13 +45,13 @@ def _projections_min_gap(E: Tensor, w: Tensor) -> Tuple[float, Tensor, Tensor, T
     return min_gap, perm, sorted_proj, gaps
 
 def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Tensor]:
-    """
-    Find unit vector w that maximizes the sum of all squared pairwise gaps between embedding projections on w, i.e., 
-    solve the PCA problem: 
+    r"""
+    Find unit vector w that maximizes the sum of all squared pairwise gaps between embedding projections on w, i.e.,
+    solve the PCA problem:
 
             \max_{\| w \| \leq 1} w^\top M w = largest eigenvalue of M.
 
-    where M  = 2k (\tilde{E}^T \tilde{E}) and \tilde{E} is the mean-centered matrix, 
+    where M  = 2k (\tilde{E}^T \tilde{E}) and \tilde{E} is the mean-centered matrix,
     where each row is $E_i - \bar{E}$ with $\bar{E}$ the mean of the embedding vectors.
 
     Returns:
@@ -73,7 +73,7 @@ def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Te
     E_centered = embedding_matrix - embeddings_mean
     M = 2 * k * (E_centered.T @ E_centered) # shape (d, d)
     # compute full eigendecomposition (cheap relative to computing M: O(d^3) vs O(k d^2))
-    eigenvalues, eigenvectors = torch.linalg.eigh(M) 
+    eigenvalues, eigenvectors = torch.linalg.eigh(M)
     logging.info(f"largest eigenvalue of embeddings covariance matrix = {eigenvalues[-1]:.6g}")
     w = eigenvectors[:, -1]
     w = w / w.norm()
@@ -85,7 +85,7 @@ def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Te
 
 def _randomly_permute_embeddings(embedding_matrix: Tensor, num_samples: int = 1) -> Tuple[Tensor, Tensor, float, Tensor]:
     """
-    Sample max_retries random unit vectors w. Return one with largest minimum gap between adjacent embedding projections on w, 
+    Sample max_retries random unit vectors w. Return one with largest minimum gap between adjacent embedding projections on w,
     and the corresponding permutation that sorts the projections in non-decreasing order.
     """
     if embedding_matrix.dtype != torch.float64:
@@ -105,7 +105,7 @@ def _randomly_permute_embeddings(embedding_matrix: Tensor, num_samples: int = 1)
             best_perm = perm
             best_sorted_proj = sorted_proj
             logging.info(f"Found a random unit vector w with min gap {min_gap:.6g} at attempt {i+1}.")
-            
+
     if best_min_gap <= 0.0:
         raise ValueError(
             f"Could not find a random unit vector w with distinct projections for all {k} rows "
@@ -185,8 +185,8 @@ def _embeddings_pairwise_ext_dist(
 
 def _embeddings_min_dist(E: Tensor, block_size: int = 2048) -> float:
     """Compute min_{i < j} ||E_i - E_j||_2 over embedding rows and log it.
-    
-    This gives an upper bound on the maximum achievable minimum gap between 
+
+    This gives an upper bound on the maximum achievable minimum gap between
     embedding projections on any unit vector w.
     """
     t0 = time.time()
@@ -239,14 +239,14 @@ def _solve_dual_cone_pgm(
     num_steps: int = 2000,
     log_every: int = 200,
 ) -> Tuple[Tensor, float, Tensor, Tensor]:
-    """Solve the dual-cone problem by projected subgradient method (PGM):
-       max_{\| w\| <= 1} \min_{i \in [k-1]} (B sort(E w))_i, 
+    r"""Solve the dual-cone problem by projected subgradient method (PGM):
+       max_{\| w\| <= 1} \min_{i \in [k-1]} (B sort(E w))_i,
     where B is the matrix with rows e_{i+1} - e_{i}, and sort operation
     is applied in non-decreasing order.
-    
+
     Args:
         E: 2D tensor.
-        w_init: 1D tensor, initial direction. 
+        w_init: 1D tensor, initial direction.
         norm: norm used to constrain w, "l2" or "linf".
         normalize: if True, normalize gradients, otherwise use L (only supported for hard sort and hard min for now)
         sort_epsilon: if 0, use hard sort; if > 0, use soft sort (via fast-soft-sort).
@@ -263,7 +263,7 @@ def _solve_dual_cone_pgm(
     """
     if norm not in ("2", "inf"):
         raise ValueError(f"norm must be '2' or 'inf', got {norm!r}.")
-    
+
     logging.info(
         f"Running PGM for {num_steps} iterations, with normalize={normalize}, "
         f"norm={norm}, sort_epsilon={sort_epsilon}, sort_reg={sort_reg}, min_epsilon={min_epsilon}"
@@ -332,7 +332,7 @@ def _solve_dual_cone_pgm(
         if hard_sort and hard_min:
             L = _embeddings_max_dist(E) # max_{i < j} ||E_j - E_i||_2
         else:
-            raise ValueError(f"Not implemented yet")
+            raise ValueError("Not implemented yet")
 
     for iter in (pbar := trange(num_steps + 1, file=sys.stdout)):
         obj_value, soft_obj_value, supergrad, perm, sorted_proj = _obj_and_supergrad(E, w)
@@ -360,14 +360,14 @@ def _solve_dual_cone_pgm(
     return best_w, best_obj, best_perm, best_sorted_proj
 
 
-def _affine_min_norm_point(A: Tensor) -> Tensor:
+def _affine_min_norm_point(A: Tensor) -> Tensor | None:
     r"""Find the minimum-norm point in the affine hull of the
-    columns of A (assumed to be affinely independent): 
+    columns of A (assumed to be affinely independent):
     min_{x \in aff(A)} 0.5 ||x||^2_2 = min_{alpha : 1^T alpha = 1} 0.5 || A alpha ||^2_2.
     Return the barycentric coordinates alpha of the MNP.
 
-    Implementation matches the one from the MNP algorithm in Francis Bach's 
-    Matlab Submodular package (version 2.0), https://www.di.ens.fr/~fbach/submodular/. 
+    Implementation matches the one from the MNP algorithm in Francis Bach's
+    Matlab Submodular package (version 2.0), https://www.di.ens.fr/~fbach/submodular/.
     """
     r = A.shape[1]
     c = A.norm()**2 / r
@@ -384,7 +384,7 @@ def _affine_min_norm_point(A: Tensor) -> Tensor:
     except RuntimeError as e:
         logging.warning(f"Cholesky decomposition failed: {e}")
         return None
-        
+
     return v / v.sum()
 
 # TODO: refactor into a general MNP solver to be used both here and as a DCA inner problem solver
@@ -412,7 +412,7 @@ def _min_norm_point(
 
     Args:
         U: 2D tensor
-        w_init: optional direction used to pick the initial vertex (argmin_i <u_i, w_init>). 
+        w_init: optional direction used to pick the initial vertex (argmin_i <u_i, w_init>).
         num_major_cycles: maximum number of major cycles (atom insertions).
         tol: stop when the relative duality gap (||x||_2^2 - min_i <u_i, x>) / ||x||_2^2 <= tol.
 
@@ -423,21 +423,21 @@ def _min_norm_point(
     """
     device, dtype = U.device, U.dtype
 
-    def min_gaps(x: Tensor) -> Tuple[Tensor, Tensor]: 
-        gaps = U @ x 
+    def min_gaps(x: Tensor) -> Tuple[Tensor, Tensor]:
+        gaps = U @ x
         min_gap, min_index = gaps.min(dim=0)
         return min_gap, min_index.item()
 
-    init_index = 0 if w_init is None else min_gaps(w_init)[1] 
+    init_index = 0 if w_init is None else min_gaps(w_init)[1]
     active_indices = [init_index]
     n_active = 1
     A = U[active_indices].T # matrix with active atoms as columns
     lbd = torch.ones(1, dtype=dtype, device=device)
-    x = A[:, 0].clone() 
+    x = A[:, 0].clone()
     d = x.shape[0]
 
     for major_iter in (pbar := trange(num_major_cycles+1, file=sys.stdout)): # major cycle (last iter is just for logging)
-        min_gap, min_index = min_gaps(x) # LMO: argmin_i <u_i, x> 
+        min_gap, min_index = min_gaps(x) # LMO: argmin_i <u_i, x>
         x_norm_squared = torch.dot(x, x)
 
         duality_gap = x_norm_squared - min_gap
@@ -447,10 +447,10 @@ def _min_norm_point(
                 {"||x||_2": torch.sqrt(x_norm_squared).item(), "min gap": min_gap.item(), "relative duality gap": relative_duality_gap, "|active indices|": n_active}
             )
 
-        if duality_gap <= tol * x_norm_squared: 
+        if duality_gap <= tol * x_norm_squared:
             logging.info(f"MNP converged after {major_iter + 1} major cycles with ||x||_2 = {torch.sqrt(x_norm_squared).item():.6g}, stopping.")
             break
-        
+
         if min_index in active_indices:
         # min_index should not be in active_indices: If x = argmin_{z in aff(A)} ||z||_2 (holds up to numerical errors throughout the algorithm)
         # any point q in aff(A) satisfy q^Tx = ||x||_2^2 so termination condition above should be met but might due to numerical errors.
@@ -476,12 +476,12 @@ def _min_norm_point(
                 alpha = _affine_min_norm_point(A)
                 if alpha is None:
                     logging.warning(f"MNP major cycle {major_iter}: Cholesky decomposition in affine minimizer failed, stopping.")
-                    break 
+                    break
                 if (alpha > 1e-12).all(): # using 1e-12 instead of 0 to avoid numerical issues
                     lbd = alpha
                     x = A @ lbd
                     break
-                # update x to the intersection of the boundary of conv(A) and the segment joining the affine solution y = A @ alpha and previous x. 
+                # update x to the intersection of the boundary of conv(A) and the segment joining the affine solution y = A @ alpha and previous x.
                 # move toward y until an atom weight lbd_i hits zero (leaves conv(A))
                 diff = alpha - lbd
                 blocking = diff < 0 # not empty since lbd > 1e-12 and there exists alpha_i < 1e-12
@@ -489,7 +489,7 @@ def _min_norm_point(
                 # which is equivalent to taking min over alpha_i < 0 if any, otherwise theta = 1.
                 theta = min((-lbd[blocking] / diff[blocking]).min().item(), 1.0)
                 lbd = lbd + theta * diff
-                keep = lbd > 1e-12 
+                keep = lbd > 1e-12
                 active_indices = [active_indices[i] for i in range(n_active) if keep[i]]
                 assert len(active_indices) < n_active, "At least one atom should be removed in each minor cycle."
                 n_active = len(active_indices)
@@ -498,10 +498,10 @@ def _min_norm_point(
                 x = A @ lbd
 
             if log_every > 0 and (major_iter % log_every == 0 or major_iter == num_major_cycles - 1):
-                pbar.set_postfix({"minor steps": minor_iter + 1})            
+                pbar.set_postfix({"minor steps": minor_iter + 1})
 
     return x, duality_gap.item(), n_active, major_iter + 1
-    
+
 
 def _solve_dual_cone_am(
     E: Tensor,
@@ -521,11 +521,11 @@ def _solve_dual_cone_am(
              max_{||w||_2 <= 1} min_i <u_i, w>,   u_i = E_{sigma_{i+1}} - E_{sigma_i}
          by solving its dual min_{lbd in simplex} || U^T lbd ||_2, where U is the matrix with rows u_i,
         using MNP algorithm. Update w = U^T lbd^* / || U^T lbd^* ||_2.
-    Objective should monotonically increase up to accuracy of inner problem. 
+    Objective should monotonically increase up to accuracy of inner problem.
 
     Args:
         E: 2D tensor.
-        w_init: 1D tensor, initial direction with non-zero minimum gap. 
+        w_init: 1D tensor, initial direction with non-zero minimum gap.
         num_outer_steps: maximum number of sort/inner-solve alternations.
         num_inner_steps: maximum major cycles per inner min-norm-point solve.
         outer_tol: relative objective value change tolerance for the outer solve.
@@ -551,7 +551,7 @@ def _solve_dual_cone_am(
     w = w / w.norm()
 
     best_w = w.clone() # should be last iterate if inner problem is solved exactly
-    best_obj = -inf  
+    best_obj = -inf
     best_perm = None
     best_sorted_proj = None
     prev_obj_value = -inf
@@ -569,7 +569,7 @@ def _solve_dual_cone_am(
         )
         x_mnp_norm = x_mnp.norm()
 
-        # TODO: add a check that obj_value increased up to accuracy achieved for inner problem. 
+        # TODO: add a check that obj_value increased up to accuracy achieved for inner problem.
         if obj_value > best_obj:
             best_obj, best_w, best_perm, best_sorted_proj = (
                 obj_value, w.clone(), perm, sorted_proj.clone()
@@ -578,7 +578,7 @@ def _solve_dual_cone_am(
         if log_every > 0 and (iter % log_every == 0 or iter == num_outer_steps - 1):
             pbar.set_postfix(
                 {"obj value": obj_value, "best obj": best_obj, "MNP norm": x_mnp_norm.item(), "MNP duality gap": mnp_gap, "|MNP active indices|": n_active, "MNP steps": n_MNP_steps}
-            ) 
+            )
 
         if iter > 0 and (obj_value - prev_obj_value) <= outer_tol * prev_obj_value:
             # use relative tolerance since obj_value can be very small (e.g., 1e-12 at w_init)
@@ -607,28 +607,28 @@ def _find_embeddings_dual_cone_w(
     solver_config: dict = {},
     seed: int = 0,
     save_file: str | Path | None = None,
-    fingerprint: Optional[Mapping[str, Any]] = None,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor | None]:
-    """Find a vector w in R^d in the interior of the dual cone of differences of
-    adjacent embedding vectors after permuting them, i.e., 
-    
-    w^\top(E_{\sigma_{i+1}} - E_{\sigma_i}) > 0 for all i in V, 
+    fingerprint: Mapping[str, Any] | None = None,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor | None, float]:
+    r"""Find a vector w in R^d in the interior of the dual cone of differences of
+    adjacent embedding vectors after permuting them, i.e.,
+
+    w^\top(E_{\sigma_{i+1}} - E_{\sigma_i}) > 0 for all i in V,
     where E is the model embedding matrix (restricted to valid_token_ids).
 
     If solver is None:
-        Sample a random unit vector w such that the projections of the rows of E onto w are distinct, 
+        Sample a random unit vector w such that the projections of the rows of E onto w are distinct,
         then sort the rows in non-decreasing order of their projections onto w.
 
     If solver == "pgm":
-        Find unit vector w and permutation sigma that maximize the min gap between the projections of 
+        Find unit vector w and permutation sigma that maximize the min gap between the projections of
         adjacent rows of E onto w, i.e.,
 
         \max_{\| w\| <= 1} \max_{\sigma} \min_{i \in [k-1]} w^\top(E_{\sigma_{i+1}} - E_{\sigma_i})
-        = \max_{\| w\| <= 1} \min_{i \in [k-1]} (B ~\mathrm{sort}(E w))_i, 
+        = \max_{\| w\| <= 1} \min_{i \in [k-1]} (B ~\mathrm{sort}(E w))_i,
         where B is the matrix with rows e_{i+1} - e_{i}.
 
         Use PGM initialized with init_w.
-    
+
     If solver == "am":
         Solve the same problem as "pgm" (l2 norm only) by alternating maximization
         initialized with init_w.
@@ -641,12 +641,12 @@ def _find_embeddings_dual_cone_w(
     embedding_matrix = embedding_matrix.double()
     k = embedding_matrix.shape[0]
     # TODO:remove when done debugging
-    # min_dist = _embeddings_min_dist(embedding_matrix) # 0.0166836 for Llama-3.2-1B-Instruct 
+    # min_dist = _embeddings_min_dist(embedding_matrix) # 0.0166836 for Llama-3.2-1B-Instruct
     # n_unique_rows = np.unique(embedding_matrix, axis=0).shape[0]
     # assert n_unique_rows == k, (f"Embedding matrix has {k - n_unique_rows} duplicate row(s).")
 
     if init_w == "random":
-        torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm 
+        torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm
         #TODO: run solver with different random initializations and pick the best final solution
         w, perm, min_gap, sorted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
     elif init_w == "pca":
@@ -676,10 +676,10 @@ def _find_embeddings_dual_cone_w(
     perm = perm.to(model.device)
     inv_perm = torch.empty_like(perm)
     inv_perm[perm] = torch.arange(k, device=model.device)
-    # normalize by t_opt. We can recover t_opt from 1/||w_opt||_\infty if solver=="pgm" and norm=="inf" or 
+    # normalize by t_opt. We can recover t_opt from 1/||w_opt||_\infty if solver=="pgm" and norm=="inf" or
     # 1/||w_opt||_2 otherwise
     w_opt = (w_opt / t_opt).to(model.device)
-    if sorted_embedding_projections is not None:  
+    if sorted_embedding_projections is not None:
         sorted_embedding_projections = (sorted_embedding_projections / t_opt).to(model.device)
 
     time_taken = time.time() - t_start
@@ -699,4 +699,4 @@ def _find_embeddings_dual_cone_w(
             save_path,
         ) # not storing permuted projections as it's cheaper to just recompute them
 
-    return w_opt, perm, inv_perm, sorted_embedding_projections
+    return w_opt, perm, inv_perm, sorted_embedding_projections, time_taken
