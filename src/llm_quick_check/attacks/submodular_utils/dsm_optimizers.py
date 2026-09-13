@@ -172,8 +172,8 @@ def pgm_lovasz(
 
         pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Discrete obj value filtered": discrete_obj_values_filtered[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
         if gap_tol is not None and duality_gaps[iter] <= gap_tol:
-                logging.info(f"Duality gap {duality_gap:.4f} <= tolerance {gap_tol:.4f} reached after {iter} iterations, stopping.")
-                break
+            logging.info(f"Duality gap {duality_gap:.4f} <= tolerance {gap_tol:.4f} reached after {iter} iterations, stopping.")
+            break
 
         time_start = time.time()
         if iter < num_steps: # no update in last iteration
@@ -385,24 +385,24 @@ def dca_dsm(
         "Continuous obj value": continuous_obj_values[result_idx], "Inner duality gap reached": inner_duality_gaps[result_idx][-1]})
 
         if prev_cont_value - continuous_obj_values[result_idx] <= outer_tol:
-                F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops_local_search = F_set_batch.get_best_neighbors(x_round)
-                # include local search time and flops
-                times[result_idx] = time.time() - time_start - (times[0] if iter == 0 else 0.0)
-                flops[result_idx] += flops_local_search
+            F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops_local_search = F_set_batch.get_best_neighbors(x_round)
+            # include local search time and flops
+            times[result_idx] = time.time() - time_start - (times[0] if iter == 0 else 0.0)
+            flops[result_idx] += flops_local_search
 
-                if F_best_neighbor < F_round:
-                    logging.info(f"DCA converged after {result_idx} outer steps but not to a local min, restarting from best neighbor "
-                                 f"with discrete obj value {F_best_neighbor:.4f} and discrete obj value filtered {F_best_neighbor_filtered:.4f}.")
-                    X = F_set_batch.map.ints2binary(best_neighbor.unsqueeze(0))[0].to(dtype=torch.long)
-                    discrete_obj_values[result_idx] = F_best_neighbor
-                    # use current filtered discrete solution if better than best filtered neighbor
-                    discrete_obj_values_filtered[result_idx] = min(F_best_neighbor_filtered, F_round_filtered)
-                    discrete_sols_filtered[result_idx] = best_neighbor_filtered if F_best_neighbor_filtered < F_round_filtered else x_round_filtered
-                    continuous_obj_values[result_idx] = F_best_neighbor # since X is set to binary matrix corresponding to M^-1(best_neighbor)
+            if F_best_neighbor < F_round:
+                logging.info(f"DCA converged after {result_idx} outer steps but not to a local min, restarting from best neighbor "
+                             f"with discrete obj value {F_best_neighbor:.4f} and discrete obj value filtered {F_best_neighbor_filtered:.4f}.")
+                X = F_set_batch.map.ints2binary(best_neighbor.unsqueeze(0))[0].to(dtype=torch.long)
+                discrete_obj_values[result_idx] = F_best_neighbor
+                # use current filtered discrete solution if better than best filtered neighbor
+                discrete_obj_values_filtered[result_idx] = min(F_best_neighbor_filtered, F_round_filtered)
+                discrete_sols_filtered[result_idx] = best_neighbor_filtered if F_best_neighbor_filtered < F_round_filtered else x_round_filtered
+                continuous_obj_values[result_idx] = F_best_neighbor # since X is set to binary matrix corresponding to M^-1(best_neighbor)
 
-                else:
-                    logging.info(f"DCA converged after {result_idx} outer steps to a local min, stopping.")
-                    break
+            else:
+                logging.info(f"DCA converged after {result_idx} outer steps to a local min, stopping.")
+                break
 
         time_start = time.time()
 

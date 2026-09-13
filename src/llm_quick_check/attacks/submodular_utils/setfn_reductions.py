@@ -262,7 +262,7 @@ class SetToLatticeMap(ABC):
 
 
 
-class SetFnReduction():
+class SetFnReduction:
     """Reduction from a lattice function F: V^n -> R where V = {0, 1,..., k - 1},
     to a set function F_set: 2^([n] x [b]) -> R, using a SetToLatticeMap for M.
 

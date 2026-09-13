@@ -1,11 +1,11 @@
 """Find a direction w in the dual cone of adjacent embedding differences."""
 from math import sqrt, inf
 from pathlib import Path
+import sys
 import time
 import logging
 from typing import Tuple, Any, Literal, Mapping
 from tqdm import trange
-import sys
 import torch
 from torch import Tensor
 from fast_soft_sort.pytorch_ops import soft_sort
@@ -218,7 +218,7 @@ def _embeddings_min_dist(E: Tensor, block_size: int = 2048) -> float:
     )
 
     w = (E[min_i] - E[min_j]) / min_dist
-    min_gap, perm, sorted_proj, _ = _projections_min_gap(E, w)
+    min_gap, _, _, _ = _projections_min_gap(E, w)
     logging.info(f"Min gap achieved with min dist unit vector w: {min_gap:.6g}") # min_gap = 0 for Llama-3.2-1B-Instruct
 
     return min_dist
@@ -439,7 +439,7 @@ def _min_norm_point(
     """
     device, dtype = U.device, U.dtype
 
-    def min_gaps(x: Tensor) -> Tuple[Tensor, Tensor]:
+    def min_gaps(x: Tensor) -> Tuple[Tensor, int]:
         gaps = U @ x
         min_gap, min_index = gaps.min(dim=0)
         return min_gap, min_index.item()
@@ -620,7 +620,7 @@ def _find_embeddings_dual_cone_w(
     valid_token_ids: Tensor,
     init_w: Literal["random", "pca"] = "random",
     solver: Literal["pgm", "am"] | None = None,
-    solver_config: dict = {},
+    solver_config: dict | None = None,
     seed: int = 0,
     save_file: str | Path | None = None,
     fingerprint: Mapping[str, Any] | None = None,
@@ -652,6 +652,7 @@ def _find_embeddings_dual_cone_w(
     If save_file is set, cache results and fingerprint to that path.
     """
     t_start = time.time()
+    solver_config = solver_config or {}
     embedding_matrix = _valid_embeddings(model, valid_token_ids)
     # float64 precision needed since min gap can be very small (e.g., 1e-12)
     embedding_matrix = embedding_matrix.double()
