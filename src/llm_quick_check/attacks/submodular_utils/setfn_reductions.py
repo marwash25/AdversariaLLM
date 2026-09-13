@@ -16,6 +16,7 @@ from .lattice_functions import CallableLatticeFunction, LatticeFunction
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
 # specific to the reduction.
 
+
 def subgradient_lovasz_extension(
     lattice_fn: LatticeFunction,
     weights: Tensor,
@@ -77,6 +78,7 @@ def subgradient_lovasz_extension(
 
     return subgradient, Fvalues, x_chain, flops
 
+
 class SetToLatticeMap(ABC):
     """Base class for map M: 2^([n] x [b]) -> V^n and its inverse M^{-1}: V^n -> 2^([n] x [b])
     where V = {0, 1, ..., k - 1} and [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
@@ -85,7 +87,7 @@ class SetToLatticeMap(ABC):
 
     def __init__(
         self,
-        k: int, 
+        k: int,
         n: int,
         device: torch.device,
     ):
@@ -117,7 +119,7 @@ class SetToLatticeMap(ABC):
             Each X[i] = binary_matrices[i] represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
         """
 
-    def ints2set(self, x: Tensor) -> tuple[list[Tensor], list[Tensor]]:  
+    def ints2set(self, x: Tensor) -> tuple[list[Tensor], list[Tensor]]:
         """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b] represented
         by paired rows and cols indices, i.e., S = {(rows[j], cols[j]) for j in range(rows.shape[0])}.
 
@@ -139,7 +141,7 @@ class SetToLatticeMap(ABC):
             cols_list.append(cols[batch_mask].long())
         return rows_list, cols_list
 
-    def set2ints(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> Tensor:  
+    def set2ints(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> Tensor:
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by paired rows and cols indices.
 
@@ -169,8 +171,7 @@ class SetToLatticeMap(ABC):
                 x[i].index_add_(0, rows, self.weights[cols])  # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
-
-    def binary2ints(self, X: Tensor) -> Tensor: 
+    def binary2ints(self, X: Tensor) -> Tensor:
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by binary matrices X in {0,1}^n x b:
 
@@ -188,7 +189,6 @@ class SetToLatticeMap(ABC):
         assert X.device == self.device, "X must be on the same device as self.device"
         w = self.weights.view(1, 1, self.b)
         return (X.to(dtype=self.weights.dtype) * w).sum(dim=-1).to(torch.long)
-
 
 
 class SetFnReduction:
@@ -220,11 +220,10 @@ class SetFnReduction:
         self.filter_zero = filter_zero
         self.device = reduction_map.device
 
-
     def __call__(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
         return self.set_fn(rows_list, cols_list)
 
-    def set_fn(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:  
+    def set_fn(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
         """Batched version of F_set: 2^([n] x [b]) -> R: Compute F_set(S^i) for the set
         S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
         """
@@ -306,7 +305,6 @@ class SetFnReduction:
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Tensor | None = None):
         return subgradient_lovasz_extension(self.lattice_fn, self.map.weights, X, tie_breaker)
 
-
     def eval_singletons(self) -> tuple[Tensor, int]:
         """Evaluate F_set({(i, j)}) for all (i, j) in [n] x [b] in one batched call"""
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
@@ -317,7 +315,7 @@ class SetFnReduction:
         singleton_vals, flops = self.set_fn(rows_list, cols_list)
         return singleton_vals, flops
 
-    def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> tuple[float, int]:  
+    def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> tuple[float, int]:
         """Compute sqrt(sum_{(i, j) in [n] x [b]} F_set({(i, j)})^2)
 
            If F_set is submodular, this is a valid bound on the Lipschitz constant
@@ -401,9 +399,9 @@ class SetFnReduction:
         hessian_upperbd = hessian_upperbd_flat.view(self.n, self.n)
         hessian_upperbd = torch.maximum(hessian_upperbd, hessian_upperbd.mT) # copy values of Q_{i1, i2} to Q_{i2, i1}
 
-        hessian_max = hessian_upperbd_flat.max().item() 
-        logging.info(f"cross_vals_max: {cross_vals.max().item()}") 
-        logging.info(f"hessian_max: {hessian_max}") 
+        hessian_max = hessian_upperbd_flat.max().item()
+        logging.info(f"cross_vals_max: {cross_vals.max().item()}")
+        logging.info(f"hessian_max: {hessian_max}")
 
         flops = flops_singletons + flops_pairs
         time_taken = time.time() - t_start
@@ -534,9 +532,8 @@ class EneReductionMap(SetToLatticeMap):
         weights = torch.cat((one, base_weights, base_weights[self.v_max_non_zero_bits]))
         return weights
 
-
-    def ints2binary(self, x: Tensor) -> Tensor: 
-        """Decompose each entry in x into a sum of a subset of the weights a_i's: 
+    def ints2binary(self, x: Tensor) -> Tensor:
+        """Decompose each entry in x into a sum of a subset of the weights a_i's:
         x[i,j] = sum_{c in [b]} X[i, j, c] * a_c, where X is a bool tensor of shape (batch_size, n, b).
         """
         assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
@@ -597,7 +594,6 @@ class EneSubmodularSetFnReduction(SetFnReduction):
         super().__init__(lattice_fn, ene_map, filter_fn, filter_zero)
 
 
-
 class BinaryRepresentationMap(SetToLatticeMap):
     """Binary representation map M: 2^([n] x [b]) -> V^n:
     x = M(S) is such that each x_i is the integer with binary representation X[i, :],
@@ -618,7 +614,7 @@ class BinaryRepresentationMap(SetToLatticeMap):
 
     def get_weights(self) -> Tensor:
         b = ceil(log2(self.k))
-        weights = 1 << torch.arange(b, dtype=torch.long, device=self.device)  
+        weights = 1 << torch.arange(b, dtype=torch.long, device=self.device)
         return weights
 
     def ints2binary(self, x: Tensor) -> Tensor:
@@ -653,5 +649,3 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         binary_map = BinaryRepresentationMap(k, n, device)
         assert k == 2**binary_map.b, "k must be a power of 2"
         super().__init__(lattice_fn, binary_map, filter_fn, filter_zero)
-
-

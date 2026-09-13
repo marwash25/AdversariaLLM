@@ -30,6 +30,7 @@ def _projections_min_gap(E: Tensor, w: Tensor) -> tuple[float, Tensor, Tensor, T
     min_gap = gaps.min().item()
     return min_gap, perm, sorted_proj, gaps
 
+
 def _embeddings_pca(embedding_matrix: Tensor) -> tuple[Tensor, Tensor, float, Tensor]:
     r"""
     Find unit vector w that maximizes the sum of all squared pairwise gaps between embedding projections on w, i.e.,
@@ -65,6 +66,7 @@ def _embeddings_pca(embedding_matrix: Tensor) -> tuple[Tensor, Tensor, float, Te
     logging.info(f"Min gap achieved with PCA unit vector w: {min_gap:.6g}")
 
     return w, perm, min_gap, sorted_proj
+
 
 def _randomly_permute_embeddings(embedding_matrix: Tensor, num_samples: int = 1) -> tuple[Tensor, Tensor, float, Tensor]:
     """
@@ -193,7 +195,7 @@ def _embeddings_min_dist(E: Tensor, block_size: int = 2048) -> float:
 
     w = (E[min_i] - E[min_j]) / min_dist
     min_gap, _, _, _ = _projections_min_gap(E, w)
-    logging.info(f"Min gap achieved with min dist unit vector w: {min_gap:.6g}") 
+    logging.info(f"Min gap achieved with min dist unit vector w: {min_gap:.6g}")
 
     return min_dist
 
@@ -331,7 +333,7 @@ def _solve_dual_cone_pgm(
         supergrad_norm = supergrad.norm()
         if log_every > 0 and (iter % log_every == 0 or iter == num_steps):
             pbar.set_postfix(
-            {"obj value": obj_value, "soft obj value": soft_obj_value, "best obj value": best_obj, "||supergrad||": supergrad_norm.item()}
+                {"obj value": obj_value, "soft obj value": soft_obj_value, "best obj value": best_obj, "||supergrad||": supergrad_norm.item()}
             )
         if supergrad_norm < 1e-12:
             pbar.write(f"PGM dual cone: supergradient norm < 1e-12 at step {iter}, stopping.")
@@ -375,6 +377,7 @@ def _affine_min_norm_point(A: Tensor) -> Tensor | None:
         return None
 
     return v / v.sum()
+
 
 # TODO: refactor into a general MNP solver to be used both here and as a DCA inner problem solver
 # add option to restart from a point in conv(A) in general version (needed in DCA)
@@ -583,7 +586,7 @@ def _solve_dual_cone_am(
             )
             break # alternatively we can restart from a random w
 
-        w =  x_mnp / x_mnp_norm # we should have (U @ w).min() = x_mnp_norm - mnp_gap / x_mnp_norm
+        w = x_mnp / x_mnp_norm # we should have (U @ w).min() = x_mnp_norm - mnp_gap / x_mnp_norm
 
     return best_w, best_obj, best_perm, best_sorted_proj
 
@@ -632,7 +635,7 @@ def _find_embeddings_dual_cone_w(
     k = embedding_matrix.shape[0]
 
     if init_w == "random":
-        torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm 
+        torch.manual_seed(seed) # reset seed to ensure reproducibility of resulting w, perm
         w, perm, min_gap, sorted_embedding_projections = _randomly_permute_embeddings(embedding_matrix)
     elif init_w == "pca":
         w, perm, min_gap, sorted_embedding_projections = _embeddings_pca(embedding_matrix)

@@ -10,6 +10,7 @@ from torch import Tensor
 # TODO: for now we only use flops for forward passes. Create a class for cross-entropy loss that tracks flops count
 # in its state, and remove flops everywhere else
 
+
 class LatticeFunction(ABC):
     """Base class for lattice functions F: V^n -> R, with batched evaluation, evaluation along a chain of inputs,
     and evaluation of neighbors.
@@ -133,7 +134,6 @@ class LatticeFunction(ABC):
     ) -> tuple[Tensor, int]:
         """Neighbor evaluation after eval_neighbors checks."""
         return self._eval_batch(x_neighbors)
-
 
 
 class SequentialLatticeFunction(LatticeFunction):
@@ -260,7 +260,6 @@ class SequentialLatticeFunction(LatticeFunction):
         return Fvalues, flops
 
 
-
 class CallableLatticeFunction(LatticeFunction):
     """Wrap a plain batched callable F_batch as a LatticeFunction."""
 
@@ -325,6 +324,7 @@ class LinearCombinationLatticeFn(LatticeFunction):
             lambda F: F._eval_neighbors(x, weights, x_neighbors)
         )
 
+
 def make_zero_lattice_fn(k: int, n: int, dtype: torch.dtype = torch.float32) -> LatticeFunction:
     """Return a lattice function F(x)=0 for all x in V^n."""
 
@@ -332,6 +332,3 @@ def make_zero_lattice_fn(k: int, n: int, dtype: torch.dtype = torch.float32) -> 
         return torch.zeros((x.shape[0],), device=x.device, dtype=dtype), 0
 
     return CallableLatticeFunction(k, n, zero_F_batch)
-
-
-

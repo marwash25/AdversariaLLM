@@ -136,10 +136,10 @@ def pgm_lovasz(
             best_discrete_sol = x_round.clone()
             best_continuous_sol = X.clone()
 
-        discrete_obj_values[iter] = F_round 
-        discrete_obj_values_filtered[iter] = F_round_filtered 
-        continuous_obj_values[iter] = cont_value 
-        discrete_sols_filtered[iter] = x_round_filtered.clone() 
+        discrete_obj_values[iter] = F_round
+        discrete_obj_values_filtered[iter] = F_round_filtered
+        continuous_obj_values[iter] = cont_value
+        discrete_sols_filtered[iter] = x_round_filtered.clone()
 
         dual_avg = (dual_avg * iter + subgradient) / (iter + 1)
         dual_value = torch.clamp(dual_avg, max=0).sum().item()
@@ -148,8 +148,8 @@ def pgm_lovasz(
 
         # PGM update is included in next iteration time
         times[iter] = time.time() - time_start
-        flops[iter] = flops_subgrad # only subgradient involves function evaluations 
-        if iter == 0: 
+        flops[iter] = flops_subgrad # only subgradient involves function evaluations
+        if iter == 0:
             flops[iter] += flops_L
 
         pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Discrete obj value filtered": discrete_obj_values_filtered[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
@@ -254,7 +254,7 @@ def dca_dsm(
         inner_times: List of T lists of floats, times of the inner iterations of each outer step.
         inner_flops: List of T lists of ints, flops of the inner iterations of each outer step.
         All inner_*[0] are empty (initialization result, inner solver not run).
-    """  
+    """
     logging.info(f"Running DCA for {num_outer_steps} outer iterations and {num_inner_steps} inner iterations")
     time_start = time.time()
 
@@ -276,7 +276,6 @@ def dca_dsm(
 
     # create set function reduction with place holder lattice_fn and same reduction map and filter params as F_set_batch
     F_set_upperbd = SetFnReduction(make_zero_lattice_fn(F_set_batch.k, n), F_set_batch.map, filter_fn=F_set_batch.filter_fn, filter_zero=F_set_batch.filter_zero)
-
 
     discrete_obj_values = [0.0 for _ in range(num_outer_steps + 1)]
     inner_discrete_values: list[list[float]] = [[] for _ in range(num_outer_steps + 1)]
@@ -301,7 +300,7 @@ def dca_dsm(
 
         if inner_solver == "pgm":
             # minimize upper bound on F_set: F_set_upperbd(S) = G_set(S) - <subgrad_H, 1_S>
-            H_lowerbd = LatticeFnWithModReduction(F_set_batch.map,subgrad_H)
+            H_lowerbd = LatticeFnWithModReduction(F_set_batch.map, subgrad_H)
             F_upperbd = LinearCombinationLatticeFn([G_set_batch.lattice_fn, H_lowerbd], [1.0, -1.0])
             F_set_upperbd.lattice_fn = F_upperbd
             L_upperbd = L_G + torch.linalg.vector_norm(subgrad_H.float(), ord=2).item()
@@ -315,19 +314,19 @@ def dca_dsm(
             # X.float() is needed to avoid assertion being triggered due to difference between batched and single cross entropy loss evaluations,
             # since inner_continuous_values is set to Fvalues[nnz-1] in pgm while lovasz_extension(X) returns F_set(S) if X is of type long.
             assert abs(prev_cont_value - (continuous_obj_values[result_idx-1] if iter > 0 else  F_set_batch.lovasz_extension(X.float())))  < 1e-12, \
-            "prev_cont_value should match the continuous obj value of the previous outer step." 
-            
+            "prev_cont_value should match the continuous obj value of the previous outer step."
+
         elif inner_solver == "mnp":
             # TODO: implement MNP
             raise NotImplementedError("MNP is not implemented yet.")
         else:
             raise ValueError(f"Inner solver {inner_solver} not supported. Must be 'pgm' or 'mnp'.")
-        
-        X = inner_best_continuous_sol 
 
-        # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol). 
-        subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) 
-        F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)  
+        X = inner_best_continuous_sol
+
+        # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol).
+        subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker)
+        F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)
         continuous_obj_values[result_idx] = F_set_batch.lovasz_extension(X, subgradient_F, Fvalues)
 
         if continuous_obj_values[result_idx] > prev_cont_value + inner_duality_gaps[result_idx][-1]:
@@ -344,8 +343,8 @@ def dca_dsm(
             continuous_obj_values[0] = prev_cont_value
             discrete_sols_filtered[0] = inner_discrete_sols_filtered[0].clone()
             # include time/flops to evaluate objective in initialization time/flops
-            times[0] = initialization_time + inner_times[result_idx][0] 
-            flops[0] = flops_L_G + inner_flops[result_idx][0] 
+            times[0] = initialization_time + inner_times[result_idx][0]
+            flops[0] = flops_L_G + inner_flops[result_idx][0]
 
         discrete_obj_values[result_idx] = F_round
         discrete_obj_values_filtered[result_idx] = F_round_filtered

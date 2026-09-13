@@ -62,6 +62,7 @@ class DCAConfig:
     inner_solver: Literal["pgm"] = "pgm"
     tie_break: Literal["random"] | None = None
 
+
 @dataclass
 class PGMConfig:
     """Config for the PGM optimizer."""
@@ -88,12 +89,13 @@ class DSMConfig:
     allow_special: bool = False
     filter_ids: bool = True
 
+
 @dataclass
 class DSMAttackStepResult(AttackStepResult):
     unfiltered_loss: float # discrete_obj_values + F_0
     continuous_loss: float
     duality_gaps: list[float] | float # inner_duality_gaps for DCA, duality_gap for PGM
-    # store the following info for DCA, set to None for PGM. 
+    # store the following info for DCA, set to None for PGM.
     inner_discrete_values: list[float] | None = None
     inner_discrete_values_filtered: list[float] | None = None
     inner_continuous_values: list[float] | None = None
@@ -127,7 +129,7 @@ def _masked_cross_entropy(
     sel_logits = shift_logits[:, logit_mask, :].contiguous()  # (batch_size, num_selected_tokens, vocab_size)
     sel_labels = shift_labels[:, logit_mask].contiguous()  # (batch_size, num_selected_tokens)
     flat_loss = torch.nn.functional.cross_entropy(
-        sel_logits.view(-1, vocab_size),  
+        sel_logits.view(-1, vocab_size),
         sel_labels.view(-1),
         reduction="none",
     )
@@ -187,6 +189,7 @@ def compute_loss(
 
     return loss, torch.tensor(flops, device=loss.device, dtype=loss.dtype).expand_as(loss)
 
+
 def compute_loss_with_max_batchsize(
     model: PreTrainedModel,
     attack_ids: Tensor,
@@ -208,6 +211,7 @@ def compute_loss_with_max_batchsize(
     else:
         loss, flops = compute_loss_fn(attack_ids)
     return loss, flops.sum().item()
+
 
 class DSMAttack(Attack):
     def __init__(self, config: DSMConfig):
@@ -270,7 +274,6 @@ class DSMAttack(Attack):
             self._embeddings_inv_perm = torch.arange(self.valid_vocab_size, device=model.device)
             self._sorted_embedding_projections = None
 
-
         runs = []
         for idx, conversation in enumerate(conversations):
             stable_idx = int(dataset.idx[idx].item()) # conversation index in the original dataset (before shuffle)
@@ -304,7 +307,7 @@ class DSMAttack(Attack):
         target_mask = target_mask.to(device)
         n_optim_tokens = int(attack_mask.sum().item())
         # Initialize with the token ids of optim_str_init
-        # TODO: experiment with different initial solutions 
+        # TODO: experiment with different initial solutions
         optim_ids_init = tokens[attack_mask].detach().clone().unsqueeze(0) # (1, n_optim_tokens)
         reduced_ids_init = self.valid_token_id_to_reduced_idx[optim_ids_init]
         invalid_optim_ids = optim_ids_init[reduced_ids_init == -1]
@@ -334,7 +337,7 @@ class DSMAttack(Attack):
         # define filter function
         filter_fn = None
         filter_zero = False
-        if self.config.filter_ids: 
+        if self.config.filter_ids:
             filter_fn = lambda attack_ids: filter_suffix(tokenizer, conversation, [[None, self.valid_token_ids[self._embeddings_perm[attack_ids]].cpu()]], False)
             # check if zero_attack_ids is decode–encode invariant
             retained_idx = filter_fn(zero_attack_ids)
@@ -408,9 +411,8 @@ class DSMAttack(Attack):
                 L_F, flops_L_F = F_set_batch.singletons_L_bound()
                 logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}")
 
-
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
-            assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
+            assert num_outer_steps >= 1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
             # decompose F into the difference of two DR-submodular functions G and H
             G_batch, H_batch = DR_submodular_decomposition(
                 F_set_batch.lattice_fn,
@@ -421,7 +423,7 @@ class DSMAttack(Attack):
             H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
 
             # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = - H((k-1) 1) where k = valid_vocab_size
-            H_max, flops_L_H= H_batch(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
+            H_max, flops_L_H = H_batch(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
             L_H = -H_max.item()
             L_G = L_F + L_H
 
@@ -506,7 +508,7 @@ class DSMAttack(Attack):
             top_p=self.config.generation_config.top_p,
             top_k=self.config.generation_config.top_k,
             num_return_sequences=self.config.generation_config.num_return_sequences,
-            initial_batch_size=len(optim_strings), 
+            initial_batch_size=len(optim_strings),
         )
         t_end_gen = time.time()
         gen_time_total = t_end_gen - t_start_gen
@@ -563,7 +565,6 @@ class DSMAttack(Attack):
         )
         return run_result
 
-
     def _build_valid_vocab(self, tokenizer, model):
         # get disallowed_ids as done in GCG
         not_allowed_ids = get_disallowed_ids(tokenizer, self.config.allow_non_ascii, self.config.allow_special).to(model.device)
@@ -592,7 +593,6 @@ class DSMAttack(Attack):
         logging.info(
             f"Valid vocab size: {self.valid_vocab_size} (excluded {int(self.not_allowed_ids.numel())} ids)"
         )
-
 
     def _prepare_dataset(
         self, dataset, tokenizer
@@ -631,7 +631,7 @@ class DSMAttack(Attack):
             target_mask = torch.zeros_like(tokens, dtype=torch.bool)
             target_start_idx = len(tokens) - target_toks.size(0)
             target_mask[target_start_idx:] = True
- 
+
             target_mask = target_mask.roll(-1, 0)  # shift to the left
             target_mask[-1] = False
 
@@ -641,7 +641,6 @@ class DSMAttack(Attack):
             preparation_times.append(time.time() - preparation_start)
 
         return all_tokens, all_attack_masks, all_target_masks, all_conversations, preparation_times
-
 
     def _prepare_single_conversation(
         self, conversation, tokenizer, optim_str, generation=False
@@ -661,6 +660,7 @@ class DSMAttack(Attack):
         parts = prepare_conversation(tokenizer, conversation, attack_conversation)[0]  # assumes single-turn conversation
 
         return parts, attack_conversation
+
 
 def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, F_0=0.0, outer_step=None):
     # figure will be saved in Hydra run directory ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/

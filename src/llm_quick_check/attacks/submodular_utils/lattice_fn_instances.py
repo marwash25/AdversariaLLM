@@ -45,7 +45,6 @@ class QuadraticFn(SequentialLatticeFunction):
         if self.Q.dim() == 0:
             self._sum_x = sum_x if sum_x is not None else self.current_x.sum()
 
-
     def add(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
         new_x = self.current_x.clone()
@@ -58,7 +57,6 @@ class QuadraticFn(SequentialLatticeFunction):
         else:
             new_val = self.current_val + weight * (self.Q[i, :] * self.current_x).sum() + 0.5 * weight**2 * self.Q[i, i]
         return new_val, new_x, 0
-
 
     def add_update(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         new_val, new_x, flops = self.add(i, weight)
@@ -92,13 +90,11 @@ class EmbeddingQuadraticFn(QuadraticFn):
         zero_x = torch.zeros(1, self.n, dtype=torch.long, device=self.Q.device)
         self.p_0 = self._projections(zero_x) if normalize else zero_x
 
-
     def _projections(self, x: Tensor) -> Tensor:
         return self.embedding_projections[x]
 
-    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:  
-        return super()._eval_batch(self._projections(x) - self.p_0)   
-        
+    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
+        return super()._eval_batch(self._projections(x) - self.p_0)
 
     def add(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
@@ -175,4 +171,3 @@ def DR_submodular_decomposition(
         H_batch = EmbeddingQuadraticFn(alpha, embedding_projections, F_batch.k, F_batch.n)
     G_batch = LinearCombinationLatticeFn([F_batch, H_batch], [1.0, 1.0])
     return G_batch, H_batch
-
