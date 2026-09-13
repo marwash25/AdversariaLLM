@@ -4,7 +4,8 @@ and related utilities.
 """
 from abc import ABC, abstractmethod
 import torch
-from typing import Callable, List, Tuple, Any, Mapping
+from typing import Any
+from collections.abc import Callable, Mapping
 from torch import Tensor
 from math import log2, ceil, inf
 import logging
@@ -118,7 +119,7 @@ class SetToLatticeMap(ABC):
             Each X[i] = binary_matrices[i] represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
         """
 
-    def ints2set(self, x: Tensor) -> Tuple[List[Tensor], List[Tensor]]:  # TODO: not used anywhere yet, remove if not needed
+    def ints2set(self, x: Tensor) -> tuple[list[Tensor], list[Tensor]]:  # TODO: not used anywhere yet, remove if not needed
         """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b] represented
         by paired rows and cols indices, i.e., S = {(rows[j], cols[j]) for j in range(rows.shape[0])}.
 
@@ -132,15 +133,15 @@ class SetToLatticeMap(ABC):
         mask = self.ints2binary(x)
 
         batch_idx, rows, cols = mask.nonzero(as_tuple=True)
-        rows_list: List[Tensor] = []
-        cols_list: List[Tensor] = []
+        rows_list: list[Tensor] = []
+        cols_list: list[Tensor] = []
         for i in range(mask.size(0)):
             batch_mask = batch_idx == i
             rows_list.append(rows[batch_mask].long())
             cols_list.append(cols[batch_mask].long())
         return rows_list, cols_list
 
-    def set2ints(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tensor:  # used in F_set_batch
+    def set2ints(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> Tensor:  # used in F_set_batch
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by paired rows and cols indices.
 
@@ -175,7 +176,7 @@ class SetToLatticeMap(ABC):
     # TODO: potentially move to these versions of ints2set and set2ints for efficiency.
     # Issue: zero vectors which correspond to empty sets are not included in the output!
     # This can be fixed by making batch_size not optional in set2ints_batched.
-    # def ints2set_batched(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+    # def ints2set_batched(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     #     """Same map as older ``ints2set``, but returns a single sparse COO layout instead of per-batch lists.
 
     #     Args:
@@ -271,9 +272,9 @@ class SetFnReduction:
 
     def __init__(
         self,
-        lattice_fn: Callable[[Tensor], Tuple[Tensor, int]] | LatticeFunction,
+        lattice_fn: Callable[[Tensor], tuple[Tensor, int]] | LatticeFunction,
         reduction_map: SetToLatticeMap,
-        filter_fn: Callable[[Tensor], List[int]] | None = None,
+        filter_fn: Callable[[Tensor], list[int]] | None = None,
         filter_zero: bool = False,
     ):
         self.map = reduction_map
@@ -292,17 +293,17 @@ class SetFnReduction:
         self.device = reduction_map.device
 
 
-    def __call__(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:
+    def __call__(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
         return self.set_fn(rows_list, cols_list)
 
-    def set_fn(self, rows_list: List[Tensor], cols_list: List[Tensor]) -> Tuple[Tensor, int]:  # used in singleton_L_upperbd
+    def set_fn(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:  # used in singleton_L_upperbd
         """Batched version of F_set: 2^([n] x [b]) -> R: Compute F_set(S^i) for the set
         S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
         """
         x = self.map.set2ints(rows_list, cols_list)
         return self.lattice_fn(x)
 
-    def get_best_neighbors(self, x: Tensor) -> Tuple[float, Tensor, float, Tensor, int]:
+    def get_best_neighbors(self, x: Tensor) -> tuple[float, Tensor, float, Tensor, int]:
         """Get the best neighbor of x in V^n for F, i.e., argmin_{i, j} F(x ± weight[j] e_i)
         Args:
             x: Tensor of shape (n,).
@@ -380,7 +381,7 @@ class SetFnReduction:
     # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class
     # or as separate functions?
 
-    def eval_singletons(self) -> Tuple[Tensor, int]:
+    def eval_singletons(self) -> tuple[Tensor, int]:
         """Evaluate F_set({(i, j)}) for all (i, j) in [n] x [b] in one batched call"""
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
         rows = flat_idx // self.b
@@ -390,7 +391,7 @@ class SetFnReduction:
         singleton_vals, flops = self.set_fn(rows_list, cols_list)
         return singleton_vals, flops
 
-    def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> Tuple[float, int]:  # used in pgm and DCA
+    def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> tuple[float, int]:  # used in pgm and DCA
         """Compute sqrt(sum_{(i, j) in [n] x [b]} F_set({(i, j)})^2)
 
            If F_set is submodular, this is a valid bound on the Lipschitz constant
@@ -402,7 +403,7 @@ class SetFnReduction:
         L = torch.linalg.vector_norm(singleton_vals, ord=2).item()
         return L, flops_L
 
-    def eval_all_pairs(self) -> Tuple[Tensor, Tensor, Tensor, int]:
+    def eval_all_pairs(self) -> tuple[Tensor, Tensor, Tensor, int]:
         """Evaluate F_set({v1, v2}) for all v1 = (i1, j1), v2 = (i2, j2) in [n] x [b]
         with v_1 != v_2, in one batched call.
 
@@ -429,7 +430,7 @@ class SetFnReduction:
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
 
-    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Tensor | None = None, save_file: str | Path | None = None, fingerprint: Mapping[str, Any] | None = None) -> Tuple[Tensor, int, float]:
+    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Tensor | None = None, save_file: str | Path | None = None, fingerprint: Mapping[str, Any] | None = None) -> tuple[Tensor, int, float]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
         We want to compute:
@@ -528,7 +529,7 @@ class SetFnReduction:
 
     def round_lovasz_extension(
         self, X: Tensor | None = None, Fvalues: Tensor | None = None, x_chain: Tensor | None = None
-    ) -> Tuple[float, Tensor, float, Tensor]:
+    ) -> tuple[float, Tensor, float, Tensor]:
         """Round X in [0,1]^n x b to a subset S_min in [n] x [b] such that F_set(S_min) <= f_L(X)
         and map to corresponding x_min = M(S_min) in V^n
         If filtering is enabled, F_min_filtered, x_min_filtered correspond to the minimum over only
@@ -539,7 +540,7 @@ class SetFnReduction:
             assert X is not None, "X must be provided if Fvalues and x_chain are not provided"
             _, Fvalues, x_chain, _ = self.subgradient_lovasz_extension(X)
 
-        def round(Fvals: Tensor, sols: Tensor, filter_zero: bool) -> Tuple[float, Tensor]:
+        def round(Fvals: Tensor, sols: Tensor, filter_zero: bool) -> tuple[float, Tensor]:
             F_min, min_idx = torch.min(Fvals, dim=0)
             if F_min >= 0 and not filter_zero:  # if filter_zero is True, don't round to zero
                 return 0.0, torch.zeros_like(sols[0])
@@ -659,11 +660,11 @@ class EneSubmodularSetFnReduction(SetFnReduction):
     """Ene-Nguyen's set function reduction using EneReductionMap"""
     def __init__(
         self,
-        lattice_fn: Callable[[Tensor], Tuple[Tensor, int]] | LatticeFunction,
+        lattice_fn: Callable[[Tensor], tuple[Tensor, int]] | LatticeFunction,
         k: int,
         n: int,
         device: torch.device,
-        filter_fn: Callable[[Tensor], List[int]] | None = None,
+        filter_fn: Callable[[Tensor], list[int]] | None = None,
         filter_zero: bool = False,
     ):
         ene_map = EneReductionMap(k, n, device)
@@ -716,11 +717,11 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
 
     def __init__(
         self,
-        lattice_fn: Callable[[Tensor], Tuple[Tensor, int]] | LatticeFunction,
+        lattice_fn: Callable[[Tensor], tuple[Tensor, int]] | LatticeFunction,
         k: int,
         n: int,
         device: torch.device,
-        filter_fn: Callable[[Tensor], List[int]] | None = None,
+        filter_fn: Callable[[Tensor], list[int]] | None = None,
         filter_zero: bool = False,
     ):
         binary_map = BinaryRepresentationMap(k, n, device)

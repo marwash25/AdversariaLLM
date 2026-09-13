@@ -3,7 +3,7 @@ Lattice function base classes
 """
 
 from abc import ABC, abstractmethod
-from typing import Callable, Tuple, List
+from collections.abc import Callable
 import torch
 from torch import Tensor
 
@@ -25,7 +25,7 @@ class LatticeFunction(ABC):
     def _assert_in_Vn(self, x: Tensor) -> None:
         assert x.dtype == torch.long and (x >= 0).all() and (x < self.k).all(), "x must have values in {0, ..., k - 1}"
 
-    def eval_single(self, x: Tensor) -> Tuple[Tensor, int]:
+    def eval_single(self, x: Tensor) -> tuple[Tensor, int]:
         """Evaluate F on a single input in V^n.
 
         Args:
@@ -39,7 +39,7 @@ class LatticeFunction(ABC):
         vals, flops = self._eval_batch(x.unsqueeze(0))
         return vals[0], flops
 
-    def eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
+    def eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         """Evaluate F on a batch of inputs in V^n.
 
         Args:
@@ -53,17 +53,17 @@ class LatticeFunction(ABC):
         return self._eval_batch(x)
 
     @abstractmethod
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
+    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         """Core batched evaluation; x has already been validated by eval_batch."""
 
-    def __call__(self, x: Tensor) -> Tuple[Tensor, int]:
+    def __call__(self, x: Tensor) -> tuple[Tensor, int]:
         if x.dim() == 1:
             return self.eval_single(x)
         return self.eval_batch(x)
 
     def eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> Tuple[Tensor, int]:
+    ) -> tuple[Tensor, int]:
         """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}.
 
         Default: evaluate via _eval_batch on x_chain. Override _eval_chain for more efficient evaluation.
@@ -93,7 +93,7 @@ class LatticeFunction(ABC):
 
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> Tuple[Tensor, int]:
+    ) -> tuple[Tensor, int]:
         """Chain evaluation after eval_chain checks; m > 0."""
         return self._eval_batch(x_chain)
 
@@ -108,7 +108,7 @@ class LatticeFunction(ABC):
         assert x_neighbors.shape[1] == self.n, "x_neighbors must have shape (num_neighbors, n)"
         self._assert_in_Vn(x_neighbors)
 
-    def eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> Tuple[Tensor, int]:
+    def eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> tuple[Tensor, int]:
         """Evaluate F for all neighbors x ± weight[j] e_i of x in V^n.
 
         Default: evaluate via _eval_batch on x_neighbors. Override _eval_neighbors for efficiency.
@@ -130,7 +130,7 @@ class LatticeFunction(ABC):
 
     def _eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor
-    ) -> Tuple[Tensor, int]:
+    ) -> tuple[Tensor, int]:
         """Neighbor evaluation after eval_neighbors checks."""
         return self._eval_batch(x_neighbors)
 
@@ -159,7 +159,7 @@ class SequentialLatticeFunction(LatticeFunction):
         self.current_x = x.clone()
         self.current_val = F_val
 
-    def eval_update(self, x: Tensor) -> Tuple[Tensor, int]:
+    def eval_update(self, x: Tensor) -> tuple[Tensor, int]:
         """Evaluate F(x) and update state
 
         Args:
@@ -178,7 +178,7 @@ class SequentialLatticeFunction(LatticeFunction):
         assert self.current_val.device == self.current_x.device, "current_val must be on the same device as current_x"
         return self.current_val, flops
 
-    def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+    def add(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         """Evaluate F(current_x + weight * e_i). Don't update current state
         Default: call eval_single. Override for more efficient update.
 
@@ -198,17 +198,17 @@ class SequentialLatticeFunction(LatticeFunction):
         new_val, flops = self.eval_single(new_x)
         return new_val, new_x, flops
 
-    def add_update(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+    def add_update(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         """Evaluate F(current_x + weight * e_i) and update state
         """
         new_val, new_x, flops = self.add(i, weight)
         self._set_state(new_x, new_val)
         return new_val, new_x, flops
 
-    def remove(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+    def remove(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         return self.add(i, -weight)
 
-    def remove_update(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+    def remove_update(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         return self.add_update(i, -weight)
 
     def _assert_eval_neighbors_inputs(
@@ -220,7 +220,7 @@ class SequentialLatticeFunction(LatticeFunction):
 
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> Tuple[Tensor, int]:
+    ) -> tuple[Tensor, int]:
         device = rows.device
         m = rows.shape[0]
 
@@ -234,7 +234,7 @@ class SequentialLatticeFunction(LatticeFunction):
             Fvalues[i] = self.current_val
         return Fvalues, flops
 
-    def _eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> Tuple[Tensor, int]:
+    def _eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> tuple[Tensor, int]:
         """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n,
         then all x - weights[j] e_i in V^n."""
         # set state to x
@@ -269,11 +269,11 @@ class CallableLatticeFunction(LatticeFunction):
 
     __slots__ = ("_F_batch",)
 
-    def __init__(self, k: int, n: int, F_batch: Callable[[Tensor], Tuple[Tensor, int]]):
+    def __init__(self, k: int, n: int, F_batch: Callable[[Tensor], tuple[Tensor, int]]):
         super().__init__(k, n)
         self._F_batch = F_batch
 
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
+    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         return self._F_batch(x)
 
 
@@ -284,7 +284,7 @@ class LinearCombinationLatticeFn(LatticeFunction):
         lattice_fn_list: list of LatticeFunction instances
         alphas: list of floats
     """
-    def __init__(self, lattice_fn_list: List[LatticeFunction], alphas: List[float]):
+    def __init__(self, lattice_fn_list: list[LatticeFunction], alphas: list[float]):
         assert len(lattice_fn_list) == len(alphas), "lattice_fn_list and alphas must have the same length"
         assert len(lattice_fn_list) > 0, "lattice_fn_list must be non-empty"
         n = lattice_fn_list[0].n
@@ -296,8 +296,8 @@ class LinearCombinationLatticeFn(LatticeFunction):
         self.alphas = alphas
 
     def _eval_linear_comb(
-        self, eval_fn: Callable[[LatticeFunction], Tuple[Tensor, int]]
-    ) -> Tuple[Tensor, int]:
+        self, eval_fn: Callable[[LatticeFunction], tuple[Tensor, int]]
+    ) -> tuple[Tensor, int]:
         """Sum alpha_i * F_i via eval_fn(F_i), which must return (values, flops)."""
         total_flops = 0
         Fvalues = None
@@ -311,19 +311,19 @@ class LinearCombinationLatticeFn(LatticeFunction):
 
         return Fvalues, total_flops
 
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
+    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         return self._eval_linear_comb(lambda F: F._eval_batch(x))
 
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> Tuple[Tensor, int]:
+    ) -> tuple[Tensor, int]:
         return self._eval_linear_comb(
             lambda F: F._eval_chain(rows, cols, weights, x_chain)
         )
 
     def _eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor
-    ) -> Tuple[Tensor, int]:
+    ) -> tuple[Tensor, int]:
         return self._eval_linear_comb(
             lambda F: F._eval_neighbors(x, weights, x_neighbors)
         )
@@ -331,7 +331,7 @@ class LinearCombinationLatticeFn(LatticeFunction):
 def make_zero_lattice_fn(k: int, n: int, dtype: torch.dtype = torch.float32) -> LatticeFunction:
     """Return a lattice function F(x)=0 for all x in V^n."""
 
-    def zero_F_batch(x: Tensor) -> Tuple[Tensor, int]:
+    def zero_F_batch(x: Tensor) -> tuple[Tensor, int]:
         return torch.zeros((x.shape[0],), device=x.device, dtype=dtype), 0
 
     return CallableLatticeFunction(k, n, zero_F_batch)

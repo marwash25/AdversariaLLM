@@ -4,7 +4,8 @@ from pathlib import Path
 import sys
 import time
 import logging
-from typing import Tuple, Any, Literal, Mapping
+from typing import Any, Literal
+from collections.abc import Mapping
 from tqdm import trange
 import torch
 from torch import Tensor
@@ -13,7 +14,7 @@ from transformers import PreTrainedModel
 
 
 #TODO: remove if not used
-def _max_min_gap_coordinate_permutation(embedding_matrix: Tensor) -> Tuple[Tensor, float]:
+def _max_min_gap_coordinate_permutation(embedding_matrix: Tensor) -> tuple[Tensor, float]:
     r"""Sort rows of embedding matrix based on their jth coordinate in non-decreasing order,
     for j \in [d] with the largest minimum gap between adjacent rows, i.e.,
     \max_{j \in [d]} \min_{i \in [k-1]} (E_{\sigma^j_{i+1}, j} - E_{\sigma^j_i, j}),
@@ -36,7 +37,7 @@ def _max_min_gap_coordinate_permutation(embedding_matrix: Tensor) -> Tuple[Tenso
 
     return best_perm, max_min_gap
 
-def _projections_min_gap(E: Tensor, w: Tensor) -> Tuple[float, Tensor, Tensor, Tensor]:
+def _projections_min_gap(E: Tensor, w: Tensor) -> tuple[float, Tensor, Tensor, Tensor]:
     """
     Project the rows of E on w and sort the projections in non-decreasing order.
 
@@ -53,7 +54,7 @@ def _projections_min_gap(E: Tensor, w: Tensor) -> Tuple[float, Tensor, Tensor, T
     min_gap = gaps.min().item()
     return min_gap, perm, sorted_proj, gaps
 
-def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Tensor]:
+def _embeddings_pca(embedding_matrix: Tensor) -> tuple[Tensor, Tensor, float, Tensor]:
     r"""
     Find unit vector w that maximizes the sum of all squared pairwise gaps between embedding projections on w, i.e.,
     solve the PCA problem:
@@ -92,7 +93,7 @@ def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Te
 
     return w, perm, min_gap, sorted_proj
 
-def _randomly_permute_embeddings(embedding_matrix: Tensor, num_samples: int = 1) -> Tuple[Tensor, Tensor, float, Tensor]:
+def _randomly_permute_embeddings(embedding_matrix: Tensor, num_samples: int = 1) -> tuple[Tensor, Tensor, float, Tensor]:
     """
     Sample num_samples random unit vectors w. Return one with the largest minimum gap between adjacent embedding projections on w,
     and the corresponding permutation that sorts the projections in non-decreasing order.
@@ -159,7 +160,7 @@ def _embeddings_pairwise_ext_dist(
     E: Tensor,
     mode: Literal["min", "max"],
     block_size: int = 2048,
-) -> Tuple[float, int, int]:
+) -> tuple[float, int, int]:
     """Compute the min or max pairwise L2 distance over rows i < j.
 
     Computed in blocks of size block_size to avoid OOM error.
@@ -253,7 +254,7 @@ def _solve_dual_cone_pgm(
     sort_reg: Literal["l2", "kl"] | None = None,
     num_steps: int = 2000,
     log_every: int = 200,
-) -> Tuple[Tensor, float, Tensor, Tensor]:
+) -> tuple[Tensor, float, Tensor, Tensor]:
     r"""Solve the dual-cone problem by projected subgradient method (PGM):
        max_{\| w\| <= 1} \min_{i \in [k-1]} (B sort(E w))_i,
     where B is the matrix with rows e_{i+1} - e_{i}, and sort operation
@@ -294,7 +295,7 @@ def _solve_dual_cone_pgm(
     hard_sort = sort_epsilon == 0
     hard_min = min_epsilon == 0
 
-    def _obj_and_supergrad(E: Tensor, w: Tensor) -> Tuple[float, float, Tensor, Tensor, Tensor]:
+    def _obj_and_supergrad(E: Tensor, w: Tensor) -> tuple[float, float, Tensor, Tensor, Tensor]:
         # evaluate objective and a supergradient at w
         if hard_sort and hard_min:
             min_gap, perm, sorted_proj, gaps = _projections_min_gap(E, w)
@@ -410,7 +411,7 @@ def _min_norm_point(
     num_major_cycles: int = 1000,
     tol: float = 1e-6,
     log_every: int = 1,
-) -> Tuple[Tensor, float, int, int]:
+) -> tuple[Tensor, float, int, int]:
     r"""Solve the minimum-norm-point (MNP) problem by Wolfe's MNP algorithm:
     min_{x \in conv(u_i: u_i row of U)} 0.5 ||x||_2^2 = min_{lbd in simplex} 0.5 || U^T lbd ||_2^2,
 
@@ -439,7 +440,7 @@ def _min_norm_point(
     """
     device, dtype = U.device, U.dtype
 
-    def min_gaps(x: Tensor) -> Tuple[Tensor, int]:
+    def min_gaps(x: Tensor) -> tuple[Tensor, int]:
         gaps = U @ x
         min_gap, min_index = gaps.min(dim=0)
         return min_gap, min_index.item()
@@ -527,7 +528,7 @@ def _solve_dual_cone_am(
     outer_tol: float = 1e-6,
     inner_tol: float = 1e-6,
     log_every: int = 1,
-) -> Tuple[Tensor, float, Tensor, Tensor]:
+) -> tuple[Tensor, float, Tensor, Tensor]:
     r"""Solve the dual-cone problem by alternating maximization:
        max_{||w||_2 <= 1} max_{sigma} min_{i in [k-1]} w^T (E_{sigma_{i+1}} - E_{sigma_i}).
 
@@ -624,7 +625,7 @@ def _find_embeddings_dual_cone_w(
     seed: int = 0,
     save_file: str | Path | None = None,
     fingerprint: Mapping[str, Any] | None = None,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor | None, float]:
+) -> tuple[Tensor, Tensor, Tensor, Tensor | None, float]:
     r"""Find a vector w in R^d in the interior of the dual cone of differences of
     adjacent embedding vectors after permuting them, i.e.,
 

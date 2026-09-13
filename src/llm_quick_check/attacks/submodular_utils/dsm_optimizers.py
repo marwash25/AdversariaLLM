@@ -2,7 +2,7 @@
 Difference of submodular minimization optimizers
 """
 import torch
-from typing import List, Literal
+from typing import Literal
 from torch import Tensor
 from math import inf, sqrt
 from tqdm import trange
@@ -301,14 +301,14 @@ def dca_dsm(
 
 
     discrete_obj_values = [0.0 for _ in range(num_outer_steps + 1)]
-    inner_discrete_values: List[List[float]] = [[] for _ in range(num_outer_steps + 1)]
+    inner_discrete_values: list[list[float]] = [[] for _ in range(num_outer_steps + 1)]
     discrete_obj_values_filtered = [0.0 for _ in range(num_outer_steps + 1)]
-    inner_discrete_values_filtered: List[List[float]] = [[] for _ in range(num_outer_steps + 1)]
+    inner_discrete_values_filtered: list[list[float]] = [[] for _ in range(num_outer_steps + 1)]
     continuous_obj_values = [0.0 for _ in range(num_outer_steps + 1)]
-    inner_continuous_values: List[List[float]] = [[] for _ in range(num_outer_steps + 1)]
-    inner_duality_gaps: List[List[float]] = [[] for _ in range(num_outer_steps + 1)]
-    inner_times: List[List[float]] = [[] for _ in range(num_outer_steps + 1)]
-    inner_flops: List[List[int]] = [[] for _ in range(num_outer_steps + 1)]
+    inner_continuous_values: list[list[float]] = [[] for _ in range(num_outer_steps + 1)]
+    inner_duality_gaps: list[list[float]] = [[] for _ in range(num_outer_steps + 1)]
+    inner_times: list[list[float]] = [[] for _ in range(num_outer_steps + 1)]
+    inner_flops: list[list[int]] = [[] for _ in range(num_outer_steps + 1)]
     discrete_sols_filtered = torch.empty((num_outer_steps + 1, n), dtype=torch.long, device=X.device)
     times = [0.0 for _ in range(num_outer_steps + 1)]
     flops = [0 for _ in range(num_outer_steps + 1)]

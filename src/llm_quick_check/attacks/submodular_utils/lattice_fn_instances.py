@@ -2,7 +2,6 @@
 Lattice function instances.
 """
 
-from typing import Tuple
 import torch
 from torch import Tensor
 import logging
@@ -30,7 +29,7 @@ class QuadraticFn(SequentialLatticeFunction):
         super().__init__(k, n)
         self.Q = Q
 
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
+    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         assert x.device == self.Q.device, "x and Q must be on the same device"
         if self.Q.dim() == 0:
             sum_x = x.sum(dim=1)
@@ -47,7 +46,7 @@ class QuadraticFn(SequentialLatticeFunction):
             self._sum_x = sum_x if sum_x is not None else self.current_x.sum()
 
 
-    def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+    def add(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
         new_x = self.current_x.clone()
         new_x[i] += weight
@@ -63,7 +62,7 @@ class QuadraticFn(SequentialLatticeFunction):
     # new_sum already computed in add/remove, so it's a bit inefficient to recompute it in add_update/remove_update,
     # but want to keep return of add/remove consistent with base class.
     # TODO: if we refactor SequentialLatticeFunction to maintain a state object this can be avoided
-    def add_update(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+    def add_update(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         new_val, new_x, flops = self.add(i, weight)
         new_sum = self._sum_x + weight if self.Q.dim() == 0 else None
         self._set_state(new_x, new_val, sum_x=new_sum)
@@ -102,12 +101,12 @@ class EmbeddingQuadraticFn(QuadraticFn):
     def _projections(self, x: Tensor) -> Tensor:
         return self.embedding_projections[x]
 
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
+    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         return super()._eval_batch(self._projections(x) - self.p_0)
         # Fvalues, flops = super()._eval_batch(self._projections(x))
         # return Fvalues - self.F_0, flops
 
-    def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+    def add(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         assert weight.device == self.Q.device == self.current_x.device, "weight, current_x and Q must be on the same device"
         new_x = self.current_x.clone()
         new_x[i] += weight
@@ -126,11 +125,11 @@ class ModularFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remov
         super().__init__(k, w.shape[0])
         self.w = w
 
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
+    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         assert x.device == self.w.device, "x and w must be on the same device"
         return (x * self.w).sum(dim=1), 0
 
-    def add(self, i: int, weight: Tensor) -> Tuple[Tensor, Tensor, int]:
+    def add(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         assert weight.device == self.w.device == self.current_x.device, "weight, current_x and w must be on the same device"
         new_x = self.current_x.clone()
         new_x[i] += weight
@@ -160,14 +159,14 @@ class LatticeFnWithModReduction(LatticeFunction):
         self.W = W
         self.map = map
 
-    def _eval_batch(self, x: Tensor) -> Tuple[Tensor, int]:
+    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         assert x.device == self.W.device == self.map.device, "x, W, and map must be on the same device"
         X = self.map.ints2binary(x)
         return (X * self.W).sum(dim=(1, 2)), 0
 
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> Tuple[Tensor, int]:
+    ) -> tuple[Tensor, int]:
         """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}.
         by directly evaluating F_set(S^i) for the corresponding sets S^i = S^{i-1} + {(rows[i-1], cols[i-1])}.
         """
@@ -186,7 +185,7 @@ def DR_submodular_decomposition(
     F_batch: LatticeFunction,
     hessian_upperbd: Tensor,
     embedding_projections: Tensor | None = None,
-) -> Tuple[LatticeFunction, LatticeFunction]:
+) -> tuple[LatticeFunction, LatticeFunction]:
     r"""Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H:
     F = G - H, with G = F + H and
     if embedding_projections is not None:

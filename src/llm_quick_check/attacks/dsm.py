@@ -5,7 +5,7 @@ from pathlib import Path
 import time
 import logging
 import matplotlib.pyplot as plt
-from typing import List, Tuple, Literal
+from typing import Literal
 import torch
 from torch import Tensor
 from dataclasses import asdict, dataclass, field
@@ -97,13 +97,13 @@ class DSMConfig:
 class DSMAttackStepResult(AttackStepResult):
     unfiltered_loss: float # discrete_obj_values + F_0
     continuous_loss: float
-    duality_gaps: List[float] | float # inner_duality_gaps for DCA, duality_gap for PGM
+    duality_gaps: list[float] | float # inner_duality_gaps for DCA, duality_gap for PGM
     # store the following info for DCA, set to None for PGM. Later might want to store a separate result for each inner step of DCA.
-    inner_discrete_values: List[float] | None = None
-    inner_discrete_values_filtered: List[float] | None = None
-    inner_continuous_values: List[float] | None = None
-    inner_times: List[float] | None = None
-    inner_flops: List[int] | None = None
+    inner_discrete_values: list[float] | None = None
+    inner_discrete_values_filtered: list[float] | None = None
+    inner_continuous_values: list[float] | None = None
+    inner_times: list[float] | None = None
+    inner_flops: list[int] | None = None
 
 
 def _masked_cross_entropy(
@@ -148,7 +148,7 @@ def compute_loss(
     target_mask: torch.BoolTensor,
     attack_mask: torch.BoolTensor,
     lm_reg_weight: float = 0.0,
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Computes the cross-entropy loss on target tokens (-log p(y|q,x)) plus
     language-model regularizer lm_reg_weight * cross-entropy loss on attack
     tokens (-log p(x|q))
@@ -208,7 +208,7 @@ def compute_loss_with_max_batchsize(
     target_mask: torch.BoolTensor,
     attack_mask: torch.BoolTensor,
     lm_reg_weight: float = 0.0,
-) -> Tuple[Tensor, int]:
+) -> tuple[Tensor, int]:
     """Wrap compute_loss in with_max_batchsize only if batch_size is large enough to trigger OOM error
     to avoid unnecessary overhead of with_max_batchsize if batch_size is small.
     I did not encounter OOM error with eval_chain and eval_neighbors which have batch_size n*b and 2*n*b
@@ -624,7 +624,7 @@ class DSMAttack(Attack):
     # inside _attack_single_conversation. For now let's keep this in case we switch to batched optimization.
     def _prepare_dataset(
         self, dataset, tokenizer
-    ) -> Tuple[List[Tensor], List[Tensor], List[Tensor], List[Conversation], List[float]]:
+    ) -> tuple[list[Tensor], list[Tensor], list[Tensor], list[Conversation], list[float]]:
         all_tokens = []
         all_attack_masks = []
         all_target_masks = []
@@ -681,7 +681,7 @@ class DSMAttack(Attack):
 
     def _prepare_single_conversation(
         self, conversation, tokenizer, optim_str, generation=False
-    ) -> Tuple[
+    ) -> tuple[
         tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor],
         Conversation,
     ]:
