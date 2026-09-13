@@ -37,6 +37,15 @@ def _max_min_gap_coordinate_permutation(embedding_matrix: Tensor) -> Tuple[Tenso
     return best_perm, max_min_gap
 
 def _projections_min_gap(E: Tensor, w: Tensor) -> Tuple[float, Tensor, Tensor, Tensor]:
+    """
+    Project the rows of E on w and sort the projections in non-decreasing order.
+
+    Returns:
+        min_gap: min gap between adjacent sorted projections.
+        perm: permutation sorting E @ w non-decreasingly.
+        sorted_proj: sorted projections of the rows of E on w.
+        gaps: gaps between adjacent sorted projections.
+    """
     proj = E @ w
     perm = proj.argsort(stable=True)
     sorted_proj = proj[perm]
@@ -58,7 +67,7 @@ def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Te
         w: eigenvector corresponding to the largest eigenvalue of M.
         perm: permutation sorting E @ w non-decreasingly.
         min_gap: min gap between adjacent embedding projections on w.
-        sorted_embedding_projections: sorted projections of the embedding vectors on w.
+        sorted_proj: sorted projections of the embedding vectors on w.
     """
     if embedding_matrix.dtype != torch.float64:
         logging.warning("Converting E to float64 precision")
@@ -85,8 +94,14 @@ def _embeddings_pca(embedding_matrix: Tensor) -> Tuple[Tensor, Tensor, float, Te
 
 def _randomly_permute_embeddings(embedding_matrix: Tensor, num_samples: int = 1) -> Tuple[Tensor, Tensor, float, Tensor]:
     """
-    Sample max_retries random unit vectors w. Return one with largest minimum gap between adjacent embedding projections on w,
+    Sample num_samples random unit vectors w. Return one with the largest minimum gap between adjacent embedding projections on w,
     and the corresponding permutation that sorts the projections in non-decreasing order.
+
+    Returns:
+        best_w: sampled unit vector achieving the largest min gap.
+        best_perm: permutation sorting E @ best_w non-decreasingly.
+        best_min_gap: min gap between adjacent embedding projections on best_w.
+        best_sorted_proj: sorted projections of the embedding vectors on best_w.
     """
     if embedding_matrix.dtype != torch.float64:
         logging.warning("Converting E to float64 precision")
@@ -247,7 +262,7 @@ def _solve_dual_cone_pgm(
     Args:
         E: 2D tensor.
         w_init: 1D tensor, initial direction.
-        norm: norm used to constrain w, "l2" or "linf".
+        norm: norm used to constrain w, "2" or "inf".
         normalize: if True, normalize gradients, otherwise use L (only supported for hard sort and hard min for now)
         sort_epsilon: if 0, use hard sort; if > 0, use soft sort (via fast-soft-sort).
         min_epsilon: if 0, use hard min; if > 0, use soft min via log-sum-exp,
@@ -332,7 +347,7 @@ def _solve_dual_cone_pgm(
         if hard_sort and hard_min:
             L = _embeddings_max_dist(E) # max_{i < j} ||E_j - E_i||_2
         else:
-            raise ValueError("Not implemented yet")
+            raise ValueError("L bound only supported for hard sort and hard min for now. Use normalized=True instead.")
 
     for iter in (pbar := trange(num_steps + 1, file=sys.stdout)):
         obj_value, soft_obj_value, supergrad, perm, sorted_proj = _obj_and_supergrad(E, w)
@@ -418,6 +433,7 @@ def _min_norm_point(
 
     Returns:
         x: the minimum-norm point (d-vector), equal to U^T lbd*.
+        duality_gap: duality gap at x.
         n_active: number of atoms with positive weight at the solution.
         n_major: number of major cycles performed.
     """

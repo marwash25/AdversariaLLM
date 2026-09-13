@@ -501,8 +501,10 @@ class SetFnReduction():
 
     def lovasz_extension(self, X: Tensor, subgradient: Tensor | None = None, Fvalues: Tensor | None = None) -> float:
         """Evaluate the Lovasz extension f_L of F_set at X (n x b tensor): f_L(X) = <X, subgradient>
+        If subgradient is not provided, compute it using subgradient_lovasz_extension.
         If X is of type long (assumed to be a binary matrix), f_L(X) = F_set(S) where S
-        is the set of non-zeros indices in X, return F_set(S) directly for better numerical accuracy.
+        is the set of non-zeros indices in X, return F_set(S) directly for better numerical accuracy
+        or Fvalues[nnz-1] if Fvalues is provided.
         """
         if X.dtype == torch.long:
             assert ((X == 0) | (X == 1)).all().item(), "X must be a binary matrix"

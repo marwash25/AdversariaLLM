@@ -74,7 +74,7 @@ class EmbeddingQuadraticFn(QuadraticFn):
     r"""Lattice function F(x) = 0.5 * p_x^T Q p_x with symmetric Q.
     and p_x = embedding_projections[x] if normalize is False.
     Otherwise, F(x) = 0.5 * (p_x - p_0)^T Q (p_x - p_0).
-    I'm normalizing this way instead of simply subtracting F(0) to make F(x) non-increasing in x
+    Normalizing this way instead of simply subtracting F(0) to make F(x) non-increasing in x
     so a bound on the Lipschitz constant of its Lovasz extension can be easily computed as -F((k-1) 1_n)
     """
     def __init__(
@@ -189,11 +189,10 @@ def DR_submodular_decomposition(
 ) -> Tuple[LatticeFunction, LatticeFunction]:
     r"""Decompose a lattice function F: V^n -> R into the difference of two DR-submodular lattice functions G and H:
     F = G - H, with G = F + H and
-    If embedding_matrix is not None:
+    if embedding_projections is not None:
         H(x) = 0.5 * (p_x - p_0)^T Q (p_x - p_0), where p_x = embedding_projections[x],
-    Otherwise:
+    otherwise:
         H(x) = 0.5 * x^T Q x
-
     where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar,
     and
         ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2]
