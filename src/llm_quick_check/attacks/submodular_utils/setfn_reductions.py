@@ -590,9 +590,10 @@ class EneReductionMap(SetToLatticeMap):
     def get_weights(self) -> Tensor:
         """Multiset of b weights a_1, ..., a_b summing to v_max = k-1.
 
-        Base weights: a_1 = 1, a_i = 2^{i-2} for 2 <= i <= m+1 (indices 0...m).
-        Remainder weights: a_{m+1+j} = 2^{c_j} for 1 <= j <= p, where c_j is the j-th non-zero bit
-        in the binary representation of v_max other than m. Total # of weights is b = (m + 1) + p.
+        Base weights: a_1 = 1, a_i = 2^{i-2} for 2 <= i <= m+1 (indices 0...m), with m = floor(log2(k-1)).
+        Remainder weights: a_{m+1+j} = 2^{c_j} for 1 <= j <= p, where c_j in {0, ..., m-1} 
+        is the j-th non-zero bit in the binary representation of v_max other than m. 
+        Total # of weights is b = (m + 1) + p.
         """
         m = self.v_max.bit_length() - 1
         self.m = m
