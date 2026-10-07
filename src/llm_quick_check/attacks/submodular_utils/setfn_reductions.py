@@ -434,9 +434,10 @@ class SetFnReduction:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
         We want to compute:
-        max_{x, a_i1, a_i2} ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) / (a_i1 a_i2)
-        for all i1, i2 in [n]. This can be viewed as a discrete Hessian bound because if F is differentiable, taking a_i1, a_i2 -> 0,
-        gives ∇^2F(x)_{i1, i2}. It's enough to consider a_j1 = a_j2 = 1 (max is reached there), but since we're only computing
+        max_{x, a_1, a_2} ((F(x + a_1 e_i1 + a_2 e_i2) - F(x + a_2 e_i2)) - (F(x + a_1 e_i1) - F(x))) / (a_1 a_2)
+        for all i1, i2 in [n], a_1, a_2 > 0 s.t x + a_1 e_i1 + a_2 e_i2 in V^n. This can be viewed as a discrete Hessian 
+        bound because if F is differentiable, taking a_1, a_2 -> 0, gives ∇^2F(x)_{i1, i2}. 
+        It's enough to consider a_1 = a_2 = 1 (max is reached there), but since we're only computing
         the bound at x=0, that's not enough. Bound at x=0 costs O(n^2 k^2) evaluations of F.
 
         We instead consider the maximum over only weights of the map a_j1 = weights[j1], a_j2 = weights[j2], i.e.,
