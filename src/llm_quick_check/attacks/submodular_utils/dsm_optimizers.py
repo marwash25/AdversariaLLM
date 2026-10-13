@@ -398,7 +398,8 @@ def dca_dsm(
                 # use current filtered discrete solution if better than best filtered neighbor
                 discrete_obj_values_filtered[result_idx] = min(F_best_neighbor_filtered, F_round_filtered)
                 discrete_sols_filtered[result_idx] = best_neighbor_filtered if F_best_neighbor_filtered < F_round_filtered else x_round_filtered
-                continuous_obj_values[result_idx] = F_best_neighbor # since X is set to binary matrix corresponding to M^-1(best_neighbor)
+                # X is set to the binary matrix corresponding to R(best_neighbor), so f_L(X) = F_set(R(best_neighbor)) = F(M(R(best_neighbor))) = F_best_neighbor
+                continuous_obj_values[result_idx] = F_best_neighbor 
 
             else:
                 logging.info(f"DCA converged after {result_idx} outer steps to a local min, stopping.")

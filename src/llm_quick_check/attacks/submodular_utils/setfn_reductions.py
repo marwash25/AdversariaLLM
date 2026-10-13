@@ -80,8 +80,11 @@ def subgradient_lovasz_extension(
     return subgradient, Fvalues, x_chain, flops
 
 class SetToLatticeMap(ABC):
-    """Base class for map M: 2^([n] x [b]) -> V^n and its inverse M^{-1}: V^n -> 2^([n] x [b])
+    """Base class for map M: 2^([n] x [b]) -> V^n and its right inverse R: V^n -> 2^([n] x [b]), 
     where V = {0, 1, ..., k - 1} and [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
+    
+    M should be surjective, to have a right inverse R, i.e., a map which satisfies 
+    M(R(x)) = x for all x in V^n; R(M(S)) need not equal S.
     Subclasses should implement get_weights and ints2binary.
     """
 
@@ -108,7 +111,7 @@ class SetToLatticeMap(ABC):
 
     @abstractmethod
     def ints2binary(self, x: Tensor) -> Tensor:
-        """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b]
+        """Batched version of the right inverse R: V^n -> 2^([n] x [b]) with sets S in [n] x [b]
         represented by binary matrices X in {0,1}^n x b such that X[j, c] = 1 iff (j, c) in S.
 
         Args:
@@ -116,11 +119,11 @@ class SetToLatticeMap(ABC):
 
         Returns:
             binary_matrices: Tensor of type bool and shape (batch_size, n, b).
-            Each X[i] = binary_matrices[i] represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
+            Each X[i] = binary_matrices[i] represents a subset S^i of [n] x [b] such that S^i = R(x[i]).
         """
 
     def ints2set(self, x: Tensor) -> tuple[list[Tensor], list[Tensor]]:  # TODO: not used anywhere yet, remove if not needed
-        """Batched version of the inverse map M^{-1}: V^n -> 2^([n] x [b]) with sets S in [n] x [b] represented
+        """Batched version of the right inverse R: V^n -> 2^([n] x [b]) with sets S in [n] x [b] represented
         by paired rows and cols indices, i.e., S = {(rows[j], cols[j]) for j in range(rows.shape[0])}.
 
         Args:
@@ -128,7 +131,7 @@ class SetToLatticeMap(ABC):
         Returns:
             rows_list: List of 1D tensors of type long and length <= n x b
             cols_list: List of 1D tensors of type long and length <= n x b
-            Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b] such that M^{-1}(x[i]) = S^i.
+            Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b] such that S^i = R(x[i]).
         """
         mask = self.ints2binary(x)
 
@@ -570,6 +573,9 @@ class EneReductionMap(SetToLatticeMap):
     """Ene-Nguyen's map M: 2^([n] x [b]) -> V^n for reduction from a DR-submodular lattice function F: V^n -> R,
     where V = {0, 1,..., k - 1}, to a submodular set function F_set: 2^([n] x [b]) -> R where F_set(S) = F(M(S)).
 
+    M need not be injective. ints2binary implements a right inverse R by choosing one decomposition
+    of each lattice point into a subset of the weights.
+
     M is defined in Lemma 1 of the paper:
 
     @article{ene2016reduction,
@@ -612,8 +618,9 @@ class EneReductionMap(SetToLatticeMap):
 
     # TODO: Maybe it's better to actually store the map from integers in V to sets, instead of recomputing it every time.
     def ints2binary(self, x: Tensor) -> Tensor:  # used to convert x_init in V^n to X in {0,1}^n x b in pgm and DCA and in ints2set
-        """Decompose each entry in x into a sum of a subset of the weights a_i's:
+        """Implement R by choosing a decomposition of each entry in x into a subset of the weights a_i's:
         x[i,j] = sum_{c in [b]} X[i, j, c] * a_c, where X is a bool tensor of shape (batch_size, n, b).
+        This ensures M(R(x)) = x, but does not recover arbitrary sets from their images under M.
         """
         assert x.dim() == 2 and x.shape[1] == self.n, "x must be (batch_size, n)"
         self._assert_in_Vn(x)
