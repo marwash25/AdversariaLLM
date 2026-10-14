@@ -152,7 +152,9 @@ class LatticeFnWithModReduction(LatticeFunction):
     # this method in singleton_L_bound which is not used for this function.
     # We override _eval_chain to avoid unecessary map to ints and back.
     # TODO: refactor code to have set fn class and linear combination of set fns that can be both from reductions or not.
-
+    # TODO: This class is incorrect and should be replaced by a modular set function: 
+    # if the reduction map M is not invertible, a modular set function may not have a corresponding
+    # lattice function (unless F_set has the same value for all sets with the same image M(S))
     def __init__(self, map: SetToLatticeMap, W: Tensor):
         assert W.shape[0] == map.n and W.shape[1] == map.b, "W must have shape (map.n, map.b)"
         super().__init__(map.k, map.n)
