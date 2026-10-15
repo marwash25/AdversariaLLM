@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 import time
 from .lattice_functions import CallableLatticeFunction, LatticeFunction
+from .set_functions import assert_valid_set
 
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
 # specific to the reduction.
@@ -87,6 +88,7 @@ class SetToLatticeMap(ABC):
     M(R(x)) = x for all x in V^n; R(M(S)) need not equal S.
     Subclasses should implement get_weights and ints2binary.
     """
+    #TODO: add a public wrapper for ints2binary to consolidate validation of inputs and output.
 
     def __init__(
         self,
@@ -129,9 +131,10 @@ class SetToLatticeMap(ABC):
         Args:
             x: Tensor of type long and shape (batch_size, n). Each row is an integer vector in V^n.
         Returns:
-            rows_list: List of 1D tensors of type long and length <= n x b
-            cols_list: List of 1D tensors of type long and length <= n x b
+            rows_list: List of batch_size 1D long tensors on self.device, containing row indices.
+            cols_list: List of batch_size 1D long tensors on self.device, containing column indices.
             Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b] such that S^i = R(x[i]).
+            Empty tensors represent the empty set.
         """
         mask = self.ints2binary(x)
 
@@ -157,22 +160,13 @@ class SetToLatticeMap(ABC):
             x: Tensor of type long and shape (batch_size, n). Each row x[i] is an integer vector in V^n such that M(S^i) = x[i].
         """
         assert len(rows_list) == len(cols_list), "rows_list and cols_list must have the same length"
-        assert all(
-            rows_list[i].device == self.device and cols_list[i].device == self.device
-            for i in range(len(rows_list))
-        ), "all rows_list and cols_list must be on the same device"
         # TODO: Replace per-set lists with a sparse COO representation (batch_idx, rows, cols) for efficiency (see version below).
         # For now will keep this simpler implementation.
 
         x = torch.zeros((len(rows_list), self.n), dtype=torch.long, device=self.device)
         for i, (rows, cols) in enumerate(zip(rows_list, cols_list)):
-            assert rows.shape[0] == cols.shape[0], "rows and cols must have the same length"
+            assert_valid_set(rows, cols, n=self.n, b=self.b, device=self.device)
             if cols.numel() > 0:
-                # duplicated pairs would silently add weights[col] twice below, giving the wrong M(S^i).
-                # TODO: modify input to be sets of indices in [n x b] to avoid converting to flat indices when checking for uniqueness?
-                assert (rows * self.b + cols).unique().numel() == rows.numel(), (
-                    f"(row, col) pairs must be unique, got duplicates in set {i}"
-                )
                 x[i].index_add_(0, rows, self.weights[cols])  # x[i, rows[j]] += weights[cols[j]] for all j
         return x
 
@@ -270,7 +264,7 @@ class SetFnReduction:
     """Reduction from a lattice function F: V^n -> R where V = {0, 1,..., k - 1},
     to a set function F_set: 2^([n] x [b]) -> R, using a SetToLatticeMap for M.
 
-    F should be normalized, i.e., F(0) = 0.
+    F is expected to be normalized,, i.e., F(0) = 0.
     """
 
     def __init__(
@@ -515,7 +509,7 @@ class SetFnReduction:
             assert ((X == 0) | (X == 1)).all().item(), "X must be a binary matrix"
             nnz = int(X.sum().item())
             if nnz == 0:
-                return 0.0 # F is normalized, F_set(S) = 0 for S = empty set
+                return 0.0 # F is normalized, F_set(empty set) = 0
 
             if Fvalues is not None:
                 # normally this should match F_set(S), but not for loss based on cross entropy
