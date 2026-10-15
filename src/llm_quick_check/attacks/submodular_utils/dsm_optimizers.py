@@ -276,7 +276,8 @@ def dca_dsm(
     """
     # Decided to implement DCA-Restart version for now since simpler and faster.
     # TODO: add DCA-LS version from our ContDSMin paper later since it can perform better in practice
-    # when a good initialization is not provided.
+    # when a good initialization is not provided? 
+    # We would need to restrict the local search then to true set neighbors for that variant
     logging.info(f"Running DCA for {num_outer_steps} outer iterations and {num_inner_steps} inner iterations")
     time_start = time.time()
 

@@ -302,6 +302,11 @@ class SetFnReduction:
 
     def get_best_neighbors(self, x: Tensor) -> tuple[float, Tensor, float, Tensor, int]:
         """Get the best neighbor of x in V^n for F, i.e., argmin_{i, j} F(x ± weight[j] e_i)
+
+        Note this is different than F_set(S ± (i, j)) since some (i, j) that can't be added/removed 
+        from S can be added/removed from x. Neighbors considered here are superset of S neighbors.
+        The best neighbor found might not correspond to a neighbor of S. 
+
         Args:
             x: Tensor of shape (n,).
         Returns:
