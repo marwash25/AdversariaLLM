@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 import torch
 from torch import Tensor
 
+from .linear_combination import LinearCombinationMixin
+
 
 def assert_valid_set(rows: Tensor, cols: Tensor, *, n: int, b: int, device: torch.device) -> None:
     """Validate a subset of [n] x [b] represented by paired row and column indices.
@@ -26,7 +28,7 @@ class SetFunction(ABC):
     """Base class for set function F: 2^([n] x [b]) -> R, with input sets represented by paired row and column indices.
 
     Public eval_* methods are wrappers for the private _eval_* methods, with inputs and outputs validated. 
-    Subclasses should implement _eval_batch and can override _eval_chain and _eval_neighbors to provide a more efficient implementation.
+    Subclasses should implement _eval_batch and can override _eval_chain to provide a more efficient implementation.
 
     F is expected to be normalized, i.e., F(empty set) = 0, for use by the Lovasz utilities.
     """
@@ -89,9 +91,10 @@ class SetFunction(ABC):
         return self.eval_batch(rows, cols)
 
     def eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int]:
-        """Evaluate F(S^i) for the chain of inputs S^i = S^{i-1} U {(rows[i-1], cols[i-1])}.
+        """Evaluate F(S^i) for the chain of inputs S^i = S^{i-1} U {(rows[i-1], cols[i-1])}
+           for i in [m], m length of rows/cols (empty set not included)
 
-        Default: evaluate all prefixes via _eval_batch. Override _eval_chain for more efficient evaluation.
+        Default: evaluate all S^i's via _eval_batch. Override _eval_chain for more efficient evaluation.
         An empty chain returns an empty tensor and zero flops without calling _eval_chain.
 
         Args:
@@ -113,10 +116,34 @@ class SetFunction(ABC):
         return Fvalues, flops
 
     def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int]:
-        """Evaluate validated nonempty chain prefixes in one batch, using views of the indices.
-
-        rows and cols are 1D long tensors on self.device.
-        """
+        """Evaluate validated nonempty chain of sets in one batch."""
         rows_list = [rows[:t + 1] for t in range(rows.numel())]
         cols_list = [cols[:t + 1] for t in range(cols.numel())]
         return self._eval_batch(rows_list, cols_list)
+
+    # TODO: if we refactor DCA to accept any set function, add eval_neighbors
+    # and get_best_neighbors methods in this class, otherwise not needed
+
+
+class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
+    """Linear combination of set functions F_i: 2^([n] x [b]) -> R: F(S) = sum_{i=1} alpha_i F_i(S)
+
+    Args:
+        set_fn_list: list of SetFunction instances
+        alphas: list of floats
+    """
+    def __init__(self, set_fn_list: list[SetFunction], alphas: list[float]):
+        self._init_linear_comb(set_fn_list, alphas)
+        n = set_fn_list[0].n
+        b = set_fn_list[0].b
+        device = set_fn_list[0].device
+        assert all(F.n == n for F in set_fn_list), "all set functions must have the same n"
+        assert all(F.b == b for F in set_fn_list), "all set functions must have the same b"
+        assert all(F.device == device for F in set_fn_list), "all set functions must be on the same device"
+        super().__init__(n, b, device)
+
+    def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
+        return self._eval_linear_comb(lambda F: F._eval_batch(rows_list, cols_list))
+
+    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int]:
+        return self._eval_linear_comb(lambda F: F._eval_chain(rows, cols))

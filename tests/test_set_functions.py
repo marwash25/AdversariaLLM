@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from llm_quick_check.attacks.submodular_utils import SetFunction
+from llm_quick_check.attacks.submodular_utils import LinearCombinationSetFn, SetFunction
 
 
 class TableSetFunction(SetFunction):
@@ -103,3 +103,79 @@ def test_specialized_chain_evaluation_bypasses_batch_evaluation():
     values, flops = fn.eval_chain(torch.tensor([0, 0]), torch.tensor([0, 1]))
     torch.testing.assert_close(values, torch.tensor([2., 1.], dtype=torch.float64))
     assert flops == 11 and fn.batch_calls == 0
+
+
+def test_linear_combination_batch_and_single_evaluation():
+    first = TableSetFunction()
+    second = TableSetFunction()
+    first.table = first.table.float()
+    second.table = second.table.square()
+    fn = LinearCombinationSetFn([first, second], [2.0, -0.5])
+    empty = torch.empty(0, dtype=torch.long)
+    rows = [empty, torch.tensor([0]), torch.tensor([0]), torch.tensor([0, 0])]
+    cols = [empty, torch.tensor([0]), torch.tensor([1]), torch.tensor([1, 0])]
+
+    values, flops = fn(rows, cols)
+    torch.testing.assert_close(values, torch.tensor([0., 2., -2.5, 1.5], dtype=torch.float64))
+    assert flops == 56
+    value, flops = fn(rows[-1], cols[-1])
+    assert value.shape == () and value.item() == 1.5
+    assert flops == 14
+
+
+def test_linear_combination_uses_each_components_chain_evaluator():
+    class ChainOnlySetFunction(SetFunction):
+        def __init__(self):
+            super().__init__(2, 2, torch.device("cpu"))
+
+        def _eval_batch(self, rows_list, cols_list):
+            raise AssertionError("Chain evaluation must use the specialized evaluator")
+
+        def _eval_chain(self, rows, cols):
+            weights = torch.tensor([[1., 2.], [3., 4.]], dtype=torch.float64)
+            return weights[rows, cols].cumsum(0), 3
+
+    first = TableSetFunction()
+    fn = LinearCombinationSetFn([first, ChainOnlySetFunction()], [1.0, -2.0])
+    values, flops = fn.eval_chain(torch.tensor([1, 0, 1, 0]), torch.tensor([0, 0, 1, 1]))
+    torch.testing.assert_close(values, torch.tensor([1., -5., -14., -10.], dtype=torch.float64))
+    assert flops == 31 and first.batch_calls == 1
+
+
+def test_nested_linear_combinations_preserve_values_and_flop_counts():
+    first = TableSetFunction()
+    second = TableSetFunction()
+    second.table = second.table.square()
+    inner = LinearCombinationSetFn([first, second], [2.0, -0.5])
+    outer = LinearCombinationSetFn([inner, first], [3.0, -1.0])
+    value, flops = outer(torch.tensor([0]), torch.tensor([1]))
+    assert value.item() == -12.5
+    assert flops == 21
+
+
+def test_empty_linear_combination_inputs_do_not_evaluate_components():
+    first = TableSetFunction()
+    second = TableSetFunction()
+    fn = LinearCombinationSetFn([first, second], [1.0, -1.0])
+    empty = torch.empty(0, dtype=torch.long)
+    for values, flops in (fn.eval_batch([], []), fn.eval_chain(empty, empty)):
+        assert values.shape == (0,) and flops == 0
+    assert first.batch_calls == second.batch_calls == 0
+
+
+@pytest.mark.parametrize("alphas, message", [([], "non-empty"), ([1.0], "same length")])
+def test_linear_combination_rejects_empty_or_mismatched_components(alphas, message):
+    with pytest.raises(AssertionError, match=message):
+        LinearCombinationSetFn([], alphas)
+
+
+@pytest.mark.parametrize(
+    "attribute, value, message",
+    [("n", 3, "same n"), ("b", 3, "same b"), ("device", torch.device("meta"), "same device")],
+)
+def test_linear_combination_rejects_incompatible_ground_sets_or_devices(attribute, value, message):
+    first = TableSetFunction()
+    second = TableSetFunction()
+    setattr(second, attribute, value)
+    with pytest.raises(AssertionError, match=message):
+        LinearCombinationSetFn([first, second], [1.0, -1.0])

@@ -7,6 +7,8 @@ from collections.abc import Callable
 import torch
 from torch import Tensor
 
+from .linear_combination import LinearCombinationMixin
+
 # TODO: for now we only use flops for forward passes. Create a class for cross-entropy loss that tracks flops count
 # in its state, and remove flops everywhere else
 
@@ -286,7 +288,7 @@ class CallableLatticeFunction(LatticeFunction):
         return self._F_batch(x)
 
 
-class LinearCombinationLatticeFn(LatticeFunction):
+class LinearCombinationLatticeFn(LinearCombinationMixin[LatticeFunction], LatticeFunction):
     """Linear combination of lattice functions F_i: V^n -> R: F(x) = sum_{i=1} alpha_i F_i(x)
 
     Args:
@@ -294,31 +296,12 @@ class LinearCombinationLatticeFn(LatticeFunction):
         alphas: list of floats
     """
     def __init__(self, lattice_fn_list: list[LatticeFunction], alphas: list[float]):
-        assert len(lattice_fn_list) == len(alphas), "lattice_fn_list and alphas must have the same length"
-        assert len(lattice_fn_list) > 0, "lattice_fn_list must be non-empty"
+        self._init_linear_comb(lattice_fn_list, alphas)
         n = lattice_fn_list[0].n
         k = lattice_fn_list[0].k
         assert all(lattice_fn.n == n for lattice_fn in lattice_fn_list), "all lattice functions must have the same n"
         assert all(lattice_fn.k == k for lattice_fn in lattice_fn_list), "all lattice functions must have the same k"
         super().__init__(k, n)
-        self.lattice_fn_list = lattice_fn_list
-        self.alphas = alphas
-
-    def _eval_linear_comb(
-        self, eval_fn: Callable[[LatticeFunction], tuple[Tensor, int]]
-    ) -> tuple[Tensor, int]:
-        """Sum alpha_i * F_i via eval_fn(F_i), which must return (values, flops)."""
-        total_flops = 0
-        Fvalues = None
-        for alpha, F in zip(self.alphas, self.lattice_fn_list):
-            vals, flops = eval_fn(F)
-            total_flops += flops
-            if Fvalues is None:
-                Fvalues = alpha * vals
-            else:
-                Fvalues += alpha * vals
-
-        return Fvalues, total_flops
 
     def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         return self._eval_linear_comb(lambda F: F._eval_batch(x))
