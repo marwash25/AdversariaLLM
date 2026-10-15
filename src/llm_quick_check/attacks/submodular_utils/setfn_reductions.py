@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 import time
 from .lattice_functions import CallableLatticeFunction, LatticeFunction
-from .set_functions import assert_valid_set
+from .set_functions import SetFunction, assert_valid_set
 
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
 # specific to the reduction.
@@ -63,7 +63,7 @@ def subgradient_lovasz_extension(
     rows, cols = torch.unravel_index(sorted_idx, X.shape)  # both are (n x b,)
 
     # evaluate F(x^i) for all x^i corresponding to S^i = {(rows[0], cols[0]), ..., (rows[i-1], cols[i-1])} for i in [n * b]
-    # compute x^i's sequentially which is more efficient than calling SetFnReduction.set_fn on S^i's which will compute
+    # compute x^i's sequentially which is more efficient than calling SetFnReduction.eval_batch on S^i's which will compute
     # each x^i separately (O(n * b) vs O((n * b)^2))
     x_chain = torch.empty((rows.shape[0], n), dtype=torch.long, device=X.device)  # (m, n)
     x = torch.zeros(n, dtype=torch.long, device=X.device)
@@ -260,7 +260,7 @@ class SetToLatticeMap(ABC):
 
 
 
-class SetFnReduction:
+class SetFnReduction(SetFunction):
     """Reduction from a lattice function F: V^n -> R where V = {0, 1,..., k - 1},
     to a set function F_set: 2^([n] x [b]) -> R, using a SetToLatticeMap for M.
 
@@ -274,10 +274,9 @@ class SetFnReduction:
         filter_fn: Callable[[Tensor], list[int]] | None = None,
         filter_zero: bool = False,
     ):
+        super().__init__(n=reduction_map.n, b=reduction_map.b, device=reduction_map.device)
         self.map = reduction_map
         self.k = reduction_map.k
-        self.n = reduction_map.n
-        self.b = reduction_map.b
         assert self.k > 1, "k must be greater than 1"
         self.lattice_fn: LatticeFunction = (
             lattice_fn if isinstance(lattice_fn, LatticeFunction)
@@ -287,18 +286,14 @@ class SetFnReduction:
         assert self.lattice_fn.k == self.k, "lattice_fn.k must match reduction_map.k"
         self.filter_fn = filter_fn
         self.filter_zero = filter_zero
-        self.device = reduction_map.device
 
 
-    def __call__(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
-        return self.set_fn(rows_list, cols_list)
-
-    def set_fn(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:  # used in singleton_L_upperbd
-        """Batched version of F_set: 2^([n] x [b]) -> R: Compute F_set(S^i) for the set
-        S^i = {(rows_list[i][j], cols_list[i][j]) for j in range(rows_list[i].shape[0])}.
-        """
+    def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
+        """Evaluate F_set on a non-empty batch of sets validated by eval_batch."""
+        #TODO: set2ints also validates the sets, so this repeats validation. We can split map.set2ints
+        # into a validating wrapper and a private implementation to avoid that.
         x = self.map.set2ints(rows_list, cols_list)
-        return self.lattice_fn(x)
+        return self.lattice_fn._eval_batch(x)
 
     def get_best_neighbors(self, x: Tensor) -> tuple[float, Tensor, float, Tensor, int]:
         """Get the best neighbor of x in V^n for F, i.e., argmin_{i, j} F(x ± weight[j] e_i)
@@ -390,7 +385,7 @@ class SetFnReduction:
         cols = flat_idx % self.b
         rows_list = [r.view(1) for r in rows]
         cols_list = [c.view(1) for c in cols]
-        singleton_vals, flops = self.set_fn(rows_list, cols_list)
+        singleton_vals, flops = self.eval_batch(rows_list, cols_list)
         return singleton_vals, flops
 
     def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> tuple[float, int]:  # used in pgm and DCA
@@ -427,7 +422,7 @@ class SetFnReduction:
 
         rows_list = list(torch.stack([rows_v1, rows_v2], dim=1).unbind(0))
         cols_list = list(torch.stack([cols_v1, cols_v2], dim=1).unbind(0))
-        pair_vals, flops = self.set_fn(rows_list, cols_list)
+        pair_vals, flops = self.eval_batch(rows_list, cols_list)
         rows = torch.stack([rows_v1, rows_v2], dim=0)
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
