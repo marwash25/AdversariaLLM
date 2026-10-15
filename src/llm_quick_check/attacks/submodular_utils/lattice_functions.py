@@ -11,14 +11,18 @@ from torch import Tensor
 # in its state, and remove flops everywhere else
 
 class LatticeFunction(ABC):
-    """Base class for lattice functions F: V^n -> R, with batched evaluation, evaluation along a chain of inputs,
-    and evaluation of neighbors.
+    """Base class for lattice function F: V^n -> R, where V = {0, 1,..., k - 1}.
+    
+    Supports single and batched evaluation, evaluation along chains, and evaluation of neighbors.
 
-    Public methods eval_* validate inputs, then call _eval_*. Subclasses should implement _eval_batch and can override
-    _eval_chain, _eval_neighbors to provide a more efficient implementation.
+    Public eval_* methods are wrappers for the private _eval_* methods, with inputs and outputs validated. 
+    Subclasses should implement _eval_batch and can override _eval_chain and _eval_neighbors to provide a more efficient implementation.
     """
 
     def __init__(self, k: int, n: int):
+        assert n > 0, "n must be positive"
+        assert k > 1, "k must be greater than 1"
+
         self.n = n
         self.k = k
 
@@ -35,8 +39,7 @@ class LatticeFunction(ABC):
             flops: flop count, int.
         """
         assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
-        self._assert_in_Vn(x)
-        vals, flops = self._eval_batch(x.unsqueeze(0))
+        vals, flops = self.eval_batch(x.unsqueeze(0))
         return vals[0], flops
 
     def eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
@@ -50,7 +53,10 @@ class LatticeFunction(ABC):
         """
         assert x.dim() == 2 and x.shape[1] == self.n, "x must have shape (batch_size, n)"
         self._assert_in_Vn(x)
-        return self._eval_batch(x)
+        Fvalues, flops = self._eval_batch(x)
+        assert Fvalues.shape == (x.shape[0],), "_eval_batch must return one scalar per input row"
+        assert Fvalues.device == x.device, "_eval_batch must return values on the same device as x"
+        return Fvalues, flops
 
     @abstractmethod
     def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
@@ -88,7 +94,8 @@ class LatticeFunction(ABC):
         self._assert_in_Vn(x_chain)
 
         Fvalues, flops = self._eval_chain(rows, cols, weights, x_chain)
-        assert Fvalues.shape[0] == m, "_eval_chain must return one scalar per chain step"
+        assert Fvalues.shape == (m,), "_eval_chain must return one scalar per chain step"
+        assert Fvalues.device == x_chain.device, "_eval_chain must return values on the same device as x_chain"
         return Fvalues, flops
 
     def _eval_chain(
@@ -123,9 +130,10 @@ class LatticeFunction(ABC):
         """
         self._assert_eval_neighbors_inputs(x, weights, x_neighbors)
         Fvalues, flops = self._eval_neighbors(x, weights, x_neighbors)
-        assert Fvalues.shape[0] == x_neighbors.shape[0], (
+        assert Fvalues.shape == (x_neighbors.shape[0],), (
             "_eval_neighbors must return one scalar per neighbor"
         )
+        assert Fvalues.device == x_neighbors.device, "_eval_neighbors must return values on the same device as x_neighbors"
         return Fvalues, flops
 
     def _eval_neighbors(
