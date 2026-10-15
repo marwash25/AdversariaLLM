@@ -70,7 +70,8 @@ class LatticeFunction(ABC):
     def eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
     ) -> tuple[Tensor, int]:
-        """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}.
+        """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}
+           for i in [m], m length of rows/cols (zero vector not included)
 
         Default: evaluate via _eval_batch on x_chain. Override _eval_chain for more efficient evaluation.
 
