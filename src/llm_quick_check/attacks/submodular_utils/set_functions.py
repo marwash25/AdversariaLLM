@@ -128,6 +128,9 @@ class SetFunction(ABC):
 class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
     """Linear combination of set functions F_i: 2^([n] x [b]) -> R: F(S) = sum_{i=1} alpha_i F_i(S)
 
+    SetFnReduction components must use the same reduction map (same map class and k)
+    self.map holds the first such map, or None if no component has one.
+
     Args:
         set_fn_list: list of SetFunction instances
         alphas: list of floats
@@ -141,6 +144,15 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
         assert all(F.b == b for F in set_fn_list), "all set functions must have the same b"
         assert all(F.device == device for F in set_fn_list), "all set functions must be on the same device"
         super().__init__(n, b, device)
+
+        maps = [getattr(F, "map", None) for F in self.functions]
+        maps = [M for M in maps if M is not None]
+        self.map = maps[0] if maps else None
+        # With the dimension/device checks above, matching class and k is enough
+        # for currently implemented maps. In general, we'd need to check if maps' weights match.
+        assert all(
+            type(M) is type(self.map) and M.k == self.map.k for M in maps
+        ), "All set function reductions must use the same reduction map (same map class and k)"
 
     def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
         return self._eval_linear_comb(lambda F: F._eval_batch(rows_list, cols_list))
