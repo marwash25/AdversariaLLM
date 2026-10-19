@@ -11,6 +11,7 @@ from .lattice_functions import (
 from .lattice_fn_instances import ModularFn, QuadraticFn, DR_submodular_decomposition
 from .linear_combination import LinearCombinationMixin
 from .set_functions import LinearCombinationSetFn, SetFunction
+from .set_fn_instances import ModularSetFunction
 from .setfn_reductions import (
     EneSubmodularSetFnReduction,
     EneReductionMap,
@@ -28,6 +29,7 @@ __all__ = [
     "EneReductionMap",
     "LatticeFunction",
     "ModularFn",
+    "ModularSetFunction",
     "QuadraticFn",
     "DR_submodular_decomposition",
     "SequentialLatticeFunction",

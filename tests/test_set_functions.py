@@ -3,7 +3,12 @@
 import pytest
 import torch
 
-from llm_quick_check.attacks.submodular_utils import LinearCombinationSetFn, SetFunction
+from llm_quick_check.attacks.submodular_utils import (
+    EneReductionMap,
+    LinearCombinationSetFn,
+    ModularSetFunction,
+    SetFunction,
+)
 
 
 class TableSetFunction(SetFunction):
@@ -174,6 +179,61 @@ def test_empty_linear_combination_inputs_do_not_evaluate_components():
 def test_linear_combination_rejects_empty_or_mismatched_components(alphas, message):
     with pytest.raises(AssertionError, match=message):
         LinearCombinationSetFn([], alphas)
+
+
+def test_modular_set_function_sums_weights_and_agrees_with_chain():
+    W = torch.tensor([[1.0, 3.0], [5.0, -2.0]], dtype=torch.float64)
+    fn = ModularSetFunction(W)
+    empty = torch.empty(0, dtype=torch.long)
+    rows_list = [empty, torch.tensor([0]), torch.tensor([0]), torch.tensor([0, 1])]
+    cols_list = [empty, torch.tensor([0]), torch.tensor([1]), torch.tensor([0, 1])]
+
+    values, flops = fn(rows_list, cols_list)
+    torch.testing.assert_close(values, torch.tensor([0.0, 1.0, 3.0, -1.0], dtype=torch.float64))
+    assert values.dtype == W.dtype and values.device == W.device
+    assert flops == 0
+    assert fn.eval_single(empty, empty)[0].item() == 0
+
+    chain_rows = torch.tensor([0, 1, 0])
+    chain_cols = torch.tensor([0, 1, 1])
+    chain_values, chain_flops, auxiliary_data = fn.eval_chain(chain_rows, chain_cols)
+    expected = torch.tensor([1.0, -1.0, 2.0], dtype=torch.float64)
+    torch.testing.assert_close(chain_values, expected)
+    assert chain_values.dtype == W.dtype
+    assert auxiliary_data is None and chain_flops == 0
+
+    prefix_values, _ = fn(
+        [chain_rows[: t + 1] for t in range(chain_rows.numel())],
+        [chain_cols[: t + 1] for t in range(chain_cols.numel())],
+    )
+    torch.testing.assert_close(chain_values, prefix_values)
+
+    empty_values, empty_flops, empty_aux = fn.eval_chain(empty, empty)
+    assert empty_values.shape == (0,) and empty_values.dtype == W.dtype
+    assert empty_flops == 0 and empty_aux is None
+
+
+def test_modular_set_function_distinguishes_ene_colliding_sets():
+    reduction_map = EneReductionMap(k=3, n=1, device=torch.device("cpu"))
+    torch.testing.assert_close(reduction_map.weights, torch.tensor([1, 1]))
+    W = torch.tensor([[1.0, 3.0]], dtype=torch.float64)
+    fn = ModularSetFunction(W)
+    rows_s, cols_s = torch.tensor([0]), torch.tensor([0])
+    rows_t, cols_t = torch.tensor([0]), torch.tensor([1])
+
+    images = reduction_map.set2ints([rows_s, rows_t], [cols_s, cols_t])
+    torch.testing.assert_close(images[0], images[1])
+    assert images[0].tolist() == [1]
+
+    values, flops = fn([rows_s, rows_t], [cols_s, cols_t])
+    torch.testing.assert_close(values, torch.tensor([1.0, 3.0], dtype=torch.float64))
+    assert flops == 0
+    assert not hasattr(fn, "map")
+
+    for rows, cols, expected in ((rows_s, cols_s, 1.0), (rows_t, cols_t, 3.0)):
+        chain_values, _, auxiliary_data = fn.eval_chain(rows, cols)
+        torch.testing.assert_close(chain_values, torch.tensor([expected], dtype=torch.float64))
+        assert auxiliary_data is None
 
 
 @pytest.mark.parametrize(
