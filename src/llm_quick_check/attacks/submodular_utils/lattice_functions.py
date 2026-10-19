@@ -72,7 +72,7 @@ class LatticeFunction(ABC):
 
     def eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
-    ) -> tuple[Tensor, Tensor, int]:
+    ) -> tuple[Tensor, int, Tensor]:
         """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}
            for i in [m], m length of rows/cols (zero vector not included)
 
@@ -88,8 +88,8 @@ class LatticeFunction(ABC):
 
         Returns:
             Fvalues: Tensor of shape (m,) with Fvalues[i] = F(x^{i+1}) (F(0) not included).
-            x_chain: Evaluated chain of shape (m, n), or the supplied tensor itself.
             flops: flop count, int.
+            x_chain: Evaluated chain of shape (m, n), or the supplied tensor itself.
         """
         assert weights.dim() == 1 and weights.dtype == torch.long and (weights >= 0).all(), "weights must be a 1D nonnegative long tensor"
         assert_valid_set(rows, cols, n=self.n, b=weights.numel(), device=weights.device)
@@ -102,14 +102,14 @@ class LatticeFunction(ABC):
         if m == 0:
             if x_chain is None:
                 x_chain = torch.empty((0, self.n), dtype=torch.long, device=rows.device)
-            return torch.empty((0,), device=rows.device), x_chain, 0
+            return torch.empty((0,), device=rows.device), 0, x_chain
 
-        Fvalues, evaluated_chain, flops = self._eval_chain(rows, cols, weights, x_chain)
+        Fvalues, flops, evaluated_chain = self._eval_chain(rows, cols, weights, x_chain)
         assert Fvalues.shape == (m,), "_eval_chain must return one scalar per chain step"
         assert Fvalues.device == rows.device, "_eval_chain must return values on the same device as rows"
         if x_chain is not None:
             assert evaluated_chain is x_chain, "_eval_chain must return the supplied x_chain tensor"
-        return Fvalues, evaluated_chain, flops
+        return Fvalues, flops, evaluated_chain
 
     def _build_chain(self, rows: Tensor, cols: Tensor, weights: Tensor) -> Tensor:
         """Construct a nonempty chain from validated indices and weights, then check if in V^n."""
@@ -123,12 +123,12 @@ class LatticeFunction(ABC):
 
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
-    ) -> tuple[Tensor, Tensor, int]:
+    ) -> tuple[Tensor, int, Tensor]:
         """Evaluate validated nonempty chain of inputs in one batch. Construct it when absent."""
         if x_chain is None:
             x_chain = self._build_chain(rows, cols, weights)
         Fvalues, flops = self._eval_batch(x_chain)
-        return Fvalues, x_chain, flops
+        return Fvalues, flops, x_chain
 
     def _assert_eval_neighbors_inputs(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor
@@ -254,7 +254,7 @@ class SequentialLatticeFunction(LatticeFunction):
 
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
-    ) -> tuple[Tensor, Tensor, int]:
+    ) -> tuple[Tensor, int, Tensor]:
         # x_chain is not used for evaluation here, but when provided return the same tensor 
         # without allocating and filling another (m, n) matrix.
         device = rows.device
@@ -279,7 +279,7 @@ class SequentialLatticeFunction(LatticeFunction):
             else:
                 assert torch.equal(x_chain[i], self.current_x), "x_chain[i] should match updated current_x"
             Fvalues[i] = self.current_val
-        return Fvalues, x_chain, flops
+        return Fvalues, flops, x_chain
 
     def _eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> tuple[Tensor, int]:
         """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n,
@@ -344,18 +344,19 @@ class LinearCombinationLatticeFn(LinearCombinationMixin[LatticeFunction], Lattic
 
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
-    ) -> tuple[Tensor, Tensor, int]:
-        # Construct once here until component selection is added in the next refactoring step.
-        if x_chain is None:
-            x_chain = self._build_chain(rows, cols, weights)
-
+    ) -> tuple[Tensor, int, Tensor]:
         def evaluate(F: LatticeFunction) -> tuple[Tensor, int]:
-            values, component_chain, flops = F._eval_chain(rows, cols, weights, x_chain)
-            assert component_chain is x_chain, "components must return the shared x_chain tensor"
+            nonlocal x_chain
+            values, flops, component_chain = F._eval_chain(rows, cols, weights, x_chain)
+            if x_chain is None:
+                # The first component constructs the chain; subsequent components share it.
+                x_chain = component_chain
+            else:
+                assert component_chain is x_chain, "components must return the shared x_chain tensor"
             return values, flops
 
         Fvalues, flops = self._eval_linear_comb(evaluate)
-        return Fvalues, x_chain, flops
+        return Fvalues, flops, x_chain
 
     def _eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor
