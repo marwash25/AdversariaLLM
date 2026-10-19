@@ -375,58 +375,6 @@ class SetFnReduction(SetFunction):
     def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Tensor | None = None):
         return subgradient_lovasz_extension(self.lattice_fn, self.map.weights, X, tie_breaker)
 
-    # TODO: the rest of these methods are not specific to set function reductions. Move them to a set function over [n] x [b] base class
-    # or as separate functions?
-
-    def eval_singletons(self) -> tuple[Tensor, int]:
-        """Evaluate F_set({(i, j)}) for all (i, j) in [n] x [b] in one batched call"""
-        flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
-        rows = flat_idx // self.b
-        cols = flat_idx % self.b
-        rows_list = [r.view(1) for r in rows]
-        cols_list = [c.view(1) for c in cols]
-        singleton_vals, flops = self.eval_batch(rows_list, cols_list)
-        return singleton_vals, flops
-
-    def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> tuple[float, int]:  # used in pgm and DCA
-        """Compute sqrt(sum_{(i, j) in [n] x [b]} F_set({(i, j)})^2)
-
-           If F_set is submodular, this is a valid bound on the Lipschitz constant
-           of its Lovasz extension f_L.
-        """
-        flops_L = 0
-        if singleton_vals is None:
-            singleton_vals, flops_L = self.eval_singletons()
-        L = torch.linalg.vector_norm(singleton_vals, ord=2).item()
-        return L, flops_L
-
-    def eval_all_pairs(self) -> tuple[Tensor, Tensor, Tensor, int]:
-        """Evaluate F_set({v1, v2}) for all v1 = (i1, j1), v2 = (i2, j2) in [n] x [b]
-        with v_1 != v_2, in one batched call.
-
-        Returns:
-            pair_vals: Tensor of shape (num_pairs,) with num_pairs = n * b * (n * b - 1) / 2 and
-                pair_vals[p] = F_set({v1, v2}) for the p-th (v1, v2) pair.
-            rows: Tensor of shape (2, num_pairs) with rows[0, p] = i1, rows[1, p] = i2.
-            cols: Tensor of shape (2, num_pairs) with cols[0, p] = j1, cols[1, p] = j2.
-            flops: flop count, int.
-        #TODO: can be made more efficient by having more efficient version of set2ints
-        """
-        nb = self.n * self.b
-        # enumerate all pairs of flattened indices v1, v2 in [n * b] with v1 < v2
-        flat_pair_idx = torch.triu_indices(nb, nb, offset=1, device=self.device)  # (2, num_pairs)
-        idx_v1, idx_v2 = flat_pair_idx[0], flat_pair_idx[1]
-
-        rows_v1, cols_v1 = idx_v1 // self.b, idx_v1 % self.b
-        rows_v2, cols_v2 = idx_v2 // self.b, idx_v2 % self.b
-
-        rows_list = list(torch.stack([rows_v1, rows_v2], dim=1).unbind(0))
-        cols_list = list(torch.stack([cols_v1, cols_v2], dim=1).unbind(0))
-        pair_vals, flops = self.eval_batch(rows_list, cols_list)
-        rows = torch.stack([rows_v1, rows_v2], dim=0)
-        cols = torch.stack([cols_v1, cols_v2], dim=0)
-        return pair_vals, rows, cols, flops
-
     def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Tensor | None = None, save_file: str | Path | None = None, fingerprint: Mapping[str, Any] | None = None) -> tuple[Tensor, int, float]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
