@@ -60,9 +60,9 @@ def test_chain_matches_direct_prefix_evaluation(factory, supply_chain, chain):
     # constructs missing points from its updates rather than the batch builder.
     if supply_chain or isinstance(F, SequentialLatticeFunction):
         with patch.object(F, "_build_chain", side_effect=AssertionError("unexpected chain construction")):
-            values, x_chain, flops = F.eval_chain(rows, cols, weights, supplied)
+            values, flops, x_chain = F.eval_chain(rows, cols, weights, supplied)
     else:
-        values, x_chain, flops = F.eval_chain(rows, cols, weights)
+        values, flops, x_chain = F.eval_chain(rows, cols, weights)
     torch.testing.assert_close(x_chain, expected_chain)
     torch.testing.assert_close(values, expected_chain.to(torch.float64).square().sum(dim=1))
     assert values.dtype == torch.float64
@@ -85,7 +85,7 @@ def test_real_sequential_quadratic_matches_batch(supply_chain, chain):
     rows, cols, weights, expected_chain = chain
     F = QuadraticFn(torch.tensor([[2., 1.], [1., -3.]], dtype=torch.float64), k=4)
     expected_values, _ = F.eval_batch(expected_chain)
-    values, x_chain, flops = F.eval_chain(rows, cols, weights, expected_chain if supply_chain else None)
+    values, flops, x_chain = F.eval_chain(rows, cols, weights, expected_chain if supply_chain else None)
     torch.testing.assert_close(values, expected_values)
     torch.testing.assert_close(x_chain, expected_chain)
     assert flops == 0
@@ -97,7 +97,7 @@ def test_empty_chain_does_not_evaluate(factory, supply_chain):
     F = factory()
     indices = torch.empty(0, dtype=torch.long)
     supplied = torch.empty((0, 2), dtype=torch.long) if supply_chain else None
-    values, x_chain, flops = F.eval_chain(indices, indices, torch.tensor([1, 2]), supplied)
+    values, flops, x_chain = F.eval_chain(indices, indices, torch.tensor([1, 2]), supplied)
     assert values.shape == (0,)
     assert x_chain.shape == (0, 2) and x_chain.dtype == torch.long
     assert values.device == x_chain.device == indices.device
@@ -143,14 +143,14 @@ def test_invalid_inputs_rejected_before_evaluation(change, message, chain):
 def test_invalid_evaluator_outputs_are_rejected(failure, message, chain):
     class InvalidResult(BatchQuadratic):
         def _eval_chain(self, rows, cols, weights, x_chain=None):
-            values, x_chain, flops = super()._eval_chain(rows, cols, weights, x_chain)
+            values, flops, x_chain = super()._eval_chain(rows, cols, weights, x_chain)
             if failure == "value_shape":
                 values = values[:, None]
             elif failure == "value_device":
                 values = values.to("meta")
             elif failure == "chain_copy":
                 x_chain = x_chain.clone()
-            return values, x_chain, flops
+            return values, flops, x_chain
 
     with pytest.raises(AssertionError, match=message):
         InvalidResult().eval_chain(*chain)

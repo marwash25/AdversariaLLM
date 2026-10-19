@@ -90,12 +90,12 @@ class SetFunction(ABC):
         assert isinstance(rows, list) and isinstance(cols, list), "rows and cols must both be tensors or both be lists"
         return self.eval_batch(rows, cols)
 
-    def eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int]:
+    def eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, object | None]:
         """Evaluate F(S^i) for the chain of inputs S^i = S^{i-1} U {(rows[i-1], cols[i-1])}
            for i in [m], m length of rows/cols (empty set not included)
 
         Default: evaluate all S^i's via _eval_batch. Override _eval_chain for more efficient evaluation.
-        An empty chain returns an empty tensor and zero flops without calling _eval_chain.
+        An empty chain returns empty values and zero flops without objective evaluation.
 
         Args:
             rows, cols: 1D long tensors of length m <= n * b on self.device, listing distinct
@@ -104,22 +104,23 @@ class SetFunction(ABC):
         Returns:
             Fvalues: Tensor of shape (m,) on self.device with Fvalues[i] = F(S^{i+1}) (F(empty set) not included).
             flops: flop count, int.
+            auxiliary_data: Optional auxiliary output defined by the subclass, or None (default).
         """
         assert_valid_set(rows, cols, n=self.n, b=self.b, device=self.device)
         m = rows.numel()
-        if m == 0:
-            return torch.empty(0, device=self.device), 0
-
-        Fvalues, flops = self._eval_chain(rows, cols)
+        Fvalues, flops, auxiliary_data = self._eval_chain(rows, cols)
         assert Fvalues.shape == (m,), "_eval_chain must return one scalar per chain step"
         assert Fvalues.device == self.device, "_eval_chain must return values on self.device"
-        return Fvalues, flops
+        return Fvalues, flops, auxiliary_data
 
-    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int]:
-        """Evaluate validated nonempty chain of sets in one batch."""
+    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, object | None]:
+        """Evaluate validated chain of sets in one batch."""
+        if rows.numel() == 0:
+            return torch.empty(0, device=self.device), 0, None
         rows_list = [rows[:t + 1] for t in range(rows.numel())]
         cols_list = [cols[:t + 1] for t in range(cols.numel())]
-        return self._eval_batch(rows_list, cols_list)
+        Fvalues, flops = self._eval_batch(rows_list, cols_list)
+        return Fvalues, flops, None
 
     def eval_singletons(self) -> tuple[Tensor, int]:
         """Evaluate F({(i, j)}) for all (i, j) in [n] x [b] in one batched call."""
@@ -205,5 +206,18 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
     def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
         return self._eval_linear_comb(lambda F: F._eval_batch(rows_list, cols_list))
 
-    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int]:
-        return self._eval_linear_comb(lambda F: F._eval_chain(rows, cols))
+    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, Tensor | None]:
+        """Evaluate components independently and retain the first available lattice chain."""
+        # if there's multiple SetFnReduction, each would recompute x_chain 
+        # this can be avoided by using SetFnReduction(LinearCombinationLatticeFn(...), ...)
+        x_chain = None
+
+        def evaluate(F: SetFunction) -> tuple[Tensor, int]:
+            nonlocal x_chain
+            values, flops, component_chain = F._eval_chain(rows, cols)
+            if x_chain is None:
+                x_chain = component_chain
+            return values, flops
+
+        Fvalues, flops = self._eval_linear_comb(evaluate)
+        return Fvalues, flops, x_chain

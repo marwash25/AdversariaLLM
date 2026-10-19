@@ -48,8 +48,9 @@ def test_batch_and_single_evaluation_preserve_set_identity():
 )
 def test_default_chain_evaluates_ordered_prefixes_in_one_batch(rows, cols, expected):
     fn = TableSetFunction()
-    values, flops = fn.eval_chain(torch.tensor(rows), torch.tensor(cols))
+    values, flops, auxiliary_data = fn.eval_chain(torch.tensor(rows), torch.tensor(cols))
     torch.testing.assert_close(values, torch.tensor(expected, dtype=torch.float64))
+    assert auxiliary_data is None
     assert flops == 7 * len(expected)
     assert fn.batch_calls == 1
 
@@ -57,7 +58,9 @@ def test_default_chain_evaluates_ordered_prefixes_in_one_batch(rows, cols, expec
 def test_empty_batch_and_chain_do_not_evaluate_function():
     fn = TableSetFunction()
     empty = torch.empty(0, dtype=torch.long)
-    for values, flops in (fn.eval_batch([], []), fn.eval_chain(empty, empty)):
+    chain_values, chain_flops, auxiliary_data = fn.eval_chain(empty, empty)
+    assert auxiliary_data is None
+    for values, flops in (fn.eval_batch([], []), (chain_values, chain_flops)):
         assert values.shape == (0,) and values.device == fn.device
         assert flops == 0
     assert fn.batch_calls == 0
@@ -97,11 +100,12 @@ def test_specialized_chain_evaluation_bypasses_batch_evaluation():
     class SpecializedSetFunction(TableSetFunction):
         def _eval_chain(self, rows, cols):
             # This test requests the two-element chain (0, 0), (0, 1).
-            return torch.tensor([2., 1.], dtype=torch.float64), 11
+            return torch.tensor([2., 1.], dtype=torch.float64), 11, None
 
     fn = SpecializedSetFunction()
-    values, flops = fn.eval_chain(torch.tensor([0, 0]), torch.tensor([0, 1]))
+    values, flops, auxiliary_data = fn.eval_chain(torch.tensor([0, 0]), torch.tensor([0, 1]))
     torch.testing.assert_close(values, torch.tensor([2., 1.], dtype=torch.float64))
+    assert auxiliary_data is None
     assert flops == 11 and fn.batch_calls == 0
 
 
@@ -133,12 +137,13 @@ def test_linear_combination_uses_each_components_chain_evaluator():
 
         def _eval_chain(self, rows, cols):
             weights = torch.tensor([[1., 2.], [3., 4.]], dtype=torch.float64)
-            return weights[rows, cols].cumsum(0), 3
+            return weights[rows, cols].cumsum(0), 0 if rows.numel() == 0 else 3, None
 
     first = TableSetFunction()
     fn = LinearCombinationSetFn([first, ChainOnlySetFunction()], [1.0, -2.0])
-    values, flops = fn.eval_chain(torch.tensor([1, 0, 1, 0]), torch.tensor([0, 0, 1, 1]))
+    values, flops, auxiliary_data = fn.eval_chain(torch.tensor([1, 0, 1, 0]), torch.tensor([0, 0, 1, 1]))
     torch.testing.assert_close(values, torch.tensor([1., -5., -14., -10.], dtype=torch.float64))
+    assert auxiliary_data is None
     assert flops == 31 and first.batch_calls == 1
 
 
@@ -158,7 +163,9 @@ def test_empty_linear_combination_inputs_do_not_evaluate_components():
     second = TableSetFunction()
     fn = LinearCombinationSetFn([first, second], [1.0, -1.0])
     empty = torch.empty(0, dtype=torch.long)
-    for values, flops in (fn.eval_batch([], []), fn.eval_chain(empty, empty)):
+    chain_values, chain_flops, auxiliary_data = fn.eval_chain(empty, empty)
+    assert auxiliary_data is None
+    for values, flops in (fn.eval_batch([], []), (chain_values, chain_flops)):
         assert values.shape == (0,) and flops == 0
     assert first.batch_calls == second.batch_calls == 0
 
