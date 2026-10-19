@@ -22,9 +22,12 @@ class PolynomialLatticeFunction(LatticeFunction):
         self.batch_calls += 1
         return self._values(x), 7 * x.shape[0]
 
-    def _eval_chain(self, rows, cols, weights, x_chain):
+    def _eval_chain(self, rows, cols, weights, x_chain=None):
         self.chain_calls += 1
-        return self._values(x_chain), 13
+        if x_chain is None:
+            x_chain = self._build_chain(rows, cols, weights)
+        self.last_chain = x_chain
+        return self._values(x_chain), x_chain, 13
 
     def _eval_neighbors(self, x, weights, x_neighbors):
         self.neighbor_calls += 1
@@ -48,15 +51,31 @@ def test_batch_and_single_evaluation_promote_dtype_and_sum_flops(combination):
     assert flops == 14
 
 
-def test_chain_uses_specialized_component_evaluators(combination):
+@pytest.mark.parametrize("supply_chain", [False, True])
+def test_chain_uses_specialized_component_evaluators(combination, supply_chain):
     rows = torch.tensor([1, 0, 1, 0])
     cols = torch.tensor([1, 0, 0, 1])
     weights = torch.tensor([1, 2])
     x_chain = torch.tensor([[0, 2], [1, 2], [1, 3], [3, 3]])
-    values, flops = combination.eval_chain(rows, cols, weights, x_chain)
+    values, returned_chain, flops = combination.eval_chain(
+        rows, cols, weights, x_chain if supply_chain else None
+    )
     torch.testing.assert_close(values, torch.tensor([2., 3.5, 3., 3.], dtype=torch.float64))
+    torch.testing.assert_close(returned_chain, x_chain)
+    if supply_chain:
+        assert returned_chain is x_chain
     assert flops == 26
     assert all(F.chain_calls == 1 and F.batch_calls == 0 for F in combination.functions)
+    assert all(F.last_chain is returned_chain for F in combination.functions)
+
+
+def test_nested_combinations_share_one_chain(combination):
+    third = PolynomialLatticeFunction(power=3)
+    outer = LinearCombinationLatticeFn([combination, third], [2.0, -1.0])
+    values, x_chain, flops = outer.eval_chain(torch.tensor([0, 1]), torch.tensor([0, 0]), torch.tensor([1]))
+    torch.testing.assert_close(values, torch.tensor([2., 4.], dtype=torch.float64))
+    assert flops == 39
+    assert all(F.last_chain is x_chain for F in [*combination.functions, third])
 
 
 def test_neighbors_use_specialized_component_evaluators(combination):

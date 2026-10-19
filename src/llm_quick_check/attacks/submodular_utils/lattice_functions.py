@@ -8,6 +8,7 @@ import torch
 from torch import Tensor
 
 from .linear_combination import LinearCombinationMixin
+from .set_functions import assert_valid_set
 
 # TODO: for now we only use flops for forward passes. Create a class for cross-entropy loss that tracks flops count
 # in its state, and remove flops everywhere else
@@ -70,42 +71,64 @@ class LatticeFunction(ABC):
         return self.eval_batch(x)
 
     def eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> tuple[Tensor, int]:
+        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, int]:
         """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}
            for i in [m], m length of rows/cols (zero vector not included)
 
-        Default: evaluate via _eval_batch on x_chain. Override _eval_chain for more efficient evaluation.
+        Default: construct x_chain when absent and evaluate it via _eval_batch.
+        Override _eval_chain for more efficient evaluation.
 
         Args:
-            rows, cols: 1D long tensors of length m <= n * b
-            weights: Tensor of shape (b,).
-            x_chain: Tensor of shape (m, n) with x_chain[i] = x^{i+1}.
+            rows, cols: 1D long tensors of length m <= n * b, with unique paired indices.
+            weights: Nonnegative long tensor of shape (b,).
+            x_chain: Optional long tensor of shape (m, n) with x_chain[i] = x^{i+1}.
+                A supplied chain is reused without modification. The public wrapper validates
+                its shape, device, dtype, and domain without reconstructing the intended prefixes.
 
         Returns:
             Fvalues: Tensor of shape (m,) with Fvalues[i] = F(x^{i+1}) (F(0) not included).
+            x_chain: Evaluated chain of shape (m, n), or the supplied tensor itself.
             flops: flop count, int.
         """
-        assert rows.device == cols.device == weights.device == x_chain.device, (
-            "rows, cols, weights, and x_chain must be on the same device"
-        )
-        m = rows.shape[0]
-        assert x_chain.shape == (m, self.n), "x_chain must have shape (m, n)"
-        device = rows.device
-        if m == 0:
-            return torch.empty((0,), device=device), 0
-        self._assert_in_Vn(x_chain)
+        assert weights.dim() == 1 and weights.dtype == torch.long and (weights >= 0).all(), "weights must be a 1D nonnegative long tensor"
+        assert_valid_set(rows, cols, n=self.n, b=weights.numel(), device=weights.device)
+        m = rows.numel()
 
-        Fvalues, flops = self._eval_chain(rows, cols, weights, x_chain)
+        if x_chain is not None:
+            assert x_chain.shape == (m, self.n), "x_chain must have shape (m, n)"
+            assert x_chain.device == rows.device, "x_chain must be on the same device as rows"
+            self._assert_in_Vn(x_chain)
+        if m == 0:
+            if x_chain is None:
+                x_chain = torch.empty((0, self.n), dtype=torch.long, device=rows.device)
+            return torch.empty((0,), device=rows.device), x_chain, 0
+
+        Fvalues, evaluated_chain, flops = self._eval_chain(rows, cols, weights, x_chain)
         assert Fvalues.shape == (m,), "_eval_chain must return one scalar per chain step"
-        assert Fvalues.device == x_chain.device, "_eval_chain must return values on the same device as x_chain"
-        return Fvalues, flops
+        assert Fvalues.device == rows.device, "_eval_chain must return values on the same device as rows"
+        if x_chain is not None:
+            assert evaluated_chain is x_chain, "_eval_chain must return the supplied x_chain tensor"
+        return Fvalues, evaluated_chain, flops
+
+    def _build_chain(self, rows: Tensor, cols: Tensor, weights: Tensor) -> Tensor:
+        """Construct a nonempty chain from validated indices and weights, then check if in V^n."""
+        x_chain = torch.empty((rows.numel(), self.n), dtype=torch.long, device=rows.device)
+        x = torch.zeros(self.n, dtype=torch.long, device=rows.device)
+        for i in range(rows.numel()):
+            x[rows[i]] += weights[cols[i]]
+            x_chain[i] = x
+        self._assert_in_Vn(x_chain)
+        return x_chain
 
     def _eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> tuple[Tensor, int]:
-        """Chain evaluation after eval_chain checks; m > 0."""
-        return self._eval_batch(x_chain)
+        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, int]:
+        """Evaluate validated nonempty chain of inputs in one batch. Construct it when absent."""
+        if x_chain is None:
+            x_chain = self._build_chain(rows, cols, weights)
+        Fvalues, flops = self._eval_batch(x_chain)
+        return Fvalues, x_chain, flops
 
     def _assert_eval_neighbors_inputs(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor
@@ -230,20 +253,32 @@ class SequentialLatticeFunction(LatticeFunction):
         assert x_neighbors.dim() == 2, "x_neighbors must be 2D"
 
     def _eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> tuple[Tensor, int]:
+        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, int]:
         device = rows.device
         m = rows.shape[0]
 
-        # set state to x^1
-        Fx1_val, flops = self.eval_update(x_chain[0])
+        # Set state to x^1
+        # Initialize at x^1, preserving the existing evaluation count (no evaluation at zero).
+        build_chain = x_chain is None
+        if build_chain:
+            first_x = torch.zeros(self.n, dtype=torch.long, device=device)
+            first_x[rows[0]] = weights[cols[0]]
+            x_chain = torch.empty((m, self.n), dtype=torch.long, device=device)
+            x_chain[0] = first_x
+        else:
+            first_x = x_chain[0]
+        Fx1_val, flops = self.eval_update(first_x)
         Fvalues = torch.empty((m,), dtype=Fx1_val.dtype, device=device)
         Fvalues[0] = Fx1_val
         for i in range(1, m):
             flops += self.add_update(rows[i], weights[cols[i]])[-1]
-            assert torch.equal(x_chain[i], self.current_x), "x_chain[i] should match updated current_x"
+            if build_chain:
+                x_chain[i] = self.current_x
+            else:
+                assert torch.equal(x_chain[i], self.current_x), "x_chain[i] should match updated current_x"
             Fvalues[i] = self.current_val
-        return Fvalues, flops
+        return Fvalues, x_chain, flops
 
     def _eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> tuple[Tensor, int]:
         """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n,
@@ -307,11 +342,19 @@ class LinearCombinationLatticeFn(LinearCombinationMixin[LatticeFunction], Lattic
         return self._eval_linear_comb(lambda F: F._eval_batch(x))
 
     def _eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> tuple[Tensor, int]:
-        return self._eval_linear_comb(
-            lambda F: F._eval_chain(rows, cols, weights, x_chain)
-        )
+        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, int]:
+        # Construct once here until component selection is added in the next refactoring step.
+        if x_chain is None:
+            x_chain = self._build_chain(rows, cols, weights)
+
+        def evaluate(F: LatticeFunction) -> tuple[Tensor, int]:
+            values, component_chain, flops = F._eval_chain(rows, cols, weights, x_chain)
+            assert component_chain is x_chain, "components must return the shared x_chain tensor"
+            return values, flops
+
+        Fvalues, flops = self._eval_linear_comb(evaluate)
+        return Fvalues, x_chain, flops
 
     def _eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor
@@ -327,6 +370,3 @@ def make_zero_lattice_fn(k: int, n: int, dtype: torch.dtype = torch.float32) -> 
         return torch.zeros((x.shape[0],), device=x.device, dtype=dtype), 0
 
     return CallableLatticeFunction(k, n, zero_F_batch)
-
-
-
