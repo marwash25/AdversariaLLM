@@ -62,15 +62,7 @@ def subgradient_lovasz_extension(
 
     rows, cols = torch.unravel_index(sorted_idx, X.shape)  # both are (n x b,)
 
-    # evaluate F(x^i) for all x^i corresponding to S^i = {(rows[0], cols[0]), ..., (rows[i-1], cols[i-1])} for i in [n * b]
-    # compute x^i's sequentially which is more efficient than calling SetFnReduction.eval_batch on S^i's which will compute
-    # each x^i separately (O(n * b) vs O((n * b)^2))
-    x_chain = torch.empty((rows.shape[0], n), dtype=torch.long, device=X.device)  # (m, n)
-    x = torch.zeros(n, dtype=torch.long, device=X.device)
-    for i in range(rows.shape[0]):
-        x[rows[i]] += weights[cols[i]]
-        x_chain[i] = x
-    Fvalues, flops = lattice_fn.eval_chain(rows, cols, weights, x_chain)
+    Fvalues, flops, x_chain = lattice_fn.eval_chain(rows, cols, weights)
     assert Fvalues.shape[0] == n * b, "lattice_fn must return one scalar per input row"
 
     # compute subgradient G[rows[i], cols[i]] = F_set(S^i) - F_set(S^{i-1}) = F(x^i) - F(x^{i-1}), assume F(0)= 0
@@ -294,6 +286,15 @@ class SetFnReduction(SetFunction):
         # into a validating wrapper and a private implementation to avoid that.
         x = self.map.set2ints(rows_list, cols_list)
         return self.lattice_fn._eval_batch(x)
+
+    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, Tensor]:
+        """Evaluate validated chain of sets via self.lattice_fn._eval_chain and return x_chain as auxiliary_data."""
+        # this is more efficient than the default _eval_chain which would call SetFnReduction.eval_batch on S^i's 
+        # and compute each x^i separately (O(n * b) vs O((n * b)^2))
+        if rows.numel() == 0:
+            x_chain = torch.empty((0, self.n), dtype=torch.long, device=self.device)
+            return torch.empty(0, device=self.device), 0, x_chain
+        return self.lattice_fn._eval_chain(rows, cols, self.map.weights)
 
     def get_best_neighbors(self, x: Tensor) -> tuple[float, Tensor, float, Tensor, int]:
         """Get the best neighbor of x in V^n for F, i.e., argmin_{i, j} F(x ± weight[j] e_i)
@@ -678,5 +679,4 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         binary_map = BinaryRepresentationMap(k, n, device)
         assert k == 2**binary_map.b, "k must be a power of 2"
         super().__init__(lattice_fn, binary_map, filter_fn, filter_zero)
-
 
