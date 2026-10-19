@@ -255,11 +255,12 @@ class SequentialLatticeFunction(LatticeFunction):
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
     ) -> tuple[Tensor, Tensor, int]:
+        # x_chain is not used for evaluation here, but when provided return the same tensor 
+        # without allocating and filling another (m, n) matrix.
         device = rows.device
         m = rows.shape[0]
 
         # Set state to x^1
-        # Initialize at x^1, preserving the existing evaluation count (no evaluation at zero).
         build_chain = x_chain is None
         if build_chain:
             first_x = torch.zeros(self.n, dtype=torch.long, device=device)
