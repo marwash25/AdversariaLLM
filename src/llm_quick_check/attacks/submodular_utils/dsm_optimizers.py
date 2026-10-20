@@ -12,7 +12,10 @@ import time
 
 from .setfn_reductions import SetFnReduction
 from .lattice_fn_instances import LatticeFnWithModReduction
-from .lattice_functions import make_zero_lattice_fn, LinearCombinationLatticeFn
+from .lattice_functions import make_zero_lattice_fn
+from .set_fn_instances import ModularSetFunction
+from .set_functions import LinearCombinationSetFn
+
 
 # TODO: Both PGM and DCA essentially ignore filtering for the opt itself for now, except for storing filtered solutions at each iteration.
 # This would change if we modify GCG loss to return larger values for unreachable solutions.
@@ -297,9 +300,6 @@ def dca_dsm(
     L_G = max(L_G, 1e-12) # L_G < 1e-12 shouldn't happen unless G = 0 but just in case
     assert L_G > 0, "Lipschitz constant L_G must be positive"
 
-    # create set function reduction with place holder lattice_fn and same reduction map and filter params as F_set_batch
-    F_set_upperbd = SetFnReduction(make_zero_lattice_fn(F_set_batch.k, n), F_set_batch.map, filter_fn=F_set_batch.filter_fn, filter_zero=F_set_batch.filter_zero)
-
 
     discrete_obj_values = [0.0 for _ in range(num_outer_steps + 1)]
     inner_discrete_values: list[list[float]] = [[] for _ in range(num_outer_steps + 1)]
@@ -324,9 +324,7 @@ def dca_dsm(
 
         if inner_solver == "pgm":
             # minimize upper bound on F_set: F_set_upperbd(S) = G_set(S) - <subgrad_H, 1_S>
-            H_lowerbd = LatticeFnWithModReduction(F_set_batch.map,subgrad_H)
-            F_upperbd = LinearCombinationLatticeFn([G_set_batch.lattice_fn, H_lowerbd], [1.0, -1.0])
-            F_set_upperbd.lattice_fn = F_upperbd
+            F_set_upperbd = LinearCombinationSetFn([G_set_batch, ModularSetFunction(subgrad_H)],[1.0, -1.0])
             L_upperbd = L_G + torch.linalg.vector_norm(subgrad_H.float(), ord=2).item()
 
             # warm start pgm with current X as initial solution
