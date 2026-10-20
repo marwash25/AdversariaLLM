@@ -8,7 +8,7 @@ from .lattice_functions import (
     SequentialLatticeFunction,
     LinearCombinationLatticeFn,
 )
-from .lattice_fn_instances import ModularFn, QuadraticFn, DR_submodular_decomposition
+from .lattice_fn_instances import ModularFn, QuadraticFn, lattice_dr_submodular_decomp
 from .linear_combination import LinearCombinationMixin
 from .set_functions import LinearCombinationSetFn, SetFunction
 from .set_fn_instances import ModularSetFunction
@@ -30,7 +30,7 @@ __all__ = [
     "ModularFn",
     "ModularSetFunction",
     "QuadraticFn",
-    "DR_submodular_decomposition",
+    "lattice_dr_submodular_decomp",
     "SequentialLatticeFunction",
     "SetFunction",
     "SetFnReduction",

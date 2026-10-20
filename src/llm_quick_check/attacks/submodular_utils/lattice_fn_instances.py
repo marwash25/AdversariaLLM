@@ -183,7 +183,7 @@ class LatticeFnWithModReduction(LatticeFunction):
         return Fvalues, 0
 
 
-def DR_submodular_decomposition(
+def lattice_dr_submodular_decomp(
     F_batch: LatticeFunction,
     hessian_upperbd: Tensor,
     embedding_projections: Tensor | None = None,
@@ -210,4 +210,3 @@ def DR_submodular_decomposition(
         H_batch = EmbeddingQuadraticFn(alpha, embedding_projections, F_batch.k, F_batch.n)
     G_batch = LinearCombinationLatticeFn([F_batch, H_batch], [1.0, 1.0])
     return G_batch, H_batch
-

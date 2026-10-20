@@ -15,7 +15,7 @@ from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, Si
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix, with_max_batchsize
 from ..types import Conversation
 from .cache_utils import fingerprint_hash8, load_torch_cache_if_fingerprint_matches, make_fingerprint
-from .submodular_utils import EneSubmodularSetFnReduction, DR_submodular_decomposition, SetFnReduction, pgm_lovasz, dca_dsm
+from .submodular_utils import EneSubmodularSetFnReduction, lattice_dr_submodular_decomp, SetFnReduction, pgm_lovasz, dca_dsm
 from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_projections
 
 
@@ -435,7 +435,7 @@ class DSMAttack(Attack):
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
             # decompose F into the difference of two DR-submodular functions G and H
-            G_batch, H_batch = DR_submodular_decomposition(
+            G_batch, H_batch = lattice_dr_submodular_decomp(
                 F_set_batch.lattice_fn,
                 hessian_upperbd,
                 self._sorted_embedding_projections,
