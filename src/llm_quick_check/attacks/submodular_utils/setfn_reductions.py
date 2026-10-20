@@ -17,61 +17,6 @@ from .set_functions import SetFunction, assert_valid_set
 # TODO: Refactor all submodular_utils to work with general set functions on [n] x [b] and have SetFnReduction handle things
 # specific to the reduction.
 
-def subgradient_lovasz_extension(
-    lattice_fn: LatticeFunction,
-    weights: Tensor,
-    X: Tensor,
-    tie_breaker: Tensor | None = None,
-):
-    """Compute a subgradient of the Lovasz extension f_L of a submodular set function F_set: 2^([n] x [b]) -> R
-    using Edmonds' greedy algorithm.
-
-    F_set is given by F_set(S) = F(M(S)) where M: 2^([n] x [b]) -> V^n is [M(S)]_i = sum_{(i, j) in S} weights[j].
-    F is assumed to be normalized, i.e., F(0) = 0.
-
-    Args:
-        lattice_fn: LatticeFunction instance for F.
-        weights: Tensor of shape (b,)
-        X: Tensor of shape (n, b) in [0,1]^n x b
-        tie_breaker: Tensor of shape (n, b) used to break ties when sorting
-            X.flatten(). If not provided, original order is used.
-    Returns:
-        subgradient: Tensor of shape (n, b)
-        Fvalues: Tensor of shape (n x b,) with Fvalues[i] = F_set(S^{i+1}) (F_set(S^0) not included),
-        with S^i the set of first i elements in the sorted order of X.flatten().
-        x_chain: Tensor of shape (n x b, n) with x_chain[i] = x^{i+1} corresponding to S^{i+1}.
-        flops: flop count, int.
-    """
-    # TODO: for now assume x is a 2D tensor, not sure if there's a reason to vectorize it
-    # if X is already flattened, we can pass (n, b) to reshape it to (n, b) here
-    assert X.dim() == 2, "X must be a 2D tensor"
-    n, b = X.shape
-    assert weights.dim() == 1 and weights.shape[0] == b, "weights must be a 1D tensor of shape (b,)"
-    assert lattice_fn.n == n, "lattice_fn.n must match X.shape[0]"
-    assert (
-        lattice_fn.eval_single(torch.zeros(n, dtype=torch.long, device=X.device))[0].item() == 0
-    ), "F must be normalized"
-    if tie_breaker is not None:
-        assert tie_breaker.shape == X.shape, "tie_breaker must be the same shape as X"
-
-    if tie_breaker is None:
-        sorted_idx = torch.argsort(X.flatten(), descending=True, stable=True)
-    else:
-        sorted_idx = torch.argsort(tie_breaker.flatten(), descending=True, stable=True)
-        sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], descending=True, stable=True)]
-
-    rows, cols = torch.unravel_index(sorted_idx, X.shape)  # both are (n x b,)
-
-    Fvalues, flops, x_chain = lattice_fn.eval_chain(rows, cols, weights)
-    assert Fvalues.shape[0] == n * b, "lattice_fn must return one scalar per input row"
-
-    # compute subgradient G[rows[i], cols[i]] = F_set(S^i) - F_set(S^{i-1}) = F(x^i) - F(x^{i-1}), assume F(0)= 0
-    subgradient = torch.zeros_like(Fvalues)  # (n * b,)
-    subgradient[sorted_idx] = torch.diff(Fvalues, prepend=torch.zeros(1, dtype=Fvalues.dtype, device=Fvalues.device))
-    subgradient = subgradient.view_as(X)  # (n, b)
-
-    return subgradient, Fvalues, x_chain, flops
-
 class SetToLatticeMap(ABC):
     """Base class for map M: 2^([n] x [b]) -> V^n and its right inverse R: V^n -> 2^([n] x [b]), 
     where V = {0, 1, ..., k - 1} and [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
@@ -123,8 +68,8 @@ class SetToLatticeMap(ABC):
         Args:
             x: Tensor of type long and shape (batch_size, n). Each row is an integer vector in V^n.
         Returns:
-            rows_list: List of batch_size 1D long tensors on self.device, containing row indices.
-            cols_list: List of batch_size 1D long tensors on self.device, containing column indices.
+            rows_list: List of batch_size 1D long tensors, containing row indices.
+            cols_list: List of batch_size 1D long tensors, containing column indices.
             Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b] such that S^i = R(x[i]).
             Empty tensors represent the empty set.
         """
@@ -373,9 +318,6 @@ class SetFnReduction(SetFunction):
 
         return F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops
 
-    def subgradient_lovasz_extension(self, X: Tensor, tie_breaker: Tensor | None = None):
-        return subgradient_lovasz_extension(self.lattice_fn, self.map.weights, X, tie_breaker)
-
     def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Tensor | None = None, save_file: str | Path | None = None, fingerprint: Mapping[str, Any] | None = None) -> tuple[Tensor, int, float]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
@@ -447,33 +389,6 @@ class SetFnReduction(SetFunction):
             )
         return hessian_upperbd, flops, time_taken
 
-    def lovasz_extension(self, X: Tensor, subgradient: Tensor | None = None, Fvalues: Tensor | None = None) -> float:
-        """Evaluate the Lovasz extension f_L of F_set at X (n x b tensor): f_L(X) = <X, subgradient>
-        If subgradient is not provided, compute it using subgradient_lovasz_extension.
-        If X is of type long (assumed to be a binary matrix), f_L(X) = F_set(S) where S
-        is the set of non-zeros indices in X, return F_set(S) directly for better numerical accuracy
-        or Fvalues[nnz-1] if Fvalues is provided.
-        """
-        if X.dtype == torch.long:
-            assert ((X == 0) | (X == 1)).all().item(), "X must be a binary matrix"
-            nnz = int(X.sum().item())
-            if nnz == 0:
-                return 0.0 # F is normalized, F_set(empty set) = 0
-
-            if Fvalues is not None:
-                # normally this should match F_set(S), but not for loss based on cross entropy
-                # because of difference between batched and single logits
-                return Fvalues[nnz-1].item()
-
-            x = self.map.binary2ints(X.unsqueeze(0))
-            values, _ = self.lattice_fn(x)
-            return values[0].item()
-
-        if subgradient is None:
-            subgradient = self.subgradient_lovasz_extension(X)[0]
-
-        return (X * subgradient).sum().item()
-
     def round_lovasz_extension(
         self, X: Tensor | None = None, Fvalues: Tensor | None = None, x_chain: Tensor | None = None
     ) -> tuple[float, Tensor, float, Tensor]:
@@ -485,7 +400,7 @@ class SetFnReduction(SetFunction):
         """
         if Fvalues is None or x_chain is None:
             assert X is not None, "X must be provided if Fvalues and x_chain are not provided"
-            _, Fvalues, x_chain, _ = self.subgradient_lovasz_extension(X)
+            _, _, _, Fvalues, _, x_chain = self.subgradient_lovasz_extension(X)
 
         def round(Fvals: Tensor, sols: Tensor, filter_zero: bool) -> tuple[float, Tensor]:
             F_min, min_idx = torch.min(Fvals, dim=0)
@@ -679,4 +594,3 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         binary_map = BinaryRepresentationMap(k, n, device)
         assert k == 2**binary_map.b, "k must be a power of 2"
         super().__init__(lattice_fn, binary_map, filter_fn, filter_zero)
-

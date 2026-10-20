@@ -140,7 +140,7 @@ def pgm_lovasz(
             tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b)
         else:
             tie_breaker = None
-        subgradient, Fvalues, x_chain, flops_subgrad = F_set_batch.subgradient_lovasz_extension(X, tie_breaker)
+        subgradient, _, _, Fvalues, flops_subgrad, x_chain = F_set_batch.subgradient_lovasz_extension(X, tie_breaker)
         F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)
         cont_value = F_set_batch.lovasz_extension(X, subgradient, Fvalues)
 
@@ -320,7 +320,7 @@ def dca_dsm(
     for iter in (pbar := trange(num_outer_steps, file=sys.stdout)):
         result_idx = iter + 1
         tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b) if tie_break == "random" else None
-        subgrad_H, Hvalues, x_chain, flops_subgrad_H = H_set_batch.subgradient_lovasz_extension(X, tie_breaker) # subgrad_H is (n, b)
+        subgrad_H, _, _, Hvalues, flops_subgrad_H, x_chain = H_set_batch.subgradient_lovasz_extension(X, tie_breaker) # subgrad_H is (n, b)
 
         if inner_solver == "pgm":
             # minimize upper bound on F_set: F_set_upperbd(S) = G_set(S) - <subgrad_H, 1_S>
@@ -351,7 +351,7 @@ def dca_dsm(
 
         # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol).
         # TODO: if we use integral solutions, no need to keep track of continuous obj values since they'll be equal to discrete ones.
-        subgradient_F, Fvalues, x_chain, flops_subgrad_F = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
+        subgradient_F, _, _, Fvalues, flops_subgrad_F, x_chain = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
         F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)
         continuous_obj_values[result_idx] = F_set_batch.lovasz_extension(X, subgradient_F, Fvalues)
 

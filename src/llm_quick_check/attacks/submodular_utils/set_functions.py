@@ -44,10 +44,10 @@ class SetFunction(ABC):
         """Evaluate F(S) for S = {(rows[j], cols[j]) for j in range(len(rows))}.
 
         Args:
-            rows, cols: 1D long tensors of equal length on self.device, listing distinct
+            rows, cols: 1D long tensors of equal length, listing distinct
                 (row, col) pairs in S. Empty tensors represent the empty set.
         Returns:
-            Fvalue: 0-dimensional tensor F(S) on self.device.
+            Fvalue: 0-dimensional tensor F(S).
             flops: flop count, int.
         """
         Fvalues, flops = self.eval_batch([rows], [cols])
@@ -59,12 +59,12 @@ class SetFunction(ABC):
         An empty batch returns an empty tensor and zero flops without calling _eval_batch.
 
         Args:
-            rows_list: List of batch_size 1D long tensors on self.device, containing row indices.
-            cols_list: List of batch_size 1D long tensors on self.device, containing column indices.
+            rows_list: List of batch_size 1D long tensors, containing row indices.
+            cols_list: List of batch_size 1D long tensors, containing column indices.
             Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b] 
             of distinct (row, col) pairs. Empty tensors represent the empty set.
         Returns:
-            Fvalues: Tensor of shape (batch_size,) on self.device with Fvalues[i] = F(S^i).
+            Fvalues: Tensor of shape (batch_size,) with Fvalues[i] = F(S^i).
             flops: flop count, int.
         """
         assert len(rows_list) == len(cols_list), "rows_list and cols_list must have the same length"
@@ -98,11 +98,11 @@ class SetFunction(ABC):
         An empty chain returns empty values and zero flops without objective evaluation.
 
         Args:
-            rows, cols: 1D long tensors of length m <= n * b on self.device, listing distinct
+            rows, cols: 1D long tensors of length m <= n * b, listing distinct
                 elements in chain order. 
 
         Returns:
-            Fvalues: Tensor of shape (m,) on self.device with Fvalues[i] = F(S^{i+1}) (F(empty set) not included).
+            Fvalues: Tensor of shape (m,) with Fvalues[i] = F(S^{i+1}) (F(empty set) not included).
             flops: flop count, int.
             auxiliary_data: Optional auxiliary output defined by the subclass, or None (default).
         """
@@ -121,6 +121,72 @@ class SetFunction(ABC):
         cols_list = [cols[:t + 1] for t in range(cols.numel())]
         Fvalues, flops = self._eval_batch(rows_list, cols_list)
         return Fvalues, flops, None
+
+    def subgradient_lovasz_extension(
+        self, X: Tensor, tie_breaker: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, int, object | None]:
+        """Compute the vector g_i = F(S^i) - F(S^i-1) where S^i = S^{i-1} U {(rows[i-1], cols[i-1])} where rows and cols correspond to the flattened descending order of X.
+
+        For submodular F, the vector g is a subgradient of its Lovasz extension (Edmond's greedy algorithm)
+        For F approximately submodular, y is an approximate subgradient. 
+        F is assumed normalized: F(empty set) = 0.
+
+        Args:
+            X: Tensor of shape (n, b).
+            tie_breaker: Optional tensor of shape (n, b), used to break ties when sorting
+            X.flatten() in descending order. If not provided, original order is used.
+        Returns:
+            subgradient: Tensor of shape (n, b); vector g reshaped
+            rows, cols: Long tensors of length n * b giving the evaluated order.
+            Fvalues: Tensor of length n * b with Fvalues[i] = F(S^{i+1}) (F(emptyset) not included).
+            flops: Flop count reported by chain evaluation, int.
+            auxiliary_data: Optional subclass-defined output from eval_chain,
+                passed through unchanged.
+        """
+        assert X.shape == (self.n, self.b), "X must have shape (n, b)"
+        assert X.device == self.device, "X must be on self.device"
+        if tie_breaker is not None:
+            assert tie_breaker.shape == X.shape, "tie_breaker must be the same shape as X"
+            assert tie_breaker.device == X.device, "tie_breaker must be on the same device as X"
+
+        if tie_breaker is None:
+            sorted_idx = torch.argsort(X.flatten(), descending=True, stable=True)
+        else:
+            sorted_idx = torch.argsort(tie_breaker.flatten(), descending=True, stable=True)
+            sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], descending=True, stable=True)]
+        rows, cols = torch.unravel_index(sorted_idx, X.shape) # both (n x b, )
+
+        Fvalues, flops, auxiliary_data = self.eval_chain(rows, cols)
+        subgradient = torch.empty((self.n, self.b), dtype=Fvalues.dtype, device=self.device)
+        subgradient[rows, cols] = torch.diff(Fvalues, prepend=Fvalues.new_zeros(1))
+        return subgradient, rows, cols, Fvalues, flops, auxiliary_data
+
+    def lovasz_extension(self, X: Tensor, subgradient: Tensor | None = None, Fvalues: Tensor | None = None) -> float:
+        """Evaluate the Lovasz extension f_L of F at X (n x b tensor): f_L(X) = <X, subgradient>
+
+        If subgradient is not provided, computing it with subgradient_lovasz_extension.
+        If X is of type long, it is assumed to be a binary matrix, then f_L(X) = F(S) where S
+        is the set of non-zeros indices in X. Return F(S) or Fvalues[nnz-1] if Fvalues is provided, for better numerical accuracy.
+        """
+        if X.dtype == torch.long:
+            assert ((X == 0) | (X == 1)).all().item(), "X must be a binary matrix"
+            nnz = int(X.sum().item())
+            if nnz == 0:
+                return 0.0  # F is normalized: F(empty set) = 0.
+
+            if Fvalues is not None:
+                # normally this should match F(S), but not for loss based on cross entropy
+                # because of difference between batched and single logits
+                return Fvalues[nnz-1].item()
+
+            rows, cols = X.nonzero(as_tuple=True)
+            value, _ = self.eval_single(rows, cols)
+            return value.item()
+
+        if subgradient is None:
+            subgradient = self.subgradient_lovasz_extension(X)[0]
+
+        return (X * subgradient).sum().item()
 
     def eval_singletons(self) -> tuple[Tensor, int]:
         """Evaluate F({(i, j)}) for all (i, j) in [n] x [b] in one batched call."""

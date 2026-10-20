@@ -16,7 +16,6 @@ from .setfn_reductions import (
     EneSubmodularSetFnReduction,
     EneReductionMap,
     SetFnReduction,
-    subgradient_lovasz_extension,
 )
 from .dsm_optimizers import pgm_lovasz, dca_dsm
 
@@ -35,7 +34,6 @@ __all__ = [
     "SequentialLatticeFunction",
     "SetFunction",
     "SetFnReduction",
-    "subgradient_lovasz_extension",
     "dca_dsm",
     "pgm_lovasz",
 ]
