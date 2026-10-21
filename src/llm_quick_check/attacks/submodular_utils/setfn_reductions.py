@@ -20,7 +20,7 @@ from .set_functions import SetFunction, assert_valid_set
 class SetToLatticeMap(ABC):
     """Base class for map M: 2^([n] x [b]) -> V^n and its right inverse R: V^n -> 2^([n] x [b]), 
     where V = {0, 1, ..., k - 1} and [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
-    
+
     M should be surjective, to have a right inverse R, i.e., a map which satisfies 
     M(R(x)) = x for all x in V^n; R(M(S)) need not equal S.
     Subclasses should implement get_weights and ints2binary.
@@ -208,8 +208,6 @@ class SetFnReduction(SetFunction):
         self,
         lattice_fn: Callable[[Tensor], tuple[Tensor, int]] | LatticeFunction,
         reduction_map: SetToLatticeMap,
-        filter_fn: Callable[[Tensor], list[int]] | None = None,
-        filter_zero: bool = False,
     ):
         super().__init__(n=reduction_map.n, b=reduction_map.b, device=reduction_map.device)
         self.map = reduction_map
@@ -221,10 +219,6 @@ class SetFnReduction(SetFunction):
         )
         assert self.lattice_fn.n == self.n, "lattice_fn.n must match reduction_map.n"
         assert self.lattice_fn.k == self.k, "lattice_fn.k must match reduction_map.k"
-        self.filter_fn = filter_fn
-        self.filter_zero = filter_zero
-
-
     def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
         """Evaluate F_set on a non-empty batch of sets validated by eval_batch."""
         #TODO: set2ints also validates the sets, so this repeats validation. We can split map.set2ints
@@ -241,7 +235,22 @@ class SetFnReduction(SetFunction):
             return torch.empty(0, device=self.device), 0, x_chain
         return self.lattice_fn._eval_chain(rows, cols, self.map.weights)
 
-    def get_best_neighbors(self, x: Tensor) -> tuple[float, Tensor, float, Tensor, int]:
+    def _round_auxiliary_output(self, min_idx: int, auxiliary_input: Tensor) -> Tensor:
+        """Return the cached lattice point corresponding to the selected prefix:
+        x_min = M(S_min) in V^n
+
+        auxiliary_input is x_chain. Return empty tensor of shape (n,) if no eligible prefix.
+        """
+        x_chain = auxiliary_input
+        if min_idx < 0:
+            return x_chain.new_empty(self.n)
+        if min_idx == 0:
+            return x_chain.new_zeros(self.n)
+        return x_chain[min_idx - 1]
+
+    def get_best_neighbors(
+        self, x: Tensor, filter_fn: Callable[[Tensor], list[int]] | None = None
+    ) -> tuple[float, Tensor, float, Tensor, int]:
         """Get the best neighbor of x in V^n for F, i.e., argmin_{i, j} F(x ± weight[j] e_i)
 
         Note this is different than F_set(S ± (i, j)) since some (i, j) that can't be added/removed 
@@ -301,9 +310,9 @@ class SetFnReduction(SetFunction):
         F_best_neighbor = F_best_neighbor.item()
         best_neighbor = x_neighbors[best_idx]
 
-        if self.filter_fn is not None:
+        if filter_fn is not None:
             # drop neighbors whose full prompt tokenization would be unreachable from any input string
-            retain_idx = self.filter_fn(x_neighbors)
+            retain_idx = filter_fn(x_neighbors)
             if not retain_idx:
                 logging.warning("No neighbors of current x are reachable. Setting F_best_neighbor_filtered=inf and best_neighbor_filtered to an empty tensor.")
                 F_best_neighbor_filtered = inf
@@ -388,43 +397,6 @@ class SetFnReduction(SetFunction):
                 save_path,
             )
         return hessian_upperbd, flops, time_taken
-
-    def round_lovasz_extension(
-        self, X: Tensor | None = None, Fvalues: Tensor | None = None, x_chain: Tensor | None = None
-    ) -> tuple[float, Tensor, float, Tensor]:
-        """Round X in [0,1]^n x b to a subset S_min in [n] x [b] such that F_set(S_min) <= f_L(X)
-        and map to corresponding x_min = M(S_min) in V^n
-        If filtering is enabled, F_min_filtered, x_min_filtered correspond to the minimum over only
-        retained x^i's in the chain. If none are retained, F_min_filtered is inf and x_min_filtered is
-        an empty tensor. Otherwise, they're the same as F_min, x_min.
-        """
-        if Fvalues is None or x_chain is None:
-            assert X is not None, "X must be provided if Fvalues and x_chain are not provided"
-            _, _, _, Fvalues, _, x_chain = self.subgradient_lovasz_extension(X)
-
-        def round(Fvals: Tensor, sols: Tensor, filter_zero: bool) -> tuple[float, Tensor]:
-            F_min, min_idx = torch.min(Fvals, dim=0)
-            if F_min >= 0 and not filter_zero:  # if filter_zero is True, don't round to zero
-                return 0.0, torch.zeros_like(sols[0])
-            return F_min.item(), sols[min_idx]
-
-        F_min, x_min = round(Fvalues, x_chain, False)
-
-        if self.filter_fn is not None:
-            # drop x^i's in the chain whose full prompt tokenization would be unreachable from any input string
-            retain_idx = self.filter_fn(x_chain)
-            if not retain_idx:
-                logging.warning(
-                    "No x^i's in the chain of current X are reachable. Setting F_min_filtered = inf and x_min_filtered to an empty tensor."
-                )
-                F_min_filtered = inf
-                x_min_filtered = torch.empty((self.n,), dtype=torch.long, device=x_chain.device)
-            else:
-                F_min_filtered, x_min_filtered = round(Fvalues[retain_idx], x_chain[retain_idx], self.filter_zero)
-        else:
-            F_min_filtered, x_min_filtered = F_min, x_min
-
-        return F_min, x_min, F_min_filtered, x_min_filtered
 
 
 class EneReductionMap(SetToLatticeMap):
@@ -531,11 +503,9 @@ class EneSubmodularSetFnReduction(SetFnReduction):
         k: int,
         n: int,
         device: torch.device,
-        filter_fn: Callable[[Tensor], list[int]] | None = None,
-        filter_zero: bool = False,
     ):
         ene_map = EneReductionMap(k, n, device)
-        super().__init__(lattice_fn, ene_map, filter_fn, filter_zero)
+        super().__init__(lattice_fn, ene_map)
 
 
 
@@ -588,9 +558,7 @@ class BinarySubmodularSetFnReduction(SetFnReduction):
         k: int,
         n: int,
         device: torch.device,
-        filter_fn: Callable[[Tensor], list[int]] | None = None,
-        filter_zero: bool = False,
     ):
         binary_map = BinaryRepresentationMap(k, n, device)
         assert k == 2**binary_map.b, "k must be a power of 2"
-        super().__init__(lattice_fn, binary_map, filter_fn, filter_zero)
+        super().__init__(lattice_fn, binary_map)

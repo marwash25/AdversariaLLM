@@ -1,6 +1,8 @@
 """Base class for set functions on [n] x [b]."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from math import inf
 
 import torch
 from torch import Tensor
@@ -125,7 +127,8 @@ class SetFunction(ABC):
     def subgradient_lovasz_extension(
         self, X: Tensor, tie_breaker: Tensor | None = None
     ) -> tuple[Tensor, Tensor, Tensor, Tensor, int, object | None]:
-        """Compute the vector g_i = F(S^i) - F(S^i-1) where S^i = S^{i-1} U {(rows[i-1], cols[i-1])} where rows and cols correspond to the flattened descending order of X.
+        """Compute the vector g_i = F(S^i) - F(S^i-1) where S^i = S^{i-1} U {(rows[i-1], cols[i-1])} 
+        where rows and cols correspond to the flattened descending order of X.
 
         For submodular F, the vector g is a subgradient of its Lovasz extension (Edmond's greedy algorithm)
         For F approximately submodular, y is an approximate subgradient. 
@@ -164,7 +167,7 @@ class SetFunction(ABC):
     def lovasz_extension(self, X: Tensor, subgradient: Tensor | None = None, Fvalues: Tensor | None = None) -> float:
         """Evaluate the Lovasz extension f_L of F at X (n x b tensor): f_L(X) = <X, subgradient>
 
-        If subgradient is not provided, computing it with subgradient_lovasz_extension.
+        If subgradient is not provided, compute it with subgradient_lovasz_extension.
         If X is of type long, it is assumed to be a binary matrix, then f_L(X) = F(S) where S
         is the set of non-zeros indices in X. Return F(S) or Fvalues[nnz-1] if Fvalues is provided, for better numerical accuracy.
         """
@@ -187,6 +190,70 @@ class SetFunction(ABC):
             subgradient = self.subgradient_lovasz_extension(X)[0]
 
         return (X * subgradient).sum().item()
+
+    def round_lovasz_extension(
+        self,
+        X: Tensor | None = None,
+        rows: Tensor | None = None, # TODO: group (rows, cols) as an 'order' tuple
+        cols: Tensor | None = None,
+        Fvalues: Tensor | None = None,
+        auxiliary_input: object | None = None,
+        filter_prefixes: Callable[[Tensor, Tensor, object | None], list[int]] | None = None,
+    ) -> tuple[
+        tuple[float, tuple[Tensor, Tensor] | None, object | None],
+        tuple[float, tuple[Tensor, Tensor] | None, object | None],
+    ]:
+        """Round X in [0,1]^n x b to a subset S_min of [n] x [b].
+
+        The unfiltered minimum satisfies F(S_min) <= f_L(X). The filtered minimum
+        is selected over eligible prefixes S^i.
+        If rows, cols, or Fvalues are missing, compute them and auxiliary_input with 
+        subgradient_lovasz_extension.
+
+        Args:
+            X: Optional tensor of shape (n, b). Required if rows, cols, or Fvalues are missing. 
+            rows, cols: Optional 1D long tensors of length n * b, correspond to the flattened 
+                descending order of X.
+            Fvalues: Optional 1D tensor of length n * b with Fvalues[i] = F(S^{i+1}) (F(emptyset) not included).
+            auxiliary_input: Optional subclass-defined cached output from eval_chain, passed to 
+                _round_auxiliary_output.
+            filter_prefixes: Optional callback called once with (rows, cols, auxiliary_input). 
+                Returns a list of prefix indices in 0... n * b, with zero representing the empty set.
+                An empty result retains none; no callback retains all prefixes.
+        Returns:
+            unfiltered: (F_min, S_min, auxiliary_output) over all prefixes.
+            filtered: Same tuple over eligible prefixes, or the unfiltered result
+                if filter_prefixes is None. If no prefix is eligible, F_min=inf and S_min=None.
+            Each S_min is a pair of tensors (rows, cols). auxiliary_output is the subclass-defined 
+            output of _round_auxiliary_output, or None by default.
+        """
+        if rows is None or cols is None or Fvalues is None:
+            assert X is not None, "X must be provided if Fvalues, rows, and cols are not provided"
+            _, rows, cols, Fvalues, _, auxiliary_input = self.subgradient_lovasz_extension(X)
+
+        eligible_prefixes = filter_prefixes(rows, cols, auxiliary_input) if filter_prefixes is not None else None
+        values = torch.cat([Fvalues.new_zeros(1), Fvalues])
+
+        def select(eligible_prefixes=None):
+            eligible_values = values if eligible_prefixes is None else values[eligible_prefixes]
+            if eligible_values.numel() == 0:
+                F_min, min_idx = inf, -1
+            else:
+                F_min, min_idx = eligible_values.min(dim=0)
+                min_idx = min_idx.item() if eligible_prefixes is None else eligible_prefixes[min_idx.item()]
+                F_min = F_min.item()
+
+            S_min = None if min_idx < 0 else (rows[:min_idx], cols[:min_idx])
+            auxiliary_output = self._round_auxiliary_output(min_idx, auxiliary_input)
+            return F_min, S_min, auxiliary_output
+
+        unfiltered = select()
+        filtered = unfiltered if eligible_prefixes is None else select(eligible_prefixes)
+        return unfiltered, filtered
+
+    def _round_auxiliary_output(self, min_idx: int, auxiliary_input: object | None) -> object | None:
+        """Select auxiliary output for rounding; zero min_idx means empty set, -1 means no eligible prefix."""
+        return None
 
     def eval_singletons(self) -> tuple[Tensor, int]:
         """Evaluate F({(i, j)}) for all (i, j) in [n] x [b] in one batched call."""
@@ -260,20 +327,22 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
         assert all(F.device == device for F in set_fn_list), "all set functions must be on the same device"
         super().__init__(n, b, device)
 
-        maps = [getattr(F, "map", None) for F in self.functions]
-        maps = [M for M in maps if M is not None]
-        self.map = maps[0] if maps else None
+        mapped = [F for F in self.functions if getattr(F, "map", None) is not None]
+        self._mapped_fn = mapped[0] if mapped else None
+        self.map = self._mapped_fn.map if mapped else None
+
         # With the dimension/device checks above, matching class and k is enough
         # for currently implemented maps. In general, we'd need to check if maps' weights match.
         assert all(
-            type(M) is type(self.map) and M.k == self.map.k for M in maps
+            type(F.map) is type(self.map) and F.map.k == self.map.k for F in mapped
         ), "All set function reductions must use the same reduction map (same map class and k)"
 
     def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
         return self._eval_linear_comb(lambda F: F._eval_batch(rows_list, cols_list))
 
     def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, Tensor | None]:
-        """Evaluate components independently and retain the first available lattice chain."""
+        """Evaluate components independently and retain the first available x_chain, 
+        which will be the same for all mapped components since they use same map"""
         # if there's multiple SetFnReduction, each would recompute x_chain 
         # this can be avoided by using SetFnReduction(LinearCombinationLatticeFn(...), ...)
         x_chain = None
@@ -287,3 +356,9 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
 
         Fvalues, flops = self._eval_linear_comb(evaluate)
         return Fvalues, flops, x_chain
+
+    def _round_auxiliary_output(self, min_idx: int, auxiliary_input: object | None) -> object | None:
+        """Return the first mapped component x_min, which will be the same for all mapped components"""
+        if self._mapped_fn is None:
+            return None
+        return self._mapped_fn._round_auxiliary_output(min_idx, auxiliary_input)
