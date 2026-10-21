@@ -15,7 +15,7 @@ from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, Si
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix, with_max_batchsize
 from ..types import Conversation
 from .cache_utils import fingerprint_hash8, load_torch_cache_if_fingerprint_matches, make_fingerprint
-from .submodular_utils import EneSubmodularSetFnReduction, lattice_dr_submodular_decomp, SetFnReduction, pgm_lovasz, dca_dsm
+from .submodular_utils import EneSubmodularSetFnReduction, lattice_dr_submodular_decomp, make_lattice_prefix_filter, SetFnReduction, pgm_lovasz, dca_dsm
 from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_projections
 
 
@@ -366,7 +366,8 @@ class DSMAttack(Attack):
                 # TODO: adapt filter function for other placements
                 raise ValueError(f"Filtering for {self.config.placement} placement not supported yet.")
 
-        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device, filter_fn, filter_zero)
+        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device)
+        filter_prefixes = make_lattice_prefix_filter(filter_fn, filter_zero) if filter_fn is not None else None
 
         # TODO: Standardize optimizer interface
         if self.config.optimizer == "pgm":
@@ -381,6 +382,7 @@ class DSMAttack(Attack):
                 self.config.pgm_config.L,
                 tie_break=self.config.pgm_config.tie_break,
                 gap_tol=None,
+                filter_prefixes=filter_prefixes,
             )
 
         elif self.config.optimizer == "dca":
@@ -440,8 +442,8 @@ class DSMAttack(Attack):
                 hessian_upperbd,
                 self._sorted_embedding_projections,
             )
-            G_set_batch = SetFnReduction(G_batch, F_set_batch.map, filter_fn, filter_zero)
-            H_set_batch = SetFnReduction(H_batch, F_set_batch.map, filter_fn, filter_zero)
+            G_set_batch = SetFnReduction(G_batch, F_set_batch.map)
+            H_set_batch = SetFnReduction(H_batch, F_set_batch.map)
 
             # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = - H((k-1) 1) where k = valid_vocab_size
             H_max, flops_L_H= H_batch(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
@@ -465,6 +467,8 @@ class DSMAttack(Attack):
                 inner_gap_tol=dca_config.inner_gap_tol,
                 tie_break=dca_config.tie_break,
                 L_G=L_G,
+                filter_fn=filter_fn,
+                filter_zero=filter_zero,
             )
 
         else:

@@ -3,6 +3,7 @@ Difference of submodular minimization optimizers
 """
 import torch
 from typing import Literal
+from collections.abc import Callable
 from torch import Tensor
 from math import inf, sqrt
 from tqdm import trange
@@ -15,6 +16,20 @@ from .lattice_fn_instances import LatticeFnWithModReduction
 from .lattice_functions import make_zero_lattice_fn
 from .set_fn_instances import ModularSetFunction
 from .set_functions import LinearCombinationSetFn
+
+
+def make_lattice_prefix_filter(filter_fn: Callable[[Tensor], list[int]] | None = None, filter_zero: bool = False) -> Callable:
+    """Build a filter_prefixes callback using the cached lattice chain.
+
+    filter_fn returns retained nonempty chain-row indices. The callback returns
+    a list of ascending prefix indices, shifted by one, with zero prepended if allowed.
+    """
+    def filter_prefixes(rows, cols, auxiliary_input) -> list[int]:
+        x_chain = auxiliary_input
+        retain_idx = range(len(x_chain)) if filter_fn is None else filter_fn(x_chain)
+        return ([] if filter_zero else [0]) + [i + 1 for i in sorted(retain_idx)]
+
+    return filter_prefixes
 
 
 # TODO: Both PGM and DCA essentially ignore filtering for the opt itself for now, except for storing filtered solutions at each iteration.
@@ -31,6 +46,7 @@ def pgm_lovasz(
     L: float | Literal["singletons", "normalize", "polyak"],
     tie_break: Literal["random"] | Tensor | None = None,
     gap_tol: float | None = None,
+    filter_prefixes: Callable[[Tensor, Tensor, object | None], list[int]] | None = None,
 ):
     """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a set function reduction F_set: 2^([n] x [b]) -> R
@@ -57,6 +73,7 @@ def pgm_lovasz(
         it is used as a fixed tie-breaking order at every iteration. If None, ties are broken by the original order.
         gap_tol: Stop when duality gap is less than gap_tol.
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
+        filter_prefixes: Optional callback returning eligible prefix indices for filtered rounding.
 
     Returns:
         best_discrete_sol: Tensor of shape (n,) and type long, unfiltered discrete solution with the lowest
@@ -143,8 +160,11 @@ def pgm_lovasz(
             tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b)
         else:
             tie_breaker = None
-        subgradient, _, _, Fvalues, flops_subgrad, x_chain = F_set_batch.subgradient_lovasz_extension(X, tie_breaker)
-        F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)
+        subgradient, rows, cols, Fvalues, flops_subgrad, x_chain = F_set_batch.subgradient_lovasz_extension(X, tie_breaker)
+        (F_round, _, x_round), (F_round_filtered, _, x_round_filtered) = F_set_batch.round_lovasz_extension(
+            rows=rows, cols=cols, Fvalues=Fvalues, auxiliary_input=x_chain,
+            filter_prefixes=filter_prefixes,
+        )
         cont_value = F_set_batch.lovasz_extension(X, subgradient, Fvalues)
 
         if F_round < best_discrete_obj:
@@ -156,7 +176,7 @@ def pgm_lovasz(
         discrete_obj_values[iter] = F_round # best_discrete_obj
         discrete_obj_values_filtered[iter] = F_round_filtered
         continuous_obj_values[iter] = cont_value # best_continuous_obj
-        discrete_sols_filtered[iter] = x_round_filtered.clone() # x_best
+        discrete_sols_filtered[iter] = x_round_filtered # x_best
 
         # if gap_tol is not None: # not used if gap_tol is None but we can still compute it since it's relatively cheap
         dual_avg = (dual_avg * iter + subgradient) / (iter + 1)
@@ -221,6 +241,8 @@ def dca_dsm(
     inner_gap_tol: float | None = 1e-5,
     tie_break: Literal["random"] | None = None,
     L_G: float | Literal["singletons"] = "singletons",
+    filter_fn: Callable[[Tensor], list[int]] | None = None,
+    filter_zero: bool = False,
 ):
     """
     Implement the difference of convex algorithm (DCA) variant from El Halabi et al. 2023 (Algorithm 2)
@@ -255,6 +277,8 @@ def dca_dsm(
         permutation drawn at each outer iteration. Otherwise ties are broken by the original order.
         L_G: Positive float or 'singletons'. Lipschitz constant of g_L, used to derive the Lipschitz constant
         L_G + ||s|| of the upper bound passed to PGM. 'singletons' uses the sqrt(sum_{i} G_set({i})^2) bound.
+        filter_fn: Optional callback returning retained lattice-point indices.
+        filter_zero: Whether to exclude the empty set from filtered rounding.
 
     Returns:
         discrete_obj_values: List of T floats, discrete objective values F(x^t) for each outer step t, where x^t
@@ -289,6 +313,7 @@ def dca_dsm(
     # map x_init to X in [0,1]^n x b
     X = F_set_batch.map.ints2binary(x_init)[0].to(dtype=torch.long)
     n, b = X.shape
+    filter_prefixes = make_lattice_prefix_filter(filter_fn, filter_zero) if filter_fn is not None else None
 
     flops_L_G = 0
     if isinstance(L_G, str):
@@ -330,7 +355,10 @@ def dca_dsm(
             # warm start pgm with current X as initial solution
             inner_best_discrete_sol, inner_best_continuous_sol, inner_discrete_values[result_idx], inner_discrete_values_filtered[result_idx], \
             inner_continuous_values[result_idx], inner_duality_gaps[result_idx], inner_discrete_sols_filtered, inner_times[result_idx], inner_flops[result_idx] = \
-                pgm_lovasz(F_set_upperbd, X, num_inner_steps, L_upperbd, tie_break=tie_breaker, gap_tol=inner_gap_tol)
+                pgm_lovasz(
+                    F_set_upperbd, X, num_inner_steps, L_upperbd, tie_break=tie_breaker,
+                    gap_tol=inner_gap_tol, filter_prefixes=filter_prefixes,
+                )
 
             prev_cont_value = inner_continuous_values[result_idx][0] # f_L_upperbd(X) = g_L(X) - <subgrad_H, X> = g_L(X) - h_L(X) = f_L(X)
             # X.float() is needed to avoid assertion being triggered due to difference between batched and single cross entropy loss evaluations,
@@ -349,8 +377,11 @@ def dca_dsm(
 
         # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol).
         # TODO: if we use integral solutions, no need to keep track of continuous obj values since they'll be equal to discrete ones.
-        subgradient_F, _, _, Fvalues, flops_subgrad_F, x_chain = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
-        F_round, x_round, F_round_filtered, x_round_filtered = F_set_batch.round_lovasz_extension(Fvalues=Fvalues, x_chain=x_chain)
+        subgradient_F, rows, cols, Fvalues, flops_subgrad_F, x_chain = F_set_batch.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
+        (F_round, _, x_round), (F_round_filtered, _, x_round_filtered) = F_set_batch.round_lovasz_extension(
+            rows=rows, cols=cols, Fvalues=Fvalues, auxiliary_input=x_chain,
+            filter_prefixes=filter_prefixes,
+        )
         continuous_obj_values[result_idx] = F_set_batch.lovasz_extension(X, subgradient_F, Fvalues)
 
         if continuous_obj_values[result_idx] > prev_cont_value + inner_duality_gaps[result_idx][-1]:
@@ -384,7 +415,9 @@ def dca_dsm(
         "Continuous obj value": continuous_obj_values[result_idx], "Inner duality gap reached": inner_duality_gaps[result_idx][-1]})
 
         if prev_cont_value - continuous_obj_values[result_idx] <= outer_tol:
-            F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops_local_search = F_set_batch.get_best_neighbors(x_round)
+            F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops_local_search = F_set_batch.get_best_neighbors(
+                x_round, filter_fn
+            )
             # include local search time and flops
             times[result_idx] = time.time() - time_start - (times[0] if iter == 0 else 0.0)
             flops[result_idx] += flops_local_search

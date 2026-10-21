@@ -17,7 +17,7 @@ from .setfn_reductions import (
     EneReductionMap,
     SetFnReduction,
 )
-from .dsm_optimizers import pgm_lovasz, dca_dsm
+from .dsm_optimizers import pgm_lovasz, dca_dsm, make_lattice_prefix_filter
 
 __all__ = [
     "CallableLatticeFunction",
@@ -26,6 +26,7 @@ __all__ = [
     "LinearCombinationSetFn",
     "EneSubmodularSetFnReduction",
     "EneReductionMap",
+    "make_lattice_prefix_filter",
     "LatticeFunction",
     "ModularFn",
     "ModularSetFunction",
