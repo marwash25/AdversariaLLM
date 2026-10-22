@@ -243,7 +243,6 @@ def _embeddings_max_dist(E: Tensor, block_size: int = 2048) -> float:
     return max_dist
 
 
-# TODO: refactor into one common PGM solver used both here and in pgm_lovasz in dsm_optimizers.py
 def _solve_dual_cone_pgm(
     E: Tensor,
     w_init: Tensor,

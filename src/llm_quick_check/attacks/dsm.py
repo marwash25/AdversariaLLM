@@ -15,7 +15,7 @@ from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, Si
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix, with_max_batchsize
 from ..types import Conversation
 from .cache_utils import fingerprint_hash8, load_torch_cache_if_fingerprint_matches, make_fingerprint
-from .submodular_utils import EneSubmodularSetFnReduction, lattice_dr_submodular_decomp, make_lattice_prefix_filter, SetFnReduction, pgm_lovasz, dca_dsm
+from .submodular_utils import EneSubmodularSetFnReduction, lattice_dr_submodular_decomp, make_lattice_prefix_filter, SetFnReduction, pgm_lovasz_set, dca_dsm
 from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_projections
 
 
@@ -371,13 +371,15 @@ class DSMAttack(Attack):
 
         # TODO: Standardize optimizer interface
         if self.config.optimizer == "pgm":
+            # map initial optim_ids to X_init in [0,1]^n x b
+            X_init = F_set_batch.map.ints2binary(inv_perm_ids_init)[0].to(dtype=torch.long)
             setup_time = time.time() - t_start
             setup_flops = F_0_flops
             # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)
-            _, _, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, discrete_sols_filtered, \
-            times, flops = pgm_lovasz(
+            _, _, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, _, \
+            times, flops, _, discrete_sols_filtered = pgm_lovasz_set(
                 F_set_batch,
-                inv_perm_ids_init,
+                X_init,
                 self.config.num_steps,
                 self.config.pgm_config.L,
                 tie_break=self.config.pgm_config.tie_break,
