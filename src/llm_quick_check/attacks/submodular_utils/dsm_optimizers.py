@@ -13,8 +13,6 @@ import logging
 import time
 
 from .setfn_reductions import SetFnReduction
-from .lattice_fn_instances import LatticeFnWithModReduction
-from .lattice_functions import make_zero_lattice_fn
 from .set_fn_instances import ModularSetFunction
 from .set_functions import LinearCombinationSetFn, SetFunction
 

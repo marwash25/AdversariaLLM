@@ -6,7 +6,6 @@ import torch
 from torch import Tensor
 import logging
 from .lattice_functions import LatticeFunction, SequentialLatticeFunction, LinearCombinationLatticeFn, make_zero_lattice_fn
-from .setfn_reductions import SetToLatticeMap
 
 
 class QuadraticFn(SequentialLatticeFunction):
@@ -136,51 +135,6 @@ class ModularFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remov
         self._assert_in_Vn(new_x[i])
         new_val = self.current_val + weight * self.w[i]
         return new_val, new_x, 0
-
-
-class LatticeFnWithModReduction(LatticeFunction):
-    """Lattice function F: V^n -> R whose set function reduction F_set: 2^([n] x [b]) -> R is modular, i.e.,
-    F_set(S) = sum_{(i, j) in S} W[i, j] for some weight matrix W of shape (n, b).
-
-    F_set is given by F_set(S) = F(M(S)) where M: 2^([n] x [b]) -> V^n is [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
-    Conversely, F is given by F(x) = F_set(M^{-1}(x)) where M^{-1}: V^n -> 2^([n] x [b]) is the inverse map of M.
-    """
-    # This doesn't have a simple closed form that doesn't require going through M^{-1}.
-    # This function is needed in DCA for H_lowerbd which is combined with G and their set function reduction is minimized by the inner solver
-    # It's inefficient to go through this lattice function when we already have the form of the set function reduction.
-    # Evaluating corresponding SetFnReduction.set_fn will map from sets to ints and back to sets in eval_batch. But we currently only use
-    # this method in singleton_L_bound which is not used for this function.
-    # We override _eval_chain to avoid unecessary map to ints and back.
-    # TODO: refactor code to have set fn class and linear combination of set fns that can be both from reductions or not.
-    # TODO: This class is incorrect and should be replaced by a modular set function: 
-    # if the reduction map M is not invertible, a modular set function may not have a corresponding
-    # lattice function (unless F_set has the same value for all sets with the same image M(S))
-    def __init__(self, map: SetToLatticeMap, W: Tensor):
-        assert W.shape[0] == map.n and W.shape[1] == map.b, "W must have shape (map.n, map.b)"
-        super().__init__(map.k, map.n)
-        self.W = W
-        self.map = map
-
-    def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
-        assert x.device == self.W.device == self.map.device, "x, W, and map must be on the same device"
-        X = self.map.ints2binary(x)
-        return (X * self.W).sum(dim=(1, 2)), 0
-
-    def _eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor
-    ) -> tuple[Tensor, int]:
-        """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}.
-        by directly evaluating F_set(S^i) for the corresponding sets S^i = S^{i-1} + {(rows[i-1], cols[i-1])}.
-        """
-        device = rows.device
-        m = rows.shape[0]
-
-        Fvalues = torch.zeros((m,), dtype=self.W.dtype, device=device)
-        Fvalues[0] = self.W[rows[0], cols[0]]
-        for i in range(1, m):
-            Fvalues[i] = Fvalues[i-1] + self.W[rows[i], cols[i]]
-
-        return Fvalues, 0
 
 
 def lattice_dr_submodular_decomp(
