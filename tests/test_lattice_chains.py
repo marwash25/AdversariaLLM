@@ -119,7 +119,8 @@ def test_empty_chain_does_not_evaluate(factory, supply_chain):
     (lambda r, c, w, x: (r, c.float(), w, x), "type long"),
     (lambda r, c, w, x: (r, c, w.float(), x), "1D.*long"),
     (lambda r, c, w, x: (r, c, w[:, None], x), "1D.*long"),
-    (lambda r, c, w, x: (r, c, -w, x), "nonnegative"),
+    (lambda r, c, w, x: (r, c, -w, x), "strictly positive"),
+    (lambda r, c, w, x: (r, c, w - 1, x), "strictly positive"),
     (lambda r, c, w, x: (r + 2, c, w, x), "rows must"),
     (lambda r, c, w, x: (r, c + 2, w, x), "cols must"),
     (lambda r, c, w, x: (r, torch.zeros_like(c), w, x), "unique"),
@@ -162,8 +163,8 @@ def test_invalid_evaluator_outputs_are_rejected(failure, message, chain):
 @pytest.mark.parametrize("supply_neighbors", [False, True])
 @pytest.mark.parametrize("x, weights, expected", [
     ([1, 2], [1, 2], [[2, 2], [3, 2], [1, 3], [0, 2], [1, 1], [1, 0]]),
-    ([0, 3], [0, 1, 1, 4], [[0, 3], [1, 3], [1, 3], [0, 3],
-                            [0, 3], [0, 3], [0, 2], [0, 2]]),
+    ([1, 2], [2, 1, 2, 1], [[2, 2], [3, 2], [1, 3], [0, 2], [1, 1], [1, 0]]),
+    ([0, 3], [1, 1, 4], [[1, 3], [0, 2]]),
 ])
 def test_neighbors_match_direct_evaluation(factory, supply_neighbors, x, weights, expected):
     F = factory()
@@ -188,19 +189,21 @@ def test_neighbors_match_direct_evaluation(factory, supply_neighbors, x, weights
 
 
 @pytest.mark.parametrize("sequential_first", [False, True])
-def test_mixed_combination_shares_neighbors_from_first_component(sequential_first):
+@pytest.mark.parametrize("weights", [[1, 2], [2, 1, 2, 1]])
+def test_mixed_combination_shares_neighbors_from_first_component(sequential_first, weights):
     batch, sequential = BatchQuadratic(), IncrementalQuadratic()
     components = [sequential, batch] if sequential_first else [batch, sequential]
     F = LinearCombinationLatticeFn(components, [2., -1.])
     with patch.object(components[1], "_build_neighbors", side_effect=AssertionError("unexpected construction")):
-        values, flops, neighbors = F.eval_neighbors(torch.tensor([1, 2]), torch.tensor([1, 2]))
+        values, flops, neighbors = F.eval_neighbors(torch.tensor([1, 2]), torch.tensor(weights))
+    torch.testing.assert_close(neighbors, torch.tensor([[2, 2], [3, 2], [1, 3], [0, 2], [1, 1], [1, 0]]))
     torch.testing.assert_close(values, neighbors.to(torch.float64).square().sum(dim=1))
     torch.testing.assert_close(sequential.current_x, torch.tensor([1, 2]))
     assert flops == 11 * len(neighbors) + 11 + 3 * len(neighbors)
 
 
 @pytest.mark.parametrize("supply_neighbors", [False, True])
-@pytest.mark.parametrize("weights", [[], [4]])
+@pytest.mark.parametrize("weights", [[], [4], [4, 4]])
 def test_empty_neighbors_do_not_evaluate(supply_neighbors, weights):
     batch, sequential = BatchQuadratic(), IncrementalQuadratic()
     combination = LinearCombinationLatticeFn([sequential, batch], [1., -1.])
@@ -216,6 +219,25 @@ def test_empty_neighbors_do_not_evaluate(supply_neighbors, weights):
     assert batch.batch_calls == 0
     assert sequential.batch_inputs == [] and sequential.add_calls == 0
     assert sequential.current_x is None
+
+
+@pytest.mark.parametrize("factory", [BatchQuadratic, IncrementalQuadratic])
+@pytest.mark.parametrize("weights", [[0], [0, 1], [-1, 1]])
+def test_neighbors_reject_nonpositive_weights_before_evaluation(factory, weights):
+    F = factory()
+    with pytest.raises(AssertionError, match="strictly positive"):
+        F.eval_neighbors(torch.tensor([1, 2]), torch.tensor(weights))
+    if isinstance(F, IncrementalQuadratic):
+        assert F.batch_inputs == [] and F.add_calls == 0 and F.current_x is None
+    else:
+        assert F.batch_calls == 0
+
+
+@pytest.mark.parametrize("weights", [[0], [0, 1], [-1, 1]])
+def test_reduction_map_rejects_nonpositive_weights(weights):
+    with patch.object(EneReductionMap, "get_weights", return_value=torch.tensor(weights)):
+        with pytest.raises(AssertionError, match="strictly positive"):
+            EneReductionMap(k=4, n=2, device=torch.device("cpu"))
 
 
 def test_neighbor_selection_preserves_ties_and_filtering():

@@ -20,6 +20,7 @@ from .set_functions import SetFunction, assert_valid_set
 class SetToLatticeMap(ABC):
     """Base class for map M: 2^([n] x [b]) -> V^n and its right inverse R: V^n -> 2^([n] x [b]), 
     where V = {0, 1, ..., k - 1} and [M(S)]_i = sum_{j in [b], (i, j) in S} weights[j].
+    Weights are strictly positive integers.
 
     M should be surjective, to have a right inverse R, i.e., a map which satisfies 
     M(R(x)) = x for all x in V^n; R(M(S)) need not equal S.
@@ -38,12 +39,13 @@ class SetToLatticeMap(ABC):
         self.n = n
         self.weights = self.get_weights()
         assert self.weights.dim() == 1, "get_weights must return a 1D tensor of length b"
+        assert self.weights.dtype == torch.long and (self.weights > 0).all(), "get_weights must return strictly positive long weights"
         assert self.weights.device == self.device, "get_weights must return a tensor on self.device"
         self.b = int(self.weights.shape[0])
 
     @abstractmethod
     def get_weights(self) -> Tensor:
-        """Return weight vector of shape (b,) for the reduction."""
+        """Return a strictly positive long weight vector of shape (b,) for the reduction."""
 
     def _assert_in_Vn(self, x: Tensor) -> None:
         assert x.dtype == torch.long and (x >= 0).all() and (x < self.k).all(), "x must have values in {0, ..., k - 1}"

@@ -81,7 +81,7 @@ class LatticeFunction(ABC):
 
         Args:
             rows, cols: 1D long tensors of length m <= n * b, with unique paired indices.
-            weights: Nonnegative long tensor of shape (b,).
+            weights: Strictly positive long tensor of shape (b,).
             x_chain: Optional long tensor of shape (m, n) with x_chain[i] = x^{i+1}.
                 A supplied chain is reused without modification. The public wrapper validates
                 its shape, device, dtype, and domain without reconstructing the intended prefixes.
@@ -91,7 +91,7 @@ class LatticeFunction(ABC):
             flops: flop count, int.
             x_chain: Evaluated chain of shape (m, n), or the supplied tensor itself.
         """
-        assert weights.dim() == 1 and weights.dtype == torch.long and (weights >= 0).all(), "weights must be a 1D nonnegative long tensor"
+        assert weights.dim() == 1 and weights.dtype == torch.long and (weights > 0).all(), "weights must be a 1D strictly positive long tensor"
         assert_valid_set(rows, cols, n=self.n, b=weights.numel(), device=weights.device)
         m = rows.numel()
 
@@ -136,7 +136,7 @@ class LatticeFunction(ABC):
         assert x.device == weights.device, "x and weights must be on the same device"
         assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
         self._assert_in_Vn(x)
-        assert weights.dim() == 1 and weights.dtype == torch.long and (weights >= 0).all(), "weights must be a 1D nonnegative long tensor"
+        assert weights.dim() == 1 and weights.dtype == torch.long and (weights > 0).all(), "weights must be a 1D strictly positive long tensor"
         if x_neighbors is not None:
             assert x_neighbors.device == x.device, "x_neighbors must be on the same device as x"
             assert x_neighbors.dim() == 2 and x_neighbors.shape[1] == self.n, "x_neighbors must have shape (num_neighbors, n)"
@@ -145,23 +145,26 @@ class LatticeFunction(ABC):
     def eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
     ) -> tuple[Tensor, int, Tensor]:
-        """Evaluate F for all neighbors x ± weight[j] e_i of x in V^n.
+        """Evaluate F for all distinct neighbors x ± weights[j] e_i in V^n.
 
         Default: construct x_neighbors when absent and evaluate via _eval_batch.
         Override _eval_neighbors for efficiency.
 
         Args:
             x: Tensor of shape (n,).
-            weights: Nonnegative long tensor of shape (b,).
+            weights: Strictly positive long tensor of shape (b,). Sorted unique weights
+                are used for neighbor evaluation.
             x_neighbors: Optional long tensor of shape (num_neighbors, n), ordered as
                 all valid additions followed by all valid removals, each in flattened (i,j)
-                order, including duplicates. A supplied tensor is reused without modification.
+                order using the sorted unique positive weights, without duplicates.
+                A supplied tensor must follow this order and is reused without modification.
         Returns:
             Fvalues: Tensor of shape (num_neighbors,) with Fvalues[i] = F(x_neighbors[i]).
             flops: flop count, int.
             x_neighbors: Evaluated neighbors of shape (num_neighbors, n), or the supplied tensor itself.
         """
         self._assert_eval_neighbors_inputs(x, weights, x_neighbors)
+        weights = torch.unique(weights, sorted=True)
         Fvalues, flops, evaluated_neighbors = self._eval_neighbors(x, weights, x_neighbors)
         assert Fvalues.shape == (evaluated_neighbors.shape[0],), (
             "_eval_neighbors must return one scalar per neighbor"
@@ -172,6 +175,7 @@ class LatticeFunction(ABC):
         return Fvalues, flops, evaluated_neighbors
 
     def _build_neighbors(self, x: Tensor, weights: Tensor) -> Tensor:
+        """Construct neighbors from sorted unique positive weights."""
         # get neighbors of x in V^n in the order:
         # 1) all x + weights[j] e_i in V^n for all i, j
         # 2) all x - weights[j] e_i in V^n for all i, j
@@ -204,7 +208,7 @@ class LatticeFunction(ABC):
     def _eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
     ) -> tuple[Tensor, int, Tensor]:
-        """Neighbor evaluation after eval_neighbors checks."""
+        """Neighbor evaluation with validated inputs and sorted unique positive weights."""
         if x_neighbors is None:
             x_neighbors = self._build_neighbors(x, weights)
         if x_neighbors.shape[0] == 0:
@@ -321,7 +325,8 @@ class SequentialLatticeFunction(LatticeFunction):
     def _eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
     ) -> tuple[Tensor, int, Tensor]:
-        """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n,
+        """Incremental neighbor evaluation with sorted unique positive weights.
+        Expects x_neighbors in this order: all x + weights[j] e_i in V^n,
         then all x - weights[j] e_i in V^n. Collect points from add/remove when x_neighbors is absent."""
         add_valid = (x[:, None] + weights) <= self.k - 1
         rmv_valid = (x[:, None] - weights) >= 0
