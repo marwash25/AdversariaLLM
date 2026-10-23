@@ -281,7 +281,7 @@ class SetFnReduction(SetFunction):
             # drop neighbors whose full prompt tokenization would be unreachable from any input string
             retain_idx = filter_fn(x_neighbors)
             if not retain_idx:
-                logging.warning("No neighbors of current x are reachable. Setting F_best_neighbor_filtered=inf and best_neighbor_filtered to an empty tensor.")
+                logging.warning("No neighbors of current x are retained after filtering.")
                 F_best_neighbor_filtered = inf
                 best_neighbor_filtered = torch.empty((self.n,), dtype=torch.long, device=self.device)
             else:

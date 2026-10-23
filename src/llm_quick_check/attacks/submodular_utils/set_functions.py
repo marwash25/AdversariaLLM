@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from math import inf
-
+import logging
 import torch
 from torch import Tensor
 
@@ -237,6 +237,7 @@ class SetFunction(ABC):
         def select(eligible_prefixes=None):
             eligible_values = values if eligible_prefixes is None else values[eligible_prefixes]
             if eligible_values.numel() == 0:
+                logging.warning("No prefixes of current X are retained after filtering.")
                 F_min, min_idx = inf, -1
             else:
                 F_min, min_idx = eligible_values.min(dim=0)
