@@ -30,9 +30,13 @@ class PolynomialLatticeFunction(LatticeFunction):
         self.last_chain = x_chain
         return self._values(x_chain), 13, x_chain
 
-    def _eval_neighbors(self, x, weights, x_neighbors):
+    def _eval_neighbors(self, x, weights, x_neighbors=None):
         self.neighbor_calls += 1
-        return self._values(x_neighbors), 19
+        self.supplied_neighbors = x_neighbors
+        if x_neighbors is None:
+            x_neighbors = self._build_neighbors(x, weights)
+        self.last_neighbors = x_neighbors
+        return self._values(x_neighbors), x_neighbors, 19
 
 
 @pytest.fixture
@@ -81,23 +85,34 @@ def test_nested_combinations_share_one_chain(combination):
     assert all(F.last_chain is x_chain for F in [*combination.functions, third])
 
 
-def test_neighbors_use_specialized_component_evaluators(combination):
+@pytest.mark.parametrize("supply_neighbors", [False, True])
+def test_neighbors_use_specialized_component_evaluators(combination, supply_neighbors):
     x = torch.tensor([1, 2])
     weights = torch.tensor([1, 2])
     neighbors = torch.tensor([[2, 2], [3, 2], [1, 3], [0, 2], [1, 1], [1, 0]])
-    values, flops = combination.eval_neighbors(x, weights, neighbors)
+    values, returned_neighbors, flops = combination.eval_neighbors(
+        x, weights, neighbors if supply_neighbors else None
+    )
     torch.testing.assert_close(values, torch.tensor([4., 3.5, 3., 2., 3., 1.5], dtype=torch.float64))
+    torch.testing.assert_close(returned_neighbors, neighbors)
+    if supply_neighbors:
+        assert returned_neighbors is neighbors
     assert flops == 38
     assert all(F.neighbor_calls == 1 and F.batch_calls == 0 for F in combination.functions)
+    assert all(F.last_neighbors is returned_neighbors for F in combination.functions)
+    assert combination.functions[0].supplied_neighbors is (neighbors if supply_neighbors else None)
+    assert combination.functions[1].supplied_neighbors is returned_neighbors
 
 
 def test_nested_combinations_preserve_neighbor_evaluation(combination):
     outer = LinearCombinationLatticeFn([combination, combination.functions[0]], [2.0, -1.0])
-    values, flops = outer.eval_neighbors(
-        torch.tensor([0, 0]), torch.tensor([1]), torch.tensor([[1, 0], [0, 1]])
-    )
+    values, neighbors, flops = outer.eval_neighbors(torch.tensor([0, 0]), torch.tensor([1]))
     torch.testing.assert_close(values, torch.tensor([2., 2.], dtype=torch.float64))
+    torch.testing.assert_close(neighbors, torch.tensor([[1, 0], [0, 1]]))
     assert flops == 57
+    assert combination.functions[0].neighbor_calls == 2
+    assert combination.functions[1].neighbor_calls == 1
+    assert all(F.last_neighbors is neighbors for F in combination.functions)
 
 
 @pytest.mark.parametrize("alphas, message", [([], "non-empty"), ([1.0], "same length")])

@@ -267,45 +267,10 @@ class SetFnReduction(SetFunction):
             flops: flop count, int.
         """
         assert x.device == self.device, "x must be on the same device as self.device"
-        assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
+        Fvalues, x_neighbors, flops = self.lattice_fn.eval_neighbors(x, self.map.weights)
+        if x_neighbors.shape[0] == 0: # never happens with current reductions. Can happen if weights doesn't include 1
+            return inf, x, inf, x, flops
 
-        # TODO: If self.lattice_fn is a SequentialLatticeFunction, no need to build x_neighbors here.
-        # Instead, collect and return the new_x values already produced in _eval_neighbors (check if actually faster).
-
-        # get neighbors of x in V^n in the order:
-        # 1) all x + weights[j] e_i in V^n for all i, j
-        # 2) all x - weights[j] e_i in V^n for all i, j
-
-        # enumerate all (i, j) pairs in [n] x [b]
-        i_idx = torch.arange(self.n, device=self.device, dtype=torch.long).repeat_interleave(self.b)  # (n*b,)
-        j_idx = torch.arange(self.b, device=self.device, dtype=torch.long).repeat(self.n)  # (n*b,)
-
-        weights = self.map.weights[j_idx]  # (n*b,)
-
-        # check if the neighbor is in V^n
-        add_valid = (x[i_idx] + weights) <= self.k - 1
-        rmv_valid = (x[i_idx] - weights) >= 0
-
-        num_add = add_valid.sum().item()
-        num_rmv = rmv_valid.sum().item()
-        num_neighbors = num_add + num_rmv
-
-        x_neighbors = x.unsqueeze(0).expand(num_neighbors, self.n).clone()
-
-        if num_neighbors == 0: # never happens with current reductions. Can happen if weights doesn't include 1
-            return inf, x, inf, x, 0
-
-        if num_add > 0:
-            add_cols = i_idx[add_valid]
-            add_rows = torch.arange(num_add, device=self.device, dtype=torch.long)
-            x_neighbors[add_rows, add_cols] += weights[add_valid]
-
-        if num_rmv > 0:
-            rmv_cols = i_idx[rmv_valid]
-            rmv_rows = torch.arange(num_rmv, device=self.device, dtype=torch.long) + num_add
-            x_neighbors[rmv_rows, rmv_cols] -= weights[rmv_valid]
-
-        Fvalues, flops = self.lattice_fn.eval_neighbors(x, self.map.weights, x_neighbors)
         F_best_neighbor, best_idx = torch.min(Fvalues, dim=0)
         F_best_neighbor = F_best_neighbor.item()
         best_neighbor = x_neighbors[best_idx]

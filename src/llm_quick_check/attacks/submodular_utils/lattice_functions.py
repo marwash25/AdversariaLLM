@@ -131,42 +131,86 @@ class LatticeFunction(ABC):
         return Fvalues, flops, x_chain
 
     def _assert_eval_neighbors_inputs(
-        self, x: Tensor, weights: Tensor, x_neighbors: Tensor
+        self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None
     ) -> None:
-        assert x.device == weights.device == x_neighbors.device, (
-            "x, weights, and x_neighbors must be on the same device"
-        )
+        assert x.device == weights.device, "x and weights must be on the same device"
         assert x.dim() == 1 and x.shape[0] == self.n, "x must have shape (n,)"
         self._assert_in_Vn(x)
-        assert x_neighbors.shape[1] == self.n, "x_neighbors must have shape (num_neighbors, n)"
-        self._assert_in_Vn(x_neighbors)
+        assert weights.dim() == 1 and weights.dtype == torch.long and (weights >= 0).all(), "weights must be a 1D nonnegative long tensor"
+        if x_neighbors is not None:
+            assert x_neighbors.device == x.device, "x_neighbors must be on the same device as x"
+            assert x_neighbors.dim() == 2 and x_neighbors.shape[1] == self.n, "x_neighbors must have shape (num_neighbors, n)"
+            self._assert_in_Vn(x_neighbors)
 
-    def eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> tuple[Tensor, int]:
+    def eval_neighbors(
+        self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, int]:
         """Evaluate F for all neighbors x ± weight[j] e_i of x in V^n.
 
-        Default: evaluate via _eval_batch on x_neighbors. Override _eval_neighbors for efficiency.
+        Default: construct x_neighbors when absent and evaluate via _eval_batch.
+        Override _eval_neighbors for efficiency.
 
         Args:
             x: Tensor of shape (n,).
-            weights: Tensor of shape (b,).
-            x_neighbors: Tensor of shape (num_neighbors, n)
+            weights: Nonnegative long tensor of shape (b,).
+            x_neighbors: Optional long tensor of shape (num_neighbors, n), ordered as
+                all valid additions followed by all valid removals, each in flattened (i,j)
+                order, including duplicates. A supplied tensor is reused without modification.
         Returns:
             Fvalues: Tensor of shape (num_neighbors,) with Fvalues[i] = F(x_neighbors[i]).
+            x_neighbors: Evaluated neighbors of shape (num_neighbors, n), or the supplied tensor itself.
             flops: flop count, int.
         """
         self._assert_eval_neighbors_inputs(x, weights, x_neighbors)
-        Fvalues, flops = self._eval_neighbors(x, weights, x_neighbors)
-        assert Fvalues.shape == (x_neighbors.shape[0],), (
+        Fvalues, evaluated_neighbors, flops = self._eval_neighbors(x, weights, x_neighbors)
+        assert Fvalues.shape == (evaluated_neighbors.shape[0],), (
             "_eval_neighbors must return one scalar per neighbor"
         )
-        assert Fvalues.device == x_neighbors.device, "_eval_neighbors must return values on the same device as x_neighbors"
-        return Fvalues, flops
+        assert Fvalues.device == x.device, "_eval_neighbors must return values on the same device as x"
+        if x_neighbors is not None:
+            assert evaluated_neighbors is x_neighbors, "_eval_neighbors must return the supplied x_neighbors tensor"
+        return Fvalues, evaluated_neighbors, flops
+
+    def _build_neighbors(self, x: Tensor, weights: Tensor) -> Tensor:
+        # get neighbors of x in V^n in the order:
+        # 1) all x + weights[j] e_i in V^n for all i, j
+        # 2) all x - weights[j] e_i in V^n for all i, j
+
+        # enumerate all (i, j) pairs in [n] x [b]
+        b = weights.numel()
+        i_idx = torch.arange(self.n, device=x.device, dtype=torch.long).repeat_interleave(b)  # (n*b,)
+        j_idx = torch.arange(b, device=x.device, dtype=torch.long).repeat(self.n)  # (n*b,)
+        weights = weights[j_idx]  # (n*b,)
+
+        # check if the neighbor is in V^n
+        add_valid = (x[i_idx] + weights) <= self.k - 1
+        rmv_valid = (x[i_idx] - weights) >= 0
+        num_add = add_valid.sum().item()
+        num_rmv = rmv_valid.sum().item()
+        x_neighbors = x.unsqueeze(0).expand(num_add + num_rmv, self.n).clone()
+
+        if num_add > 0:
+            add_cols = i_idx[add_valid]
+            add_rows = torch.arange(num_add, device=x.device, dtype=torch.long)
+            x_neighbors[add_rows, add_cols] += weights[add_valid]
+
+        if num_rmv > 0:
+            rmv_cols = i_idx[rmv_valid]
+            rmv_rows = torch.arange(num_rmv, device=x.device, dtype=torch.long) + num_add
+            x_neighbors[rmv_rows, rmv_cols] -= weights[rmv_valid]
+
+        return x_neighbors
 
     def _eval_neighbors(
-        self, x: Tensor, weights: Tensor, x_neighbors: Tensor
-    ) -> tuple[Tensor, int]:
+        self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, int]:
         """Neighbor evaluation after eval_neighbors checks."""
-        return self._eval_batch(x_neighbors)
+        if x_neighbors is None:
+            x_neighbors = self._build_neighbors(x, weights)
+        if x_neighbors.shape[0] == 0:
+            return torch.empty(0, device=x.device), x_neighbors, 0
+        Fvalues, flops = self._eval_batch(x_neighbors)
+        return Fvalues, x_neighbors, flops
 
 
 
@@ -245,13 +289,6 @@ class SequentialLatticeFunction(LatticeFunction):
     def remove_update(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         return self.add_update(i, -weight)
 
-    def _assert_eval_neighbors_inputs(
-        self, x: Tensor, weights: Tensor, x_neighbors: Tensor
-    ) -> None:
-        super()._assert_eval_neighbors_inputs(x, weights, x_neighbors)
-        assert weights.dim() == 1, "weights must be 1D"
-        assert x_neighbors.dim() == 2, "x_neighbors must be 2D"
-
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
     ) -> tuple[Tensor, int, Tensor]:
@@ -281,9 +318,22 @@ class SequentialLatticeFunction(LatticeFunction):
             Fvalues[i] = self.current_val
         return Fvalues, flops, x_chain
 
-    def _eval_neighbors(self, x: Tensor, weights: Tensor, x_neighbors: Tensor) -> tuple[Tensor, int]:
+    def _eval_neighbors(
+        self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, int]:
         """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n,
-        then all x - weights[j] e_i in V^n."""
+        then all x - weights[j] e_i in V^n. Collect points from add/remove when x_neighbors is absent."""
+        add_valid = (x[:, None] + weights) <= self.k - 1
+        rmv_valid = (x[:, None] - weights) >= 0
+        num_neighbors = (add_valid.sum() + rmv_valid.sum()).item()
+        build_neighbors = x_neighbors is None
+        if build_neighbors:
+            x_neighbors = x.new_empty((num_neighbors, self.n))
+        else:
+            assert x_neighbors.shape[0] == num_neighbors, "x_neighbors must contain all valid additions and removals"
+        if num_neighbors == 0:
+            return torch.empty(0, device=x.device), x_neighbors, 0
+
         # set state to x
         # TODO: add option to provide F(x) so we don't need to recompute it. Can just call self._set_state(x, F_val) in this case.
         F_val, flops = self.eval_update(x)
@@ -292,22 +342,28 @@ class SequentialLatticeFunction(LatticeFunction):
         idx = 0
         for i in range(self.n):
             for j in range(b):
-                if x[i] + weights[j] <= self.k - 1:
+                if add_valid[i, j]:
                     new_val, new_x, flops_add = self.add(i, weights[j])
-                    assert torch.equal(new_x, x_neighbors[idx]), "new_x should match x_neighbors[idx]"
+                    if build_neighbors:
+                        x_neighbors[idx] = new_x
+                    else:
+                        assert torch.equal(new_x, x_neighbors[idx]), "new_x should match x_neighbors[idx]"
                     Fvalues[idx] = new_val
                     flops += flops_add
                     idx += 1
         for i in range(self.n):
             for j in range(b):
-                if x[i] - weights[j] >= 0:
+                if rmv_valid[i, j]:
                     new_val, new_x, flops_rmv = self.remove(i, weights[j])
-                    assert torch.equal(new_x, x_neighbors[idx]), "new_x should match x_neighbors[idx]"
+                    if build_neighbors:
+                        x_neighbors[idx] = new_x
+                    else:
+                        assert torch.equal(new_x, x_neighbors[idx]), "new_x should match x_neighbors[idx]"
                     Fvalues[idx] = new_val
                     flops += flops_rmv
                     idx += 1
         assert idx == x_neighbors.shape[0], "idx should match x_neighbors.shape[0]"
-        return Fvalues, flops
+        return Fvalues, x_neighbors, flops
 
 
 
@@ -359,11 +415,20 @@ class LinearCombinationLatticeFn(LinearCombinationMixin[LatticeFunction], Lattic
         return Fvalues, flops, x_chain
 
     def _eval_neighbors(
-        self, x: Tensor, weights: Tensor, x_neighbors: Tensor
-    ) -> tuple[Tensor, int]:
-        return self._eval_linear_comb(
-            lambda F: F._eval_neighbors(x, weights, x_neighbors)
-        )
+        self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, int]:
+        def evaluate(F: LatticeFunction) -> tuple[Tensor, int]:
+            nonlocal x_neighbors
+            values, component_neighbors, flops = F._eval_neighbors(x, weights, x_neighbors)
+            if x_neighbors is None:
+                # The first component constructs the neighbors; subsequent components share them.
+                x_neighbors = component_neighbors
+            else:
+                assert component_neighbors is x_neighbors, "components must return the shared x_neighbors tensor"
+            return values, flops
+
+        Fvalues, flops = self._eval_linear_comb(evaluate)
+        return Fvalues, x_neighbors, flops
 
 def make_zero_lattice_fn(k: int, n: int, dtype: torch.dtype = torch.float32) -> LatticeFunction:
     """Return a lattice function F(x)=0 for all x in V^n."""

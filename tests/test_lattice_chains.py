@@ -1,4 +1,4 @@
-"""Construction, reuse, and validation of lattice chains."""
+"""Construction, reuse, and validation of lattice chains and neighbors."""
 
 from unittest.mock import patch
 
@@ -7,9 +7,11 @@ import torch
 
 from llm_quick_check.attacks.submodular_utils.lattice_functions import (
     LatticeFunction,
+    LinearCombinationLatticeFn,
     SequentialLatticeFunction,
 )
 from llm_quick_check.attacks.submodular_utils.lattice_fn_instances import QuadraticFn
+from llm_quick_check.attacks.submodular_utils.setfn_reductions import EneReductionMap, SetFnReduction
 
 
 class BatchQuadratic(LatticeFunction):
@@ -154,3 +156,83 @@ def test_invalid_evaluator_outputs_are_rejected(failure, message, chain):
 
     with pytest.raises(AssertionError, match=message):
         InvalidResult().eval_chain(*chain)
+
+
+@pytest.mark.parametrize("factory", [BatchQuadratic, IncrementalQuadratic])
+@pytest.mark.parametrize("supply_neighbors", [False, True])
+@pytest.mark.parametrize("x, weights, expected", [
+    ([1, 2], [1, 2], [[2, 2], [3, 2], [1, 3], [0, 2], [1, 1], [1, 0]]),
+    ([0, 3], [0, 1, 1, 4], [[0, 3], [1, 3], [1, 3], [0, 3],
+                            [0, 3], [0, 3], [0, 2], [0, 2]]),
+])
+def test_neighbors_match_direct_evaluation(factory, supply_neighbors, x, weights, expected):
+    F = factory()
+    x, weights, expected = torch.tensor(x), torch.tensor(weights), torch.tensor(expected)
+    supplied = expected.clone() if supply_neighbors else None
+    if supply_neighbors or isinstance(F, SequentialLatticeFunction):
+        with patch.object(F, "_build_neighbors", side_effect=AssertionError("unexpected construction")):
+            values, neighbors, flops = F.eval_neighbors(x, weights, supplied)
+    else:
+        values, neighbors, flops = F.eval_neighbors(x, weights)
+    torch.testing.assert_close(neighbors, expected)
+    torch.testing.assert_close(values, expected.to(torch.float64).square().sum(dim=1))
+    if supply_neighbors:
+        assert neighbors is supplied
+    if isinstance(F, IncrementalQuadratic):
+        assert len(F.batch_inputs) == 1 and F.add_calls == len(expected)
+        torch.testing.assert_close(F.current_x, x)
+        torch.testing.assert_close(F.current_val, x.to(torch.float64).square().sum())
+        assert flops == 11 + 3 * len(expected)
+    else:
+        assert F.batch_calls == 1 and flops == 11 * len(expected)
+
+
+@pytest.mark.parametrize("sequential_first", [False, True])
+def test_mixed_combination_shares_neighbors_from_first_component(sequential_first):
+    batch, sequential = BatchQuadratic(), IncrementalQuadratic()
+    components = [sequential, batch] if sequential_first else [batch, sequential]
+    F = LinearCombinationLatticeFn(components, [2., -1.])
+    with patch.object(components[1], "_build_neighbors", side_effect=AssertionError("unexpected construction")):
+        values, neighbors, flops = F.eval_neighbors(torch.tensor([1, 2]), torch.tensor([1, 2]))
+    torch.testing.assert_close(values, neighbors.to(torch.float64).square().sum(dim=1))
+    torch.testing.assert_close(sequential.current_x, torch.tensor([1, 2]))
+    assert flops == 11 * len(neighbors) + 11 + 3 * len(neighbors)
+
+
+@pytest.mark.parametrize("supply_neighbors", [False, True])
+@pytest.mark.parametrize("weights", [[], [4]])
+def test_empty_neighbors_do_not_evaluate(supply_neighbors, weights):
+    batch, sequential = BatchQuadratic(), IncrementalQuadratic()
+    combination = LinearCombinationLatticeFn([sequential, batch], [1., -1.])
+    for F in (batch, sequential, combination):
+        supplied = torch.empty((0, 2), dtype=torch.long) if supply_neighbors else None
+        values, neighbors, flops = F.eval_neighbors(
+            torch.tensor([1, 2]), torch.tensor(weights, dtype=torch.long), supplied
+        )
+        assert values.shape == (0,) and neighbors.shape == (0, 2) and flops == 0
+        assert neighbors.dtype == torch.long and values.device == neighbors.device
+        if supply_neighbors:
+            assert neighbors is supplied
+    assert batch.batch_calls == 0
+    assert sequential.batch_inputs == [] and sequential.add_calls == 0
+    assert sequential.current_x is None
+
+
+def test_neighbor_selection_preserves_ties_and_filtering():
+    F = BatchQuadratic()
+    reduction = SetFnReduction(F, EneReductionMap(k=4, n=2, device=torch.device("cpu")))
+    x = torch.tensor([1, 1])
+    values, neighbors, expected_flops = F.eval_neighbors(x, reduction.map.weights)
+
+    def retain_additions(candidates):
+        torch.testing.assert_close(candidates, neighbors)
+        return (candidates.sum(dim=1) > x.sum()).nonzero().flatten().tolist()
+
+    best, point, filtered, filtered_point, flops = reduction.get_best_neighbors(x, retain_additions)
+    assert best == 1. and filtered == 5. and flops == expected_flops
+    torch.testing.assert_close(point, torch.tensor([0, 1]))
+    torch.testing.assert_close(filtered_point, torch.tensor([2, 1]))
+    assert reduction.get_best_neighbors(x, lambda _: [])[2] == float("inf")
+    unfiltered = reduction.get_best_neighbors(x)
+    assert unfiltered[0] == unfiltered[2] == values.min().item()
+    torch.testing.assert_close(unfiltered[1], unfiltered[3])
