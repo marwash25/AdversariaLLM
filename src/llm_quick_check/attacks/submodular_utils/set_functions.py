@@ -345,17 +345,9 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
         which will be the same for all mapped components since they use same map"""
         # if there's multiple SetFnReduction, each would recompute x_chain 
         # this can be avoided by using SetFnReduction(LinearCombinationLatticeFn(...), ...)
-        x_chain = None
-
-        def evaluate(F: SetFunction) -> tuple[Tensor, int]:
-            nonlocal x_chain
-            values, flops, component_chain = F._eval_chain(rows, cols)
-            if x_chain is None:
-                x_chain = component_chain
-            return values, flops
-
-        Fvalues, flops = self._eval_linear_comb(evaluate)
-        return Fvalues, flops, x_chain
+        return self._eval_linear_comb_with_auxiliary(
+            lambda F, _: F._eval_chain(rows, cols), share_auxiliary=False
+        )
 
     def _round_auxiliary_output(self, min_idx: int, auxiliary_input: object | None) -> object | None:
         """Return the first mapped component x_min, which will be the same for all mapped components"""

@@ -144,7 +144,7 @@ class LatticeFunction(ABC):
 
     def eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
-    ) -> tuple[Tensor, Tensor, int]:
+    ) -> tuple[Tensor, int, Tensor]:
         """Evaluate F for all neighbors x ± weight[j] e_i of x in V^n.
 
         Default: construct x_neighbors when absent and evaluate via _eval_batch.
@@ -158,18 +158,18 @@ class LatticeFunction(ABC):
                 order, including duplicates. A supplied tensor is reused without modification.
         Returns:
             Fvalues: Tensor of shape (num_neighbors,) with Fvalues[i] = F(x_neighbors[i]).
-            x_neighbors: Evaluated neighbors of shape (num_neighbors, n), or the supplied tensor itself.
             flops: flop count, int.
+            x_neighbors: Evaluated neighbors of shape (num_neighbors, n), or the supplied tensor itself.
         """
         self._assert_eval_neighbors_inputs(x, weights, x_neighbors)
-        Fvalues, evaluated_neighbors, flops = self._eval_neighbors(x, weights, x_neighbors)
+        Fvalues, flops, evaluated_neighbors = self._eval_neighbors(x, weights, x_neighbors)
         assert Fvalues.shape == (evaluated_neighbors.shape[0],), (
             "_eval_neighbors must return one scalar per neighbor"
         )
         assert Fvalues.device == x.device, "_eval_neighbors must return values on the same device as x"
         if x_neighbors is not None:
             assert evaluated_neighbors is x_neighbors, "_eval_neighbors must return the supplied x_neighbors tensor"
-        return Fvalues, evaluated_neighbors, flops
+        return Fvalues, flops, evaluated_neighbors
 
     def _build_neighbors(self, x: Tensor, weights: Tensor) -> Tensor:
         # get neighbors of x in V^n in the order:
@@ -203,14 +203,14 @@ class LatticeFunction(ABC):
 
     def _eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
-    ) -> tuple[Tensor, Tensor, int]:
+    ) -> tuple[Tensor, int, Tensor]:
         """Neighbor evaluation after eval_neighbors checks."""
         if x_neighbors is None:
             x_neighbors = self._build_neighbors(x, weights)
         if x_neighbors.shape[0] == 0:
-            return torch.empty(0, device=x.device), x_neighbors, 0
+            return torch.empty(0, device=x.device), 0, x_neighbors
         Fvalues, flops = self._eval_batch(x_neighbors)
-        return Fvalues, x_neighbors, flops
+        return Fvalues, flops, x_neighbors
 
 
 
@@ -320,7 +320,7 @@ class SequentialLatticeFunction(LatticeFunction):
 
     def _eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
-    ) -> tuple[Tensor, Tensor, int]:
+    ) -> tuple[Tensor, int, Tensor]:
         """Incremental neighbor evaluation. Expects x_neighbors in this order: all x + weights[j] e_i in V^n,
         then all x - weights[j] e_i in V^n. Collect points from add/remove when x_neighbors is absent."""
         add_valid = (x[:, None] + weights) <= self.k - 1
@@ -332,7 +332,7 @@ class SequentialLatticeFunction(LatticeFunction):
         else:
             assert x_neighbors.shape[0] == num_neighbors, "x_neighbors must contain all valid additions and removals"
         if num_neighbors == 0:
-            return torch.empty(0, device=x.device), x_neighbors, 0
+            return torch.empty(0, device=x.device), 0, x_neighbors
 
         # set state to x
         # TODO: add option to provide F(x) so we don't need to recompute it. Can just call self._set_state(x, F_val) in this case.
@@ -363,7 +363,7 @@ class SequentialLatticeFunction(LatticeFunction):
                     flops += flops_rmv
                     idx += 1
         assert idx == x_neighbors.shape[0], "idx should match x_neighbors.shape[0]"
-        return Fvalues, x_neighbors, flops
+        return Fvalues, flops, x_neighbors
 
 
 
@@ -401,34 +401,18 @@ class LinearCombinationLatticeFn(LinearCombinationMixin[LatticeFunction], Lattic
     def _eval_chain(
         self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
     ) -> tuple[Tensor, int, Tensor]:
-        def evaluate(F: LatticeFunction) -> tuple[Tensor, int]:
-            nonlocal x_chain
-            values, flops, component_chain = F._eval_chain(rows, cols, weights, x_chain)
-            if x_chain is None:
-                # The first component constructs the chain; subsequent components share it.
-                x_chain = component_chain
-            else:
-                assert component_chain is x_chain, "components must return the shared x_chain tensor"
-            return values, flops
-
-        Fvalues, flops = self._eval_linear_comb(evaluate)
-        return Fvalues, flops, x_chain
+        # The first component constructs the chain; subsequent components share it.
+        return self._eval_linear_comb_with_auxiliary(
+            lambda F, chain: F._eval_chain(rows, cols, weights, chain), x_chain
+        )
 
     def _eval_neighbors(
         self, x: Tensor, weights: Tensor, x_neighbors: Tensor | None = None
-    ) -> tuple[Tensor, Tensor, int]:
-        def evaluate(F: LatticeFunction) -> tuple[Tensor, int]:
-            nonlocal x_neighbors
-            values, component_neighbors, flops = F._eval_neighbors(x, weights, x_neighbors)
-            if x_neighbors is None:
-                # The first component constructs the neighbors; subsequent components share them.
-                x_neighbors = component_neighbors
-            else:
-                assert component_neighbors is x_neighbors, "components must return the shared x_neighbors tensor"
-            return values, flops
-
-        Fvalues, flops = self._eval_linear_comb(evaluate)
-        return Fvalues, x_neighbors, flops
+    ) -> tuple[Tensor, int, Tensor]:
+        # The first component constructs the neighbors; subsequent components share them.
+        return self._eval_linear_comb_with_auxiliary(
+            lambda F, neighbors: F._eval_neighbors(x, weights, neighbors), x_neighbors
+        )
 
 def make_zero_lattice_fn(k: int, n: int, dtype: torch.dtype = torch.float32) -> LatticeFunction:
     """Return a lattice function F(x)=0 for all x in V^n."""

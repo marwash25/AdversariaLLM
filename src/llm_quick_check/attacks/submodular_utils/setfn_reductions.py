@@ -267,7 +267,7 @@ class SetFnReduction(SetFunction):
             flops: flop count, int.
         """
         assert x.device == self.device, "x must be on the same device as self.device"
-        Fvalues, x_neighbors, flops = self.lattice_fn.eval_neighbors(x, self.map.weights)
+        Fvalues, flops, x_neighbors = self.lattice_fn.eval_neighbors(x, self.map.weights)
         if x_neighbors.shape[0] == 0: # never happens with current reductions. Can happen if weights doesn't include 1
             return inf, x, inf, x, flops
 

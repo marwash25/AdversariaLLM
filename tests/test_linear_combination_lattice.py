@@ -36,7 +36,7 @@ class PolynomialLatticeFunction(LatticeFunction):
         if x_neighbors is None:
             x_neighbors = self._build_neighbors(x, weights)
         self.last_neighbors = x_neighbors
-        return self._values(x_neighbors), x_neighbors, 19
+        return self._values(x_neighbors), 19, x_neighbors
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ def test_neighbors_use_specialized_component_evaluators(combination, supply_neig
     x = torch.tensor([1, 2])
     weights = torch.tensor([1, 2])
     neighbors = torch.tensor([[2, 2], [3, 2], [1, 3], [0, 2], [1, 1], [1, 0]])
-    values, returned_neighbors, flops = combination.eval_neighbors(
+    values, flops, returned_neighbors = combination.eval_neighbors(
         x, weights, neighbors if supply_neighbors else None
     )
     torch.testing.assert_close(values, torch.tensor([4., 3.5, 3., 2., 3., 1.5], dtype=torch.float64))
@@ -106,7 +106,7 @@ def test_neighbors_use_specialized_component_evaluators(combination, supply_neig
 
 def test_nested_combinations_preserve_neighbor_evaluation(combination):
     outer = LinearCombinationLatticeFn([combination, combination.functions[0]], [2.0, -1.0])
-    values, neighbors, flops = outer.eval_neighbors(torch.tensor([0, 0]), torch.tensor([1]))
+    values, flops, neighbors = outer.eval_neighbors(torch.tensor([0, 0]), torch.tensor([1]))
     torch.testing.assert_close(values, torch.tensor([2., 2.], dtype=torch.float64))
     torch.testing.assert_close(neighbors, torch.tensor([[1, 0], [0, 1]]))
     assert flops == 57

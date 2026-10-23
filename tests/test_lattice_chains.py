@@ -171,9 +171,9 @@ def test_neighbors_match_direct_evaluation(factory, supply_neighbors, x, weights
     supplied = expected.clone() if supply_neighbors else None
     if supply_neighbors or isinstance(F, SequentialLatticeFunction):
         with patch.object(F, "_build_neighbors", side_effect=AssertionError("unexpected construction")):
-            values, neighbors, flops = F.eval_neighbors(x, weights, supplied)
+            values, flops, neighbors = F.eval_neighbors(x, weights, supplied)
     else:
-        values, neighbors, flops = F.eval_neighbors(x, weights)
+        values, flops, neighbors = F.eval_neighbors(x, weights)
     torch.testing.assert_close(neighbors, expected)
     torch.testing.assert_close(values, expected.to(torch.float64).square().sum(dim=1))
     if supply_neighbors:
@@ -193,7 +193,7 @@ def test_mixed_combination_shares_neighbors_from_first_component(sequential_firs
     components = [sequential, batch] if sequential_first else [batch, sequential]
     F = LinearCombinationLatticeFn(components, [2., -1.])
     with patch.object(components[1], "_build_neighbors", side_effect=AssertionError("unexpected construction")):
-        values, neighbors, flops = F.eval_neighbors(torch.tensor([1, 2]), torch.tensor([1, 2]))
+        values, flops, neighbors = F.eval_neighbors(torch.tensor([1, 2]), torch.tensor([1, 2]))
     torch.testing.assert_close(values, neighbors.to(torch.float64).square().sum(dim=1))
     torch.testing.assert_close(sequential.current_x, torch.tensor([1, 2]))
     assert flops == 11 * len(neighbors) + 11 + 3 * len(neighbors)
@@ -206,7 +206,7 @@ def test_empty_neighbors_do_not_evaluate(supply_neighbors, weights):
     combination = LinearCombinationLatticeFn([sequential, batch], [1., -1.])
     for F in (batch, sequential, combination):
         supplied = torch.empty((0, 2), dtype=torch.long) if supply_neighbors else None
-        values, neighbors, flops = F.eval_neighbors(
+        values, flops, neighbors = F.eval_neighbors(
             torch.tensor([1, 2]), torch.tensor(weights, dtype=torch.long), supplied
         )
         assert values.shape == (0,) and neighbors.shape == (0, 2) and flops == 0
@@ -222,7 +222,7 @@ def test_neighbor_selection_preserves_ties_and_filtering():
     F = BatchQuadratic()
     reduction = SetFnReduction(F, EneReductionMap(k=4, n=2, device=torch.device("cpu")))
     x = torch.tensor([1, 1])
-    values, neighbors, expected_flops = F.eval_neighbors(x, reduction.map.weights)
+    values, expected_flops, neighbors = F.eval_neighbors(x, reduction.map.weights)
 
     def retain_additions(candidates):
         torch.testing.assert_close(candidates, neighbors)

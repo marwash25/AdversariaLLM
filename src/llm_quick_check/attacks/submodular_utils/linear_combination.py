@@ -7,6 +7,7 @@ from torch import Tensor
 
 
 Fn = TypeVar("Fn")
+Auxiliary = TypeVar("Auxiliary")
 
 
 class LinearCombinationMixin(Generic[Fn]):
@@ -34,3 +35,31 @@ class LinearCombinationMixin(Generic[Fn]):
             total_flops += flops
             Fvalues = Fvalues + alpha * vals
         return Fvalues, total_flops
+
+    def _eval_linear_comb_with_auxiliary(
+        self,
+        eval_fn: Callable[[Fn, Auxiliary | None], tuple[Tensor, int, Auxiliary | None]],
+        auxiliary_input: Auxiliary | None = None,
+        *,
+        share_auxiliary: bool = True,
+    ) -> tuple[Tensor, int, Auxiliary | None]:
+        """Combine (values, flops, auxiliary) results, retaining the first non-None auxiliary.
+
+        When sharing, pass the supplied or first available auxiliary to later components,
+        which must return the same object. Otherwise, evaluate each component independently.
+        """
+        auxiliary_output = auxiliary_input
+
+        def evaluate(F: Fn) -> tuple[Tensor, int]:
+            nonlocal auxiliary_output
+            values, flops, component_auxiliary = eval_fn(
+                F, auxiliary_output if share_auxiliary else None
+            )
+            if auxiliary_output is None:
+                auxiliary_output = component_auxiliary
+            elif share_auxiliary:
+                assert component_auxiliary is auxiliary_output, "components must return the shared auxiliary object"
+            return values, flops
+
+        Fvalues, flops = self._eval_linear_comb(evaluate)
+        return Fvalues, flops, auxiliary_output
