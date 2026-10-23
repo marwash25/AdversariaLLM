@@ -17,13 +17,15 @@ from .set_fn_instances import ModularSetFunction
 from .set_functions import LinearCombinationSetFn, SetFunction
 
 
-def make_lattice_prefix_filter(filter_fn: Callable[[Tensor], list[int]] | None = None, filter_zero: bool = False) -> Callable:
+def make_lattice_prefix_filter(
+    filter_fn: Callable[[Tensor], list[int]] | None = None, filter_zero: bool = False
+) -> Callable[[tuple[Tensor, Tensor], object | None], list[int]]:
     """Build a filter_prefixes callback using the cached lattice chain.
 
     filter_fn returns retained nonempty chain-row indices. The callback returns
     a list of ascending prefix indices, shifted by one, with zero prepended if allowed.
     """
-    def filter_prefixes(rows, cols, auxiliary_input) -> list[int]:
+    def filter_prefixes(order: tuple[Tensor, Tensor], auxiliary_input: object | None) -> list[int]:
         x_chain = auxiliary_input
         retain_idx = range(len(x_chain)) if filter_fn is None else filter_fn(x_chain)
         return ([] if filter_zero else [0]) + [i + 1 for i in sorted(retain_idx)]
@@ -45,7 +47,7 @@ def pgm_lovasz_set(
     L: float | Literal["singletons", "normalize", "polyak"],
     tie_break: Literal["random"] | Tensor | None = None,
     gap_tol: float | None = None,
-    filter_prefixes: Callable[[Tensor, Tensor, object | None], list[int]] | None = None,
+    filter_prefixes: Callable[[tuple[Tensor, Tensor], object | None], list[int]] | None = None,
 ):
     """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a normalized set function F_set: 2^([n] x [b]) -> R.
@@ -69,7 +71,8 @@ def pgm_lovasz_set(
         it is used as a fixed tie-breaking order at every iteration. If None, ties are broken by the original order.
         gap_tol: Stop when duality gap is less than gap_tol.
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
-        filter_prefixes: Optional callback returning eligible prefix indices for filtered rounding.
+        filter_prefixes: Optional callback taking (order, auxiliary_input) and returning
+        eligible prefix indices for filtered rounding.
 
     Returns:
         best_discrete_sol: Tuple (rows, cols) of long tensors, the unfiltered set with the lowest
@@ -156,9 +159,9 @@ def pgm_lovasz_set(
             tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b)
         else:
             tie_breaker = None
-        subgradient, rows, cols, Fvalues, flops_subgrad, auxiliary_data = F_set.subgradient_lovasz_extension(X, tie_breaker)
+        subgradient, order, Fvalues, flops_subgrad, auxiliary_data = F_set.subgradient_lovasz_extension(X, tie_breaker)
         (F_round, S_round, auxiliary_round), (F_round_filtered, S_round_filtered, auxiliary_round_filtered) = F_set.round_lovasz_extension(
-            rows=rows, cols=cols, Fvalues=Fvalues, auxiliary_input=auxiliary_data,
+            order=order, Fvalues=Fvalues, auxiliary_input=auxiliary_data,
             filter_prefixes=filter_prefixes,
         )
         cont_value = F_set.lovasz_extension(X, subgradient, Fvalues)
@@ -349,7 +352,7 @@ def dca_dsm(
     for iter in (pbar := trange(num_outer_steps, file=sys.stdout)):
         result_idx = iter + 1
         tie_breaker = torch.randperm(n * b, device=X.device, dtype=torch.long).view(n, b) if tie_break == "random" else None
-        subgrad_H, _, _, Hvalues, flops_subgrad_H, x_chain = H_set.subgradient_lovasz_extension(X, tie_breaker) # subgrad_H is (n, b)
+        subgrad_H, _, Hvalues, flops_subgrad_H, x_chain = H_set.subgradient_lovasz_extension(X, tie_breaker) # subgrad_H is (n, b)
 
         if inner_solver == "pgm":
             # minimize upper bound on F_set: F_set_upperbd(S) = G_set(S) - <subgrad_H, 1_S>
@@ -382,9 +385,9 @@ def dca_dsm(
 
         # compute lovasz extension of F at X (for logging and checking convergence) and round (for logging and getting current discrete sol).
         # TODO: if we use integral solutions, no need to keep track of continuous obj values since they'll be equal to discrete ones.
-        subgradient_F, rows, cols, Fvalues, flops_subgrad_F, x_chain = F_set.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
+        subgradient_F, order, Fvalues, flops_subgrad_F, x_chain = F_set.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
         (F_round, _, x_round), (F_round_filtered, _, x_round_filtered) = F_set.round_lovasz_extension(
-            rows=rows, cols=cols, Fvalues=Fvalues, auxiliary_input=x_chain,
+            order=order, Fvalues=Fvalues, auxiliary_input=x_chain,
             filter_prefixes=filter_prefixes,
         )
         continuous_obj_values[result_idx] = F_set.lovasz_extension(X, subgradient_F, Fvalues)

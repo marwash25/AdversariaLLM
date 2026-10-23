@@ -10,13 +10,14 @@ from torch import Tensor
 from .linear_combination import LinearCombinationMixin
 
 
-def assert_valid_set(rows: Tensor, cols: Tensor, *, n: int, b: int, device: torch.device) -> None:
+def assert_valid_set(S: tuple[Tensor, Tensor], *, n: int, b: int, device: torch.device) -> None:
     """Validate a subset of [n] x [b] represented by paired row and column indices.
 
-    rows and cols must be 1D long tensors of equal length on device, with indices in
+    S = (rows, cols) must contain 1D long tensors of equal length on device, with indices in
     [0, n-1] and [0, b-1], respectively. Pairs must be unique. 
     Empty tensors represent the empty set. 
     """
+    rows, cols = S
     assert rows.dim() == cols.dim() == 1, "rows and cols must be 1D tensors"
     assert rows.dtype == cols.dtype == torch.long, "rows and cols must be of type long"
     assert rows.shape == cols.shape, "rows and cols must have the same length"
@@ -42,57 +43,55 @@ class SetFunction(ABC):
         self.b = b
         self.device = torch.device(device)
 
-    def eval_single(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int]:
+    def eval_single(self, S: tuple[Tensor, Tensor]) -> tuple[Tensor, int]:
         """Evaluate F(S) for S = {(rows[j], cols[j]) for j in range(len(rows))}.
 
         Args:
-            rows, cols: 1D long tensors of equal length, listing distinct
+            S: Tuple (rows, cols) of 1D long tensors of equal length, listing distinct
                 (row, col) pairs in S. Empty tensors represent the empty set.
         Returns:
             Fvalue: 0-dimensional tensor F(S).
             flops: flop count, int.
         """
-        Fvalues, flops = self.eval_batch([rows], [cols])
+        Fvalues, flops = self.eval_batch([S])
         return Fvalues[0], flops
 
-    def eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
+    def eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
         """Evaluate F on a batch of sets in [n] x [b].
 
         An empty batch returns an empty tensor and zero flops without calling _eval_batch.
 
         Args:
-            rows_list: List of batch_size 1D long tensors, containing row indices.
-            cols_list: List of batch_size 1D long tensors, containing column indices.
-            Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b] 
-            of distinct (row, col) pairs. Empty tensors represent the empty set.
+            S_batch: List of batch_size (rows, cols) tuples of 1D long tensors.
+                Each tuple represents a subset S^i of [n] x [b] of distinct
+                (row, col) pairs. Empty tensors represent the empty set.
         Returns:
             Fvalues: Tensor of shape (batch_size,) with Fvalues[i] = F(S^i).
             flops: flop count, int.
         """
-        assert len(rows_list) == len(cols_list), "rows_list and cols_list must have the same length"
-        for rows, cols in zip(rows_list, cols_list):
-            assert_valid_set(rows, cols, n=self.n, b=self.b, device=self.device)
-        if not rows_list:
+        for S in S_batch:
+            assert_valid_set(S, n=self.n, b=self.b, device=self.device)
+        if not S_batch:
             return torch.empty(0, device=self.device), 0
 
-        Fvalues, flops = self._eval_batch(rows_list, cols_list)
-        assert Fvalues.shape == (len(rows_list),), "_eval_batch must return one scalar per set"
+        Fvalues, flops = self._eval_batch(S_batch)
+        assert Fvalues.shape == (len(S_batch),), "_eval_batch must return one scalar per set"
         assert Fvalues.device == self.device, "_eval_batch must return values on self.device"
         return Fvalues, flops
 
     @abstractmethod
-    def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
+    def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
         """Evaluate a nonempty batch of sets validated by eval_batch"""
 
     def __call__(
-        self, rows: Tensor | list[Tensor], cols: Tensor | list[Tensor]
+        self, S: tuple[Tensor, Tensor] | list[tuple[Tensor, Tensor]]
     ) -> tuple[Tensor, int]:
-        if isinstance(rows, Tensor) and isinstance(cols, Tensor):
-            return self.eval_single(rows, cols)
-        assert isinstance(rows, list) and isinstance(cols, list), "rows and cols must both be tensors or both be lists"
-        return self.eval_batch(rows, cols)
+        if isinstance(S, tuple):
+            return self.eval_single(S)
+        assert isinstance(S, list), "S must be a set tuple or a list of set tuples"
+        return self.eval_batch(S)
 
-    def eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, object | None]:
+    def eval_chain(self, order: tuple[Tensor, Tensor]) -> tuple[Tensor, int, object | None]:
         """Evaluate F(S^i) for the chain of inputs S^i = S^{i-1} U {(rows[i-1], cols[i-1])}
            for i in [m], m length of rows/cols (empty set not included)
 
@@ -100,7 +99,7 @@ class SetFunction(ABC):
         An empty chain returns empty values and zero flops without objective evaluation.
 
         Args:
-            rows, cols: 1D long tensors of length m <= n * b, listing distinct
+            order: Tuple (rows, cols) of 1D long tensors of length m <= n * b, listing distinct
                 elements in chain order. 
 
         Returns:
@@ -108,25 +107,25 @@ class SetFunction(ABC):
             flops: flop count, int.
             auxiliary_data: Optional auxiliary output defined by the subclass, or None (default).
         """
-        assert_valid_set(rows, cols, n=self.n, b=self.b, device=self.device)
-        m = rows.numel()
-        Fvalues, flops, auxiliary_data = self._eval_chain(rows, cols)
+        assert_valid_set(order, n=self.n, b=self.b, device=self.device)
+        m = order[0].numel()
+        Fvalues, flops, auxiliary_data = self._eval_chain(order)
         assert Fvalues.shape == (m,), "_eval_chain must return one scalar per chain step"
         assert Fvalues.device == self.device, "_eval_chain must return values on self.device"
         return Fvalues, flops, auxiliary_data
 
-    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, object | None]:
+    def _eval_chain(self, order: tuple[Tensor, Tensor]) -> tuple[Tensor, int, object | None]:
         """Evaluate validated chain of sets in one batch."""
+        rows, cols = order
         if rows.numel() == 0:
             return torch.empty(0, device=self.device), 0, None
-        rows_list = [rows[:t + 1] for t in range(rows.numel())]
-        cols_list = [cols[:t + 1] for t in range(cols.numel())]
-        Fvalues, flops = self._eval_batch(rows_list, cols_list)
+        S_batch = [(rows[:t + 1], cols[:t + 1]) for t in range(rows.numel())]
+        Fvalues, flops = self._eval_batch(S_batch)
         return Fvalues, flops, None
 
     def subgradient_lovasz_extension(
         self, X: Tensor, tie_breaker: Tensor | None = None
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor, int, object | None]:
+    ) -> tuple[Tensor, tuple[Tensor, Tensor], Tensor, int, object | None]:
         """Compute the vector g_i = F(S^i) - F(S^i-1) where S^i = S^{i-1} U {(rows[i-1], cols[i-1])} 
         where rows and cols correspond to the flattened descending order of X.
 
@@ -140,7 +139,7 @@ class SetFunction(ABC):
             X.flatten() in descending order. If not provided, original order is used.
         Returns:
             subgradient: Tensor of shape (n, b); vector g reshaped
-            rows, cols: Long tensors of length n * b giving the evaluated order.
+            order: Tuple (rows, cols) of long tensors of length n * b giving the evaluated order.
             Fvalues: Tensor of length n * b with Fvalues[i] = F(S^{i+1}) (F(emptyset) not included).
             flops: Flop count reported by chain evaluation, int.
             auxiliary_data: Optional subclass-defined output from eval_chain,
@@ -157,12 +156,13 @@ class SetFunction(ABC):
         else:
             sorted_idx = torch.argsort(tie_breaker.flatten(), descending=True, stable=True)
             sorted_idx = sorted_idx[torch.argsort(X.flatten()[sorted_idx], descending=True, stable=True)]
-        rows, cols = torch.unravel_index(sorted_idx, X.shape) # both (n x b, )
+        order = torch.unravel_index(sorted_idx, X.shape) # both (n x b, )
+        rows, cols = order
 
-        Fvalues, flops, auxiliary_data = self.eval_chain(rows, cols)
+        Fvalues, flops, auxiliary_data = self.eval_chain(order)
         subgradient = torch.empty((self.n, self.b), dtype=Fvalues.dtype, device=self.device)
         subgradient[rows, cols] = torch.diff(Fvalues, prepend=Fvalues.new_zeros(1))
-        return subgradient, rows, cols, Fvalues, flops, auxiliary_data
+        return subgradient, order, Fvalues, flops, auxiliary_data
 
     def lovasz_extension(self, X: Tensor, subgradient: Tensor | None = None, Fvalues: Tensor | None = None) -> float:
         """Evaluate the Lovasz extension f_L of F at X (n x b tensor): f_L(X) = <X, subgradient>
@@ -182,8 +182,8 @@ class SetFunction(ABC):
                 # because of difference between batched and single logits
                 return Fvalues[nnz-1].item()
 
-            rows, cols = X.nonzero(as_tuple=True)
-            value, _ = self.eval_single(rows, cols)
+            S = X.nonzero(as_tuple=True)
+            value, _ = self.eval_single(S)
             return value.item()
 
         if subgradient is None:
@@ -194,11 +194,10 @@ class SetFunction(ABC):
     def round_lovasz_extension(
         self,
         X: Tensor | None = None,
-        rows: Tensor | None = None, # TODO: group (rows, cols) as an 'order' tuple
-        cols: Tensor | None = None,
+        order: tuple[Tensor, Tensor] | None = None,
         Fvalues: Tensor | None = None,
         auxiliary_input: object | None = None,
-        filter_prefixes: Callable[[Tensor, Tensor, object | None], list[int]] | None = None,
+        filter_prefixes: Callable[[tuple[Tensor, Tensor], object | None], list[int]] | None = None,
     ) -> tuple[
         tuple[float, tuple[Tensor, Tensor] | None, object | None],
         tuple[float, tuple[Tensor, Tensor] | None, object | None],
@@ -207,17 +206,17 @@ class SetFunction(ABC):
 
         The unfiltered minimum satisfies F(S_min) <= f_L(X). The filtered minimum
         is selected over eligible prefixes S^i.
-        If rows, cols, or Fvalues are missing, compute them and auxiliary_input with 
+        If order or Fvalues are missing, compute them and auxiliary_input with
         subgradient_lovasz_extension.
 
         Args:
-            X: Optional tensor of shape (n, b). Required if rows, cols, or Fvalues are missing. 
-            rows, cols: Optional 1D long tensors of length n * b, correspond to the flattened 
+            X: Optional tensor of shape (n, b). Required if order or Fvalues are missing.
+            order: Optional tuple (rows, cols) of 1D long tensors of length n * b, corresponding to the flattened
                 descending order of X.
             Fvalues: Optional 1D tensor of length n * b with Fvalues[i] = F(S^{i+1}) (F(emptyset) not included).
             auxiliary_input: Optional subclass-defined cached output from eval_chain, passed to 
                 _round_auxiliary_output.
-            filter_prefixes: Optional callback called once with (rows, cols, auxiliary_input). 
+            filter_prefixes: Optional callback called once with (order, auxiliary_input).
                 Returns a list of prefix indices in 0... n * b, with zero representing the empty set.
                 An empty result retains none; no callback retains all prefixes.
         Returns:
@@ -227,11 +226,12 @@ class SetFunction(ABC):
             Each S_min is a pair of tensors (rows, cols). auxiliary_output is the subclass-defined 
             output of _round_auxiliary_output, or None by default.
         """
-        if rows is None or cols is None or Fvalues is None:
-            assert X is not None, "X must be provided if Fvalues, rows, and cols are not provided"
-            _, rows, cols, Fvalues, _, auxiliary_input = self.subgradient_lovasz_extension(X)
+        if order is None or Fvalues is None:
+            assert X is not None, "X must be provided if order or Fvalues are not provided"
+            _, order, Fvalues, _, auxiliary_input = self.subgradient_lovasz_extension(X)
 
-        eligible_prefixes = filter_prefixes(rows, cols, auxiliary_input) if filter_prefixes is not None else None
+        rows, cols = order
+        eligible_prefixes = filter_prefixes(order, auxiliary_input) if filter_prefixes is not None else None
         values = torch.cat([Fvalues.new_zeros(1), Fvalues])
 
         def select(eligible_prefixes=None):
@@ -261,9 +261,8 @@ class SetFunction(ABC):
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
         rows = flat_idx // self.b
         cols = flat_idx % self.b
-        rows_list = [r.view(1) for r in rows]
-        cols_list = [c.view(1) for c in cols]
-        singleton_vals, flops = self.eval_batch(rows_list, cols_list)
+        S_batch = [(r.view(1), c.view(1)) for r, c in zip(rows, cols)]
+        singleton_vals, flops = self.eval_batch(S_batch)
         return singleton_vals, flops
 
     def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> tuple[float, int]:  # used in pgm and DCA
@@ -299,7 +298,7 @@ class SetFunction(ABC):
 
         rows_list = list(torch.stack([rows_v1, rows_v2], dim=1).unbind(0))
         cols_list = list(torch.stack([cols_v1, cols_v2], dim=1).unbind(0))
-        pair_vals, flops = self.eval_batch(rows_list, cols_list)
+        pair_vals, flops = self.eval_batch(list(zip(rows_list, cols_list)))
         rows = torch.stack([rows_v1, rows_v2], dim=0)
         cols = torch.stack([cols_v1, cols_v2], dim=0)
         return pair_vals, rows, cols, flops
@@ -338,16 +337,16 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
             type(F.map) is type(self.map) and F.map.k == self.map.k for F in mapped
         ), "All set function reductions must use the same reduction map (same map class and k)"
 
-    def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
-        return self._eval_linear_comb(lambda F: F._eval_batch(rows_list, cols_list))
+    def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
+        return self._eval_linear_comb(lambda F: F._eval_batch(S_batch))
 
-    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, Tensor | None]:
+    def _eval_chain(self, order: tuple[Tensor, Tensor]) -> tuple[Tensor, int, Tensor | None]:
         """Evaluate components independently and retain the first available x_chain, 
         which will be the same for all mapped components since they use same map"""
         # if there's multiple SetFnReduction, each would recompute x_chain 
         # this can be avoided by using SetFnReduction(LinearCombinationLatticeFn(...), ...)
         return self._eval_linear_comb_with_auxiliary(
-            lambda F, _: F._eval_chain(rows, cols), share_auxiliary=False
+            lambda F, _: F._eval_chain(order), share_auxiliary=False
         )
 
     def _round_auxiliary_output(self, min_idx: int, auxiliary_input: object | None) -> object | None:

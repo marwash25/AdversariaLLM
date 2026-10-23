@@ -63,48 +63,44 @@ class SetToLatticeMap(ABC):
             Each X[i] = binary_matrices[i] represents a subset S^i of [n] x [b] such that S^i = R(x[i]).
         """
 
-    def ints2set(self, x: Tensor) -> tuple[list[Tensor], list[Tensor]]:  # TODO: not used anywhere yet, remove if not needed
+    def ints2set(self, x: Tensor) -> list[tuple[Tensor, Tensor]]:  # TODO: not used anywhere yet, remove if not needed
         """Batched version of the right inverse R: V^n -> 2^([n] x [b]) with sets S in [n] x [b] represented
         by paired rows and cols indices, i.e., S = {(rows[j], cols[j]) for j in range(rows.shape[0])}.
 
         Args:
             x: Tensor of type long and shape (batch_size, n). Each row is an integer vector in V^n.
         Returns:
-            rows_list: List of batch_size 1D long tensors, containing row indices.
-            cols_list: List of batch_size 1D long tensors, containing column indices.
-            Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b] such that S^i = R(x[i]).
-            Empty tensors represent the empty set.
+            S_batch: List of batch_size (rows, cols) tuples of 1D long tensors.
+                Each tuple represents a subset S^i of [n] x [b] such that S^i = R(x[i]).
+                Empty tensors represent the empty set.
         """
         mask = self.ints2binary(x)
 
         batch_idx, rows, cols = mask.nonzero(as_tuple=True)
-        rows_list: list[Tensor] = []
-        cols_list: list[Tensor] = []
+        S_batch: list[tuple[Tensor, Tensor]] = []
         for i in range(mask.size(0)):
             batch_mask = batch_idx == i
-            rows_list.append(rows[batch_mask].long())
-            cols_list.append(cols[batch_mask].long())
-        return rows_list, cols_list
+            S_batch.append((rows[batch_mask].long(), cols[batch_mask].long()))
+        return S_batch
 
-    def set2ints(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> Tensor:  # used in F_set_batch
+    def set2ints(self, S_batch: list[tuple[Tensor, Tensor]]) -> Tensor:  # used in F_set_batch
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by paired rows and cols indices.
 
         Args:
-            rows_list: List of 1D tensors of type long and length <= n x b
-            cols_list: List of 1D tensors of type long and length <= n x b
-            Each rows_list[i], cols_list[i] pair represents a subset S^i of [n] x [b]. The
-            (row, col) pairs within each set must be unique.
+            S_batch: List of (rows, cols) tuples of 1D long tensors of length <= n x b.
+                Each tuple represents a subset S^i of [n] x [b]. The
+                (row, col) pairs within each set must be unique.
         Returns:
             x: Tensor of type long and shape (batch_size, n). Each row x[i] is an integer vector in V^n such that M(S^i) = x[i].
         """
-        assert len(rows_list) == len(cols_list), "rows_list and cols_list must have the same length"
         # TODO: Replace per-set lists with a sparse COO representation (batch_idx, rows, cols) for efficiency (see version below).
         # For now will keep this simpler implementation.
 
-        x = torch.zeros((len(rows_list), self.n), dtype=torch.long, device=self.device)
-        for i, (rows, cols) in enumerate(zip(rows_list, cols_list)):
-            assert_valid_set(rows, cols, n=self.n, b=self.b, device=self.device)
+        x = torch.zeros((len(S_batch), self.n), dtype=torch.long, device=self.device)
+        for i, S in enumerate(S_batch):
+            assert_valid_set(S, n=self.n, b=self.b, device=self.device)
+            rows, cols = S
             if cols.numel() > 0:
                 x[i].index_add_(0, rows, self.weights[cols])  # x[i, rows[j]] += weights[cols[j]] for all j
         return x
@@ -221,21 +217,21 @@ class SetFnReduction(SetFunction):
         )
         assert self.lattice_fn.n == self.n, "lattice_fn.n must match reduction_map.n"
         assert self.lattice_fn.k == self.k, "lattice_fn.k must match reduction_map.k"
-    def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
+    def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
         """Evaluate F_set on a non-empty batch of sets validated by eval_batch."""
         #TODO: set2ints also validates the sets, so this repeats validation. We can split map.set2ints
         # into a validating wrapper and a private implementation to avoid that.
-        x = self.map.set2ints(rows_list, cols_list)
+        x = self.map.set2ints(S_batch)
         return self.lattice_fn._eval_batch(x)
 
-    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, Tensor]:
+    def _eval_chain(self, order: tuple[Tensor, Tensor]) -> tuple[Tensor, int, Tensor]:
         """Evaluate validated chain of sets via self.lattice_fn._eval_chain and return x_chain as auxiliary_data."""
         # this is more efficient than the default _eval_chain which would call SetFnReduction.eval_batch on S^i's 
         # and compute each x^i separately (O(n * b) vs O((n * b)^2))
-        if rows.numel() == 0:
+        if order[0].numel() == 0:
             x_chain = torch.empty((0, self.n), dtype=torch.long, device=self.device)
             return torch.empty(0, device=self.device), 0, x_chain
-        return self.lattice_fn._eval_chain(rows, cols, self.map.weights)
+        return self.lattice_fn._eval_chain(order, self.map.weights)
 
     def _round_auxiliary_output(self, min_idx: int, auxiliary_input: Tensor) -> Tensor:
         """Return the cached lattice point corresponding to the selected prefix:

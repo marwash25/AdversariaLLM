@@ -45,8 +45,7 @@ class IncrementalQuadratic(SequentialLatticeFunction):
 @pytest.fixture
 def chain():
     return (
-        torch.tensor([1, 0, 1, 0]),
-        torch.tensor([1, 0, 0, 1]),
+        (torch.tensor([1, 0, 1, 0]), torch.tensor([1, 0, 0, 1])),
         torch.tensor([1, 2]),
         torch.tensor([[0, 2], [1, 2], [1, 3], [3, 3]]),
     )
@@ -55,16 +54,16 @@ def chain():
 @pytest.mark.parametrize("factory", [BatchQuadratic, IncrementalQuadratic])
 @pytest.mark.parametrize("supply_chain", [False, True])
 def test_chain_matches_direct_prefix_evaluation(factory, supply_chain, chain):
-    rows, cols, weights, expected_chain = chain
+    order, weights, expected_chain = chain
     F = factory()
     supplied = expected_chain.clone() if supply_chain else None
     # A supplied chain must never be reconstructed. Sequential evaluation also
     # constructs missing points from its updates rather than the batch builder.
     if supply_chain or isinstance(F, SequentialLatticeFunction):
         with patch.object(F, "_build_chain", side_effect=AssertionError("unexpected chain construction")):
-            values, flops, x_chain = F.eval_chain(rows, cols, weights, supplied)
+            values, flops, x_chain = F.eval_chain(order, weights, supplied)
     else:
-        values, flops, x_chain = F.eval_chain(rows, cols, weights)
+        values, flops, x_chain = F.eval_chain(order, weights)
     torch.testing.assert_close(x_chain, expected_chain)
     torch.testing.assert_close(values, expected_chain.to(torch.float64).square().sum(dim=1))
     assert values.dtype == torch.float64
@@ -74,20 +73,20 @@ def test_chain_matches_direct_prefix_evaluation(factory, supply_chain, chain):
     if isinstance(F, IncrementalQuadratic):
         assert len(F.batch_inputs) == 1
         torch.testing.assert_close(F.batch_inputs[0], expected_chain[:1])
-        assert F.add_calls == len(rows) - 1
-        assert flops == 11 + 3 * (len(rows) - 1)
+        assert F.add_calls == len(order[0]) - 1
+        assert flops == 11 + 3 * (len(order[0]) - 1)
         torch.testing.assert_close(F.current_x, expected_chain[-1])
     else:
         assert F.batch_calls == 1
-        assert flops == 11 * len(rows)
+        assert flops == 11 * len(order[0])
 
 
 @pytest.mark.parametrize("supply_chain", [False, True])
 def test_real_sequential_quadratic_matches_batch(supply_chain, chain):
-    rows, cols, weights, expected_chain = chain
+    order, weights, expected_chain = chain
     F = QuadraticFn(torch.tensor([[2., 1.], [1., -3.]], dtype=torch.float64), k=4)
     expected_values, _ = F.eval_batch(expected_chain)
-    values, flops, x_chain = F.eval_chain(rows, cols, weights, expected_chain if supply_chain else None)
+    values, flops, x_chain = F.eval_chain(order, weights, expected_chain if supply_chain else None)
     torch.testing.assert_close(values, expected_values)
     torch.testing.assert_close(x_chain, expected_chain)
     assert flops == 0
@@ -99,7 +98,7 @@ def test_empty_chain_does_not_evaluate(factory, supply_chain):
     F = factory()
     indices = torch.empty(0, dtype=torch.long)
     supplied = torch.empty((0, 2), dtype=torch.long) if supply_chain else None
-    values, flops, x_chain = F.eval_chain(indices, indices, torch.tensor([1, 2]), supplied)
+    values, flops, x_chain = F.eval_chain((indices, indices), torch.tensor([1, 2]), supplied)
     assert values.shape == (0,)
     assert x_chain.shape == (0, 2) and x_chain.dtype == torch.long
     assert values.device == x_chain.device == indices.device
@@ -113,23 +112,23 @@ def test_empty_chain_does_not_evaluate(factory, supply_chain):
 
 
 @pytest.mark.parametrize("change, message", [
-    (lambda r, c, w, x: (r[:, None], c, w, x), "1D tensors"),
-    (lambda r, c, w, x: (r, c[:-1], w, x), "same length"),
-    (lambda r, c, w, x: (r.float(), c, w, x), "type long"),
-    (lambda r, c, w, x: (r, c.float(), w, x), "type long"),
-    (lambda r, c, w, x: (r, c, w.float(), x), "1D.*long"),
-    (lambda r, c, w, x: (r, c, w[:, None], x), "1D.*long"),
-    (lambda r, c, w, x: (r, c, -w, x), "strictly positive"),
-    (lambda r, c, w, x: (r, c, w - 1, x), "strictly positive"),
-    (lambda r, c, w, x: (r + 2, c, w, x), "rows must"),
-    (lambda r, c, w, x: (r, c + 2, w, x), "cols must"),
-    (lambda r, c, w, x: (r, torch.zeros_like(c), w, x), "unique"),
-    (lambda r, c, w, x: (r, c, w * 2, None), "values in"),
-    (lambda r, c, w, x: (r, c, w, x[:, :1]), "shape"),
-    (lambda r, c, w, x: (r, c, w, x.float()), "values in"),
-    (lambda r, c, w, x: (r, c, w, x + 1), "values in"),
-    (lambda r, c, w, x: (r.to("meta"), c, w, x), "expected device"),
-    (lambda r, c, w, x: (r, c, w, x.to("meta")), "same device"),
+    (lambda o, w, x: ((o[0][:, None], o[1]), w, x), "1D tensors"),
+    (lambda o, w, x: ((o[0], o[1][:-1]), w, x), "same length"),
+    (lambda o, w, x: ((o[0].float(), o[1]), w, x), "type long"),
+    (lambda o, w, x: ((o[0], o[1].float()), w, x), "type long"),
+    (lambda o, w, x: (o, w.float(), x), "1D.*long"),
+    (lambda o, w, x: (o, w[:, None], x), "1D.*long"),
+    (lambda o, w, x: (o, -w, x), "strictly positive"),
+    (lambda o, w, x: (o, w - 1, x), "strictly positive"),
+    (lambda o, w, x: ((o[0] + 2, o[1]), w, x), "rows must"),
+    (lambda o, w, x: ((o[0], o[1] + 2), w, x), "cols must"),
+    (lambda o, w, x: ((o[0], torch.zeros_like(o[1])), w, x), "unique"),
+    (lambda o, w, x: (o, w * 2, None), "values in"),
+    (lambda o, w, x: (o, w, x[:, :1]), "shape"),
+    (lambda o, w, x: (o, w, x.float()), "values in"),
+    (lambda o, w, x: (o, w, x + 1), "values in"),
+    (lambda o, w, x: ((o[0].to("meta"), o[1]), w, x), "expected device"),
+    (lambda o, w, x: (o, w, x.to("meta")), "same device"),
 ])
 def test_invalid_inputs_rejected_before_evaluation(change, message, chain):
     F = BatchQuadratic()
@@ -145,8 +144,8 @@ def test_invalid_inputs_rejected_before_evaluation(change, message, chain):
 ])
 def test_invalid_evaluator_outputs_are_rejected(failure, message, chain):
     class InvalidResult(BatchQuadratic):
-        def _eval_chain(self, rows, cols, weights, x_chain=None):
-            values, flops, x_chain = super()._eval_chain(rows, cols, weights, x_chain)
+        def _eval_chain(self, order, weights, x_chain=None):
+            values, flops, x_chain = super()._eval_chain(order, weights, x_chain)
             if failure == "value_shape":
                 values = values[:, None]
             elif failure == "value_device":

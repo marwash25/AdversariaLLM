@@ -71,7 +71,7 @@ class LatticeFunction(ABC):
         return self.eval_batch(x)
 
     def eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
+        self, order: tuple[Tensor, Tensor], weights: Tensor, x_chain: Tensor | None = None
     ) -> tuple[Tensor, int, Tensor]:
         """Evaluate F(x^i) for the chain of inputs x^i = x^{i-1} + weights[cols[i-1]] * e_{rows[i-1]}
            for i in [m], m length of rows/cols (zero vector not included)
@@ -80,7 +80,7 @@ class LatticeFunction(ABC):
         Override _eval_chain for more efficient evaluation.
 
         Args:
-            rows, cols: 1D long tensors of length m <= n * b, with unique paired indices.
+            order: Tuple (rows, cols) of 1D long tensors of length m <= n * b, with unique paired indices.
             weights: Strictly positive long tensor of shape (b,).
             x_chain: Optional long tensor of shape (m, n) with x_chain[i] = x^{i+1}.
                 A supplied chain is reused without modification. The public wrapper validates
@@ -92,7 +92,8 @@ class LatticeFunction(ABC):
             x_chain: Evaluated chain of shape (m, n), or the supplied tensor itself.
         """
         assert weights.dim() == 1 and weights.dtype == torch.long and (weights > 0).all(), "weights must be a 1D strictly positive long tensor"
-        assert_valid_set(rows, cols, n=self.n, b=weights.numel(), device=weights.device)
+        assert_valid_set(order, n=self.n, b=weights.numel(), device=weights.device)
+        rows, cols = order
         m = rows.numel()
 
         if x_chain is not None:
@@ -104,15 +105,16 @@ class LatticeFunction(ABC):
                 x_chain = torch.empty((0, self.n), dtype=torch.long, device=rows.device)
             return torch.empty((0,), device=rows.device), 0, x_chain
 
-        Fvalues, flops, evaluated_chain = self._eval_chain(rows, cols, weights, x_chain)
+        Fvalues, flops, evaluated_chain = self._eval_chain(order, weights, x_chain)
         assert Fvalues.shape == (m,), "_eval_chain must return one scalar per chain step"
         assert Fvalues.device == rows.device, "_eval_chain must return values on the same device as rows"
         if x_chain is not None:
             assert evaluated_chain is x_chain, "_eval_chain must return the supplied x_chain tensor"
         return Fvalues, flops, evaluated_chain
 
-    def _build_chain(self, rows: Tensor, cols: Tensor, weights: Tensor) -> Tensor:
+    def _build_chain(self, order: tuple[Tensor, Tensor], weights: Tensor) -> Tensor:
         """Construct a nonempty chain from validated indices and weights, then check if in V^n."""
+        rows, cols = order
         x_chain = torch.empty((rows.numel(), self.n), dtype=torch.long, device=rows.device)
         x = torch.zeros(self.n, dtype=torch.long, device=rows.device)
         for i in range(rows.numel()):
@@ -122,11 +124,11 @@ class LatticeFunction(ABC):
         return x_chain
 
     def _eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
+        self, order: tuple[Tensor, Tensor], weights: Tensor, x_chain: Tensor | None = None
     ) -> tuple[Tensor, int, Tensor]:
         """Evaluate validated nonempty chain of inputs in one batch. Construct it when absent."""
         if x_chain is None:
-            x_chain = self._build_chain(rows, cols, weights)
+            x_chain = self._build_chain(order, weights)
         Fvalues, flops = self._eval_batch(x_chain)
         return Fvalues, flops, x_chain
 
@@ -294,10 +296,11 @@ class SequentialLatticeFunction(LatticeFunction):
         return self.add_update(i, -weight)
 
     def _eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
+        self, order: tuple[Tensor, Tensor], weights: Tensor, x_chain: Tensor | None = None
     ) -> tuple[Tensor, int, Tensor]:
         # x_chain is not used for evaluation here, but when provided return the same tensor 
         # without allocating and filling another (m, n) matrix.
+        rows, cols = order
         device = rows.device
         m = rows.shape[0]
 
@@ -404,11 +407,11 @@ class LinearCombinationLatticeFn(LinearCombinationMixin[LatticeFunction], Lattic
         return self._eval_linear_comb(lambda F: F._eval_batch(x))
 
     def _eval_chain(
-        self, rows: Tensor, cols: Tensor, weights: Tensor, x_chain: Tensor | None = None
+        self, order: tuple[Tensor, Tensor], weights: Tensor, x_chain: Tensor | None = None
     ) -> tuple[Tensor, int, Tensor]:
         # The first component constructs the chain; subsequent components share it.
         return self._eval_linear_comb_with_auxiliary(
-            lambda F, chain: F._eval_chain(rows, cols, weights, chain), x_chain
+            lambda F, chain: F._eval_chain(order, weights, chain), x_chain
         )
 
     def _eval_neighbors(

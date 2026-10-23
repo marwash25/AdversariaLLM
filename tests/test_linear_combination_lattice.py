@@ -22,11 +22,11 @@ class PolynomialLatticeFunction(LatticeFunction):
         self.batch_calls += 1
         return self._values(x), 7 * x.shape[0]
 
-    def _eval_chain(self, rows, cols, weights, x_chain=None):
+    def _eval_chain(self, order, weights, x_chain=None):
         self.chain_calls += 1
         self.supplied_chain = x_chain
         if x_chain is None:
-            x_chain = self._build_chain(rows, cols, weights)
+            x_chain = self._build_chain(order, weights)
         self.last_chain = x_chain
         return self._values(x_chain), 13, x_chain
 
@@ -63,7 +63,7 @@ def test_chain_uses_specialized_component_evaluators(combination, supply_chain):
     weights = torch.tensor([1, 2])
     x_chain = torch.tensor([[0, 2], [1, 2], [1, 3], [3, 3]])
     values, flops, returned_chain = combination.eval_chain(
-        rows, cols, weights, x_chain if supply_chain else None
+        (rows, cols), weights, x_chain if supply_chain else None
     )
     torch.testing.assert_close(values, torch.tensor([2., 3.5, 3., 3.], dtype=torch.float64))
     torch.testing.assert_close(returned_chain, x_chain)
@@ -79,7 +79,7 @@ def test_chain_uses_specialized_component_evaluators(combination, supply_chain):
 def test_nested_combinations_share_one_chain(combination):
     third = PolynomialLatticeFunction(power=3)
     outer = LinearCombinationLatticeFn([combination, third], [2.0, -1.0])
-    values, flops, x_chain = outer.eval_chain(torch.tensor([0, 1]), torch.tensor([0, 0]), torch.tensor([1]))
+    values, flops, x_chain = outer.eval_chain((torch.tensor([0, 1]), torch.tensor([0, 0])), torch.tensor([1]))
     torch.testing.assert_close(values, torch.tensor([2., 4.], dtype=torch.float64))
     assert flops == 39
     assert all(F.last_chain is x_chain for F in [*combination.functions, third])

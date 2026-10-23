@@ -14,9 +14,10 @@ class ModularSetFunction(SetFunction):
         super().__init__(W.shape[0], W.shape[1], W.device)
         self.W = W
 
-    def _eval_batch(self, rows_list: list[Tensor], cols_list: list[Tensor]) -> tuple[Tensor, int]:
-        Fvalues = torch.stack([self.W[rows, cols].sum() for rows, cols in zip(rows_list, cols_list)])
+    def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
+        Fvalues = torch.stack([self.W[rows, cols].sum() for rows, cols in S_batch])
         return Fvalues, 0
 
-    def _eval_chain(self, rows: Tensor, cols: Tensor) -> tuple[Tensor, int, None]:
+    def _eval_chain(self, order: tuple[Tensor, Tensor]) -> tuple[Tensor, int, None]:
+        rows, cols = order
         return self.W[rows, cols].cumsum(0), 0, None

@@ -22,7 +22,7 @@ def test_general_pgm_projection_gap_and_filtered_history(reject_all):
     X = torch.tensor([[0.9, 0.1]], dtype=torch.float64)
     result = pgm_lovasz_set(
         fn, X, num_steps=5, L=1., gap_tol=0.,
-        filter_prefixes=(lambda rows, cols, auxiliary: []) if reject_all else None,
+        filter_prefixes=(lambda order, auxiliary: []) if reject_all else None,
     )
     best, continuous, values, filtered, continuous_values, gaps, sets, times, flops, auxiliary, auxiliary_history = result
     torch.testing.assert_close(best, (torch.tensor([0]), torch.tensor([1])))
@@ -58,11 +58,11 @@ def test_reduction_set_histories_align_with_stacked_lattice_points(L, gap_tol):
     assert points.shape == (len(values), fn.n) and points.dtype == torch.long
     assert len(times) == len(values)
     assert flops == [7 * fn.n * fn.b * (1 + (L == "singletons"))] + [7 * fn.n * fn.b] * (len(values) - 1)
-    assert fn.eval_single(*best)[0].item() == min(values)
-    torch.testing.assert_close(reduction_map.set2ints([best[0]], [best[1]])[0], best_point)
+    assert fn.eval_single(best)[0].item() == min(values)
+    torch.testing.assert_close(reduction_map.set2ints([best])[0], best_point)
     for selected, point, value in zip(sets, points, filtered_values):
-        torch.testing.assert_close(reduction_map.set2ints([selected[0]], [selected[1]])[0], point)
-        assert fn.eval_single(*selected)[0].item() == value
+        torch.testing.assert_close(reduction_map.set2ints([selected])[0], point)
+        assert fn.eval_single(selected)[0].item() == value
 
 
 def test_iteration_zero_preserves_actual_set_and_copies_cached_point():
@@ -88,7 +88,7 @@ def test_iteration_zero_preserves_actual_set_and_copies_cached_point():
     for retained in (*best, *sets[0], point, points[0]):
         assert retained.untyped_storage().nbytes() == retained.numel() * retained.element_size()
     # The other singleton maps to the same point but has a different value.
-    assert fn.eval_single(torch.tensor([0]), torch.tensor([1]))[0].item() == 1.
+    assert fn.eval_single((torch.tensor([0]), torch.tensor([1])))[0].item() == 1.
 
 
 def test_reduction_accepts_initialization_converted_by_caller():
@@ -123,7 +123,7 @@ def test_pgm_preserves_mixed_set_values_and_cached_points(prefixes):
          patch.object(reduction_map, "set2ints", side_effect=AssertionError("unexpected remapping")):
         result = pgm_lovasz_set(
             fn, X, num_steps=0, L=1.,
-            filter_prefixes=None if prefixes is None else lambda rows, cols, auxiliary: prefixes,
+            filter_prefixes=None if prefixes is None else lambda order, auxiliary: prefixes,
         )
     assert len(calls) == 1 and len(result) == 11
     torch.testing.assert_close(result[0], X.nonzero(as_tuple=True))
