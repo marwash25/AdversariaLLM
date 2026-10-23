@@ -13,7 +13,7 @@ import logging
 import time
 
 from .setfn_reductions import SetFnReduction
-from .set_fn_instances import ModularSetFunction
+from .set_fn_instances import ModularSetFn
 from .set_functions import LinearCombinationSetFn, SetFunction
 
 
@@ -356,7 +356,7 @@ def dca_dsm(
 
         if inner_solver == "pgm":
             # minimize upper bound on F_set: F_set_upperbd(S) = G_set(S) - <subgrad_H, 1_S>
-            F_set_upperbd = LinearCombinationSetFn([G_set, ModularSetFunction(subgrad_H)],[1.0, -1.0])
+            F_set_upperbd = LinearCombinationSetFn([G_set, ModularSetFn(subgrad_H)],[1.0, -1.0])
             L_upperbd = L_G + torch.linalg.vector_norm(subgrad_H.float(), ord=2).item()
 
             # warm start pgm with current X as initial solution

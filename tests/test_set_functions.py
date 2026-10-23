@@ -6,7 +6,7 @@ import torch
 from llm_quick_check.attacks.submodular_utils import (
     EneReductionMap,
     LinearCombinationSetFn,
-    ModularSetFunction,
+    ModularSetFn,
     SetFunction,
 )
 from llm_quick_check.attacks.submodular_utils.setfn_reductions import BinaryRepresentationMap
@@ -223,7 +223,7 @@ def test_linear_combination_rejects_empty_or_mismatched_components(alphas, messa
 
 def test_modular_set_function_sums_weights_and_agrees_with_chain():
     W = torch.tensor([[1.0, 3.0], [5.0, -2.0]], dtype=torch.float64)
-    fn = ModularSetFunction(W)
+    fn = ModularSetFn(W)
     empty = torch.empty(0, dtype=torch.long)
     rows_list = [empty, torch.tensor([0]), torch.tensor([0]), torch.tensor([0, 1])]
     cols_list = [empty, torch.tensor([0]), torch.tensor([1]), torch.tensor([0, 1])]
@@ -256,7 +256,7 @@ def test_modular_set_function_distinguishes_ene_colliding_sets():
     reduction_map = EneReductionMap(k=3, n=1, device=torch.device("cpu"))
     torch.testing.assert_close(reduction_map.weights, torch.tensor([1, 1]))
     W = torch.tensor([[1.0, 3.0]], dtype=torch.float64)
-    fn = ModularSetFunction(W)
+    fn = ModularSetFn(W)
     rows_s, cols_s = torch.tensor([0]), torch.tensor([0])
     rows_t, cols_t = torch.tensor([0]), torch.tensor([1])
 

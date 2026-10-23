@@ -8,10 +8,10 @@ from .lattice_functions import (
     SequentialLatticeFunction,
     LinearCombinationLatticeFn,
 )
-from .lattice_fn_instances import ModularFn, QuadraticFn, lattice_dr_submodular_decomp
+from .lattice_fn_instances import ModularLatticeFn, QuadraticLatticeFn, latticefn_dr_submodular_decomp
 from .linear_combination import LinearCombinationMixin
 from .set_functions import LinearCombinationSetFn, SetFunction
-from .set_fn_instances import ModularSetFunction
+from .set_fn_instances import ModularSetFn
 from .setfn_reductions import (
     EneSubmodularSetFnReduction,
     EneReductionMap,
@@ -28,10 +28,10 @@ __all__ = [
     "EneReductionMap",
     "make_lattice_prefix_filter",
     "LatticeFunction",
-    "ModularFn",
-    "ModularSetFunction",
-    "QuadraticFn",
-    "lattice_dr_submodular_decomp",
+    "ModularLatticeFn",
+    "ModularSetFn",
+    "QuadraticLatticeFn",
+    "latticefn_dr_submodular_decomp",
     "SequentialLatticeFunction",
     "SetFunction",
     "SetFnReduction",

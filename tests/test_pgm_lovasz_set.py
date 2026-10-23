@@ -8,7 +8,7 @@ import torch
 from llm_quick_check.attacks.submodular_utils import (
     EneReductionMap,
     LinearCombinationSetFn,
-    ModularSetFunction,
+    ModularSetFn,
     SetFnReduction,
     make_lattice_prefix_filter,
     dca_dsm,
@@ -18,7 +18,7 @@ from llm_quick_check.attacks.submodular_utils import (
 
 @pytest.mark.parametrize("reject_all", [False, True])
 def test_general_pgm_projection_gap_and_filtered_history(reject_all):
-    fn = ModularSetFunction(torch.tensor([[2., -1.]], dtype=torch.float64))
+    fn = ModularSetFn(torch.tensor([[2., -1.]], dtype=torch.float64))
     X = torch.tensor([[0.9, 0.1]], dtype=torch.float64)
     result = pgm_lovasz_set(
         fn, X, num_steps=5, L=1., gap_tol=0.,
@@ -74,7 +74,7 @@ def test_iteration_zero_preserves_actual_set_and_copies_cached_point():
         return -2. * x[:, 0], 7 * len(x)
 
     fn = LinearCombinationSetFn(
-        [SetFnReduction(lattice_value, reduction_map), ModularSetFunction(torch.tensor([[1., 3.]]))],
+        [SetFnReduction(lattice_value, reduction_map), ModularSetFn(torch.tensor([[1., 3.]]))],
         [1., 1.],
     )
     result = pgm_lovasz_set(fn, torch.tensor([[1, 0]]), num_steps=0, L=1.)
@@ -117,7 +117,7 @@ def test_pgm_preserves_mixed_set_values_and_cached_points(prefixes):
         return -2. * x[:, 0], 7 * len(x)
 
     fn = LinearCombinationSetFn(
-        [SetFnReduction(lattice_value, reduction_map), ModularSetFunction(weights)], [1., 1.],
+        [SetFnReduction(lattice_value, reduction_map), ModularSetFn(weights)], [1., 1.],
     )
     with patch.object(reduction_map, "ints2binary", side_effect=AssertionError("unexpected inverse mapping")), \
          patch.object(reduction_map, "set2ints", side_effect=AssertionError("unexpected remapping")):

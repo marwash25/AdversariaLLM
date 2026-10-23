@@ -8,7 +8,7 @@ import logging
 from .lattice_functions import LatticeFunction, SequentialLatticeFunction, LinearCombinationLatticeFn, make_zero_lattice_fn
 
 
-class QuadraticFn(SequentialLatticeFunction):
+class QuadraticLatticeFn(SequentialLatticeFunction):
     """Quadratic lattice function F(x) = 0.5 * x^T Q x with symmetric Q.
 
     Pass a 2D tensor Q for a general quadratic, or a 0-dim tensor together with n
@@ -68,7 +68,7 @@ class QuadraticFn(SequentialLatticeFunction):
         return new_val, new_x, flops
 
 
-class EmbeddingQuadraticFn(QuadraticFn):
+class EmbeddingQuadraticLatticeFn(QuadraticLatticeFn):
     r"""Lattice function F(x) = 0.5 * p_x^T Q p_x with symmetric Q.
     and p_x = embedding_projections[x] if normalize is False.
     Otherwise, F(x) = 0.5 * (p_x - p_0)^T Q (p_x - p_0).
@@ -117,7 +117,7 @@ class EmbeddingQuadraticFn(QuadraticFn):
 
 
 
-class ModularFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remove if not needed
+class ModularLatticeFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remove if not needed
     """Modular lattice function F(x) = w^T x."""
 
     def __init__(self, w: Tensor, k: int):
@@ -137,7 +137,7 @@ class ModularFn(SequentialLatticeFunction): # TODO: not used anywhere yet, remov
         return new_val, new_x, 0
 
 
-def lattice_dr_submodular_decomp(
+def latticefn_dr_submodular_decomp(
     F_batch: LatticeFunction,
     hessian_upperbd: Tensor,
     embedding_projections: Tensor | None = None,
@@ -150,7 +150,7 @@ def lattice_dr_submodular_decomp(
         H(x) = 0.5 * x^T Q x
     where Q = -max(hessian_upperbd, 0) if hessian_upperbd is a matrix or Q = -max(hessian_upperbd, 0) * 11^T if it is a scalar,
     and
-        ((F(x + a_i1 e_i1 + a_i2 e_i2) - F(x + a_i2 e_i2)) - (F(x + a_i1 e_i1) - F(x))) <=  a_i1 a_i2 hessian_upperbd[i1, i2]
+        ((F(x + a_1 e_i1 + a_2 e_i2) - F(x + a_2 e_i2)) - (F(x + a_1 e_i1) - F(x))) <=  a_1 a_2 hessian_upperbd[i1, i2] (this is -alpha^unit_{i_1, i_2} in notes)
     """
     if hessian_upperbd.max().item() <= 0: # DCA reduces to its submodular minimization inner solver in this case
         logging.info("hessian_upperbd <= 0 implies F is already DR-submodular, returning F as G and zero lattice function as H")
@@ -159,8 +159,8 @@ def lattice_dr_submodular_decomp(
 
     alpha = -torch.clamp(hessian_upperbd, min=0)
     if embedding_projections is None:
-        H_batch = QuadraticFn(alpha, F_batch.k, F_batch.n)
+        H_batch = QuadraticLatticeFn(alpha, F_batch.k, F_batch.n)
     else:
-        H_batch = EmbeddingQuadraticFn(alpha, embedding_projections, F_batch.k, F_batch.n)
+        H_batch = EmbeddingQuadraticLatticeFn(alpha, embedding_projections, F_batch.k, F_batch.n)
     G_batch = LinearCombinationLatticeFn([F_batch, H_batch], [1.0, 1.0])
     return G_batch, H_batch

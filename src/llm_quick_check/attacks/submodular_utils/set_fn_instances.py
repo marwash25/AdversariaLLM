@@ -6,7 +6,7 @@ from torch import Tensor
 from .set_functions import SetFunction
 
 
-class ModularSetFunction(SetFunction):
+class ModularSetFn(SetFunction):
     """Modular set function F(S) = sum_{(i, j) in S} W[i, j] for a weight matrix W of shape (n, b)."""
 
     def __init__(self, W: Tensor):
@@ -21,3 +21,4 @@ class ModularSetFunction(SetFunction):
     def _eval_chain(self, order: tuple[Tensor, Tensor]) -> tuple[Tensor, int, None]:
         rows, cols = order
         return self.W[rows, cols].cumsum(0), 0, None
+        

@@ -10,7 +10,7 @@ from llm_quick_check.attacks.submodular_utils.lattice_functions import (
     LinearCombinationLatticeFn,
     SequentialLatticeFunction,
 )
-from llm_quick_check.attacks.submodular_utils.lattice_fn_instances import QuadraticFn
+from llm_quick_check.attacks.submodular_utils.lattice_fn_instances import QuadraticLatticeFn
 from llm_quick_check.attacks.submodular_utils.setfn_reductions import EneReductionMap, SetFnReduction
 
 
@@ -84,7 +84,7 @@ def test_chain_matches_direct_prefix_evaluation(factory, supply_chain, chain):
 @pytest.mark.parametrize("supply_chain", [False, True])
 def test_real_sequential_quadratic_matches_batch(supply_chain, chain):
     order, weights, expected_chain = chain
-    F = QuadraticFn(torch.tensor([[2., 1.], [1., -3.]], dtype=torch.float64), k=4)
+    F = QuadraticLatticeFn(torch.tensor([[2., 1.], [1., -3.]], dtype=torch.float64), k=4)
     expected_values, _ = F.eval_batch(expected_chain)
     values, flops, x_chain = F.eval_chain(order, weights, expected_chain if supply_chain else None)
     torch.testing.assert_close(values, expected_values)
