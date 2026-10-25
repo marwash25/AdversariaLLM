@@ -138,7 +138,7 @@ class ModularLatticeFn(SequentialLatticeFunction): # TODO: not used anywhere yet
 
 
 def latticefn_dr_submodular_decomp(
-    F_batch: LatticeFunction,
+    F: LatticeFunction,
     hessian_upperbd: Tensor,
     embedding_projections: Tensor | None = None,
 ) -> tuple[LatticeFunction, LatticeFunction]:
@@ -154,13 +154,13 @@ def latticefn_dr_submodular_decomp(
     """
     if hessian_upperbd.max().item() <= 0: # DCA reduces to its submodular minimization inner solver in this case
         logging.info("hessian_upperbd <= 0 implies F is already DR-submodular, returning F as G and zero lattice function as H")
-        H_batch = make_zero_lattice_fn(F_batch.k, F_batch.n)
-        return F_batch, H_batch
+        H = make_zero_lattice_fn(F.k, F.n)
+        return F, H
 
     alpha = -torch.clamp(hessian_upperbd, min=0)
     if embedding_projections is None:
-        H_batch = QuadraticLatticeFn(alpha, F_batch.k, F_batch.n)
+        H = QuadraticLatticeFn(alpha, F.k, F.n)
     else:
-        H_batch = EmbeddingQuadraticLatticeFn(alpha, embedding_projections, F_batch.k, F_batch.n)
-    G_batch = LinearCombinationLatticeFn([F_batch, H_batch], [1.0, 1.0])
-    return G_batch, H_batch
+        H = EmbeddingQuadraticLatticeFn(alpha, embedding_projections, F.k, F.n)
+    G = LinearCombinationLatticeFn([F, H], [1.0, 1.0])
+    return G, H

@@ -95,7 +95,7 @@ class DSMConfig:
 
 @dataclass
 class DSMAttackStepResult(AttackStepResult):
-    unfiltered_loss: float # discrete_obj_values + F_0
+    unfiltered_loss: float # discrete_obj_values + loss_0
     continuous_loss: float
     duality_gaps: list[float] | float # inner_duality_gaps for DCA, duality_gap for PGM
     # store the following info for DCA, set to None for PGM. Later might want to store a separate result for each inner step of DCA.
@@ -340,12 +340,12 @@ class DSMAttack(Attack):
             model, self.valid_token_ids[self._embeddings_perm[attack_ids]], tokens, target_mask, attack_mask, self.config.lm_reg_weight
         )
         zero_attack_ids = torch.zeros_like(inv_perm_ids_init)
-        F_0, F_0_flops = loss_fn(zero_attack_ids)
-        logging.info(f"Loss at zero F(0): {F_0.item():.4f}") # this changes with permutation of embeddings
+        loss_0, loss_0_flops = loss_fn(zero_attack_ids)
+        logging.info(f"Loss at zero: {loss_0.item():.4f}") # this changes with permutation of embeddings
         # normalize F(0) = 0
-        def F_batch(attack_ids):
+        def F(attack_ids):
             loss, flops = loss_fn(attack_ids)
-            return loss - F_0, flops
+            return loss - loss_0, flops
 
         # define filter function
         filter_fn = None
@@ -366,19 +366,19 @@ class DSMAttack(Attack):
                 # TODO: adapt filter function for other placements
                 raise ValueError(f"Filtering for {self.config.placement} placement not supported yet.")
 
-        F_set_batch = EneSubmodularSetFnReduction(F_batch, self.valid_vocab_size, n_optim_tokens, device)
+        F_set = EneSubmodularSetFnReduction(F, self.valid_vocab_size, n_optim_tokens, device)
         filter_prefixes = make_lattice_prefix_filter(filter_fn, filter_zero) if filter_fn is not None else None
 
         # TODO: Standardize optimizer interface
         if self.config.optimizer == "pgm":
             # map initial optim_ids to X_init in [0,1]^n x b
-            X_init = F_set_batch.map.ints2binary(inv_perm_ids_init)[0].to(dtype=torch.long)
+            X_init = F_set.map.ints2binary(inv_perm_ids_init)[0].to(dtype=torch.long)
             setup_time = time.time() - t_start
-            setup_flops = F_0_flops
+            setup_flops = loss_0_flops
             # run PGM with initial optim_ids as initial solution (assume F is approximately submodular)
             _, _, discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, _, \
             times, flops, _, discrete_sols_filtered = pgm_lovasz_set(
-                F_set_batch,
+                F_set,
                 X_init,
                 self.config.num_steps,
                 self.config.pgm_config.L,
@@ -392,8 +392,8 @@ class DSMAttack(Attack):
             time_cached_hessian_bd = 0
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 logging.info("DR-submodular decomposition using Hessian upper bound at zero")
-                F_singleton_vals, flops_F_singletons = F_set_batch.eval_singletons()
-                # F_set_batch depends on the following params in addition to model/tokenizer and conversation
+                F_singleton_vals, flops_F_singletons = F_set.eval_singletons()
+                # F_set depends on the following params in addition to model/tokenizer and conversation
                 fingerprint = make_fingerprint(
                     # I'm assuming that attack_mask, target_mask and non-attack tokens will not change for a given conversation,
                     # placement and model/tokenizer. Might be safer to include them in fingerprint.
@@ -419,19 +419,19 @@ class DSMAttack(Attack):
                     time_cached_hessian_bd = cache["time_taken"]
                 else:
                     logging.info(f"Computing Hessian upper bound at zero and saving to {save_path}")
-                    hessian_upperbd, flops_hessian_bd, time_hessian_bd = F_set_batch.hessian_upperbd_at_zero(
+                    hessian_upperbd, flops_hessian_bd, time_hessian_bd = F_set.hessian_upperbd_at_zero(
                         singleton_vals=F_singleton_vals,
                         save_file=save_path,
                         fingerprint=fingerprint,
                     )
                     logging.info(f"Time taken to compute Hessian upper bound at zero: {time_hessian_bd}")
 
-                L_F, flops_L_F = F_set_batch.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
+                L_F, flops_L_F = F_set.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
                 flops_L_F += flops_F_singletons
             else:
                 hessian_upperbd = torch.tensor(dca_config.hessian_upperbd, device=device, dtype=torch.float32)
                 flops_hessian_bd = 0
-                L_F, flops_L_F = F_set_batch.singletons_L_bound()
+                L_F, flops_L_F = F_set.singletons_L_bound()
                 logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}")
 
 
@@ -439,28 +439,28 @@ class DSMAttack(Attack):
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
             # decompose F into the difference of two DR-submodular functions G and H
-            G_batch, H_batch = latticefn_dr_submodular_decomp(
-                F_set_batch.lattice_fn,
+            G, H = latticefn_dr_submodular_decomp(
+                F_set.lattice_fn,
                 hessian_upperbd,
                 self._sorted_embedding_projections,
             )
-            G_set_batch = SetFnReduction(G_batch, F_set_batch.map)
-            H_set_batch = SetFnReduction(H_batch, F_set_batch.map)
+            G_set = SetFnReduction(G, F_set.map)
+            H_set = SetFnReduction(H, F_set.map)
 
             # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = - H((k-1) 1) where k = valid_vocab_size
-            H_max, flops_L_H= H_batch(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
+            H_max, flops_L_H= H(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
             L_H = -H_max.item()
             L_G = L_F + L_H
 
             setup_time = time.time() - t_start + time_cached_hessian_bd
-            setup_flops = F_0_flops + flops_L_F + flops_L_H + flops_hessian_bd
+            setup_flops = loss_0_flops + flops_L_F + flops_L_H + flops_hessian_bd
             # run DCA with initial optim_ids as initial solution
             discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, discrete_sols_filtered, times, flops, \
             inner_discrete_values, inner_discrete_values_filtered, inner_continuous_values, inner_duality_gaps, inner_times, inner_flops = \
             dca_dsm(
-                F_set_batch,
-                G_set_batch,
-                H_set_batch,
+                F_set,
+                G_set,
+                H_set,
                 inv_perm_ids_init,
                 num_outer_steps,
                 dca_config.num_inner_steps,
@@ -491,9 +491,9 @@ class DSMAttack(Attack):
         # map back to original token ids and decode to strings
         optim_ids = self.valid_token_ids[self._embeddings_perm[discrete_sols_filtered]]
         optim_strings = tokenizer.batch_decode(optim_ids.cpu())  # decode handles batching in v5.3+, keeping batch_decode to support older versions
-        losses = [val + F_0.item() for val in discrete_obj_values_filtered]
-        unfiltered_losses = [val + F_0.item() for val in discrete_obj_values]
-        continuous_losses = [val + F_0.item() for val in continuous_obj_values]
+        losses = [val + loss_0.item() for val in discrete_obj_values_filtered]
+        unfiltered_losses = [val + loss_0.item() for val in discrete_obj_values]
+        continuous_losses = [val + loss_0.item() for val in continuous_obj_values]
 
         logging.info(
             f"Optimization loop completed. Best valid attack (step {valid_idx[best_sol_idx_filtered]}): {optim_strings[best_sol_idx_filtered][:80]!s}. "
@@ -550,7 +550,7 @@ class DSMAttack(Attack):
 
         # plot objective values and duality gaps for PGM (standalone or for each DCA outer iteration)
         if self.config.optimizer == "pgm":
-            plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, F_0.item())
+            plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, loss_0.item())
         elif self.config.optimizer == "dca":
             for i in range(1, len(inner_discrete_values)): # initial step does not run pgm
                 plot_pgm_curves(
@@ -558,7 +558,7 @@ class DSMAttack(Attack):
                     inner_discrete_values_filtered[i],
                     inner_continuous_values[i],
                     inner_duality_gaps[i],
-                    F_0.item(),
+                    loss_0.item(),
                     outer_step=i,
                 )
 
@@ -732,12 +732,12 @@ class DSMAttack(Attack):
 
         return parts, attack_conversation
 
-def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, F_0=0.0, outer_step=None):
+def plot_pgm_curves(discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, duality_gaps, loss_0=0.0, outer_step=None):
     # figure will be saved in Hydra run directory ${root_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}/
 
-    discrete_obj_values = [val + F_0 for val in discrete_obj_values]
-    discrete_obj_values_filtered = [val + F_0 for val in discrete_obj_values_filtered]
-    continuous_obj_values = [val + F_0 for val in continuous_obj_values]
+    discrete_obj_values = [val + loss_0 for val in discrete_obj_values]
+    discrete_obj_values_filtered = [val + loss_0 for val in discrete_obj_values_filtered]
+    continuous_obj_values = [val + loss_0 for val in continuous_obj_values]
 
     steps_axis = range(len(discrete_obj_values))
     fig, (ax_obj, ax_gap) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)

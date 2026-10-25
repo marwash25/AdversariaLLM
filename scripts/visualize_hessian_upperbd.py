@@ -200,11 +200,12 @@ def _run_toy_demo(out: Path, n: int, k: int, style: PlotStyle) -> None:
     device = torch.device("cpu")
     assert k > 1 and (k & (k - 1)) == 0, "k must be a power of 2 for BinarySubmodularSetFnReduction"
 
-    def F_batch(x: Tensor) -> tuple[Tensor, int]:
+    def objective(x: Tensor) -> tuple[Tensor, int]:
+        """Evaluate the toy objective on a batch of lattice points."""
         vals = 0.01 * (x.sum(dim=1).float() ** 2)
         return vals, 0
 
-    F = CallableLatticeFunction(k, n, F_batch)
+    F = CallableLatticeFunction(k, n, objective)
     red = BinarySubmodularSetFnReduction(F, k, n, device)
 
     singleton_vals, _ = red.eval_singletons()

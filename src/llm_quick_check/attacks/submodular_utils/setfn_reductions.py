@@ -83,7 +83,7 @@ class SetToLatticeMap(ABC):
             S_batch.append((rows[batch_mask].long(), cols[batch_mask].long()))
         return S_batch
 
-    def set2ints(self, S_batch: list[tuple[Tensor, Tensor]]) -> Tensor:  # used in F_set_batch
+    def set2ints(self, S_batch: list[tuple[Tensor, Tensor]]) -> Tensor:  # used in F_set
         """Batched version of map M: 2^([n] x [b]) -> V^n with sets S in [n] x [b] represented
         by paired rows and cols indices.
 

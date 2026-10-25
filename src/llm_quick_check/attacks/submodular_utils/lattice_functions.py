@@ -376,16 +376,16 @@ class SequentialLatticeFunction(LatticeFunction):
 
 
 class CallableLatticeFunction(LatticeFunction):
-    """Wrap a plain batched callable F_batch as a LatticeFunction."""
+    """Wrap a plain batched callable F as a LatticeFunction."""
 
-    __slots__ = ("_F_batch",)
+    __slots__ = ("_F",)
 
-    def __init__(self, k: int, n: int, F_batch: Callable[[Tensor], tuple[Tensor, int]]):
+    def __init__(self, k: int, n: int, F: Callable[[Tensor], tuple[Tensor, int]]):
         super().__init__(k, n)
-        self._F_batch = F_batch
+        self._F = F
 
     def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
-        return self._F_batch(x)
+        return self._F(x)
 
 
 class LinearCombinationLatticeFn(LinearCombinationMixin[LatticeFunction], LatticeFunction):
@@ -425,7 +425,7 @@ class LinearCombinationLatticeFn(LinearCombinationMixin[LatticeFunction], Lattic
 def make_zero_lattice_fn(k: int, n: int, dtype: torch.dtype = torch.float32) -> LatticeFunction:
     """Return a lattice function F(x)=0 for all x in V^n."""
 
-    def zero_F_batch(x: Tensor) -> tuple[Tensor, int]:
+    def zero_F(x: Tensor) -> tuple[Tensor, int]:
         return torch.zeros((x.shape[0],), device=x.device, dtype=dtype), 0
 
-    return CallableLatticeFunction(k, n, zero_F_batch)
+    return CallableLatticeFunction(k, n, zero_F)
