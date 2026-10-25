@@ -238,8 +238,8 @@ def pgm_lovasz_set(
 # TODO: add a generic version of DCA that accepts general set function 
 def dca_dsm(
     F_set: SetFnReduction,
-    G_set: SetFnReduction,
-    H_set: SetFnReduction,
+    G_set: SetFunction,
+    H_set: SetFunction,
     x_init: Tensor,
     num_outer_steps: int,
     num_inner_steps: int,
@@ -255,8 +255,9 @@ def dca_dsm(
     Implement the difference of convex algorithm (DCA) variant from El Halabi et al. 2023 (Algorithm 2)
     for the difference of submodular minimization (DSM) problem min_{S} F_set(S):= G_set(S) - H_set(S), which
     applies DCA to the equivalent continuous problem min_{X in [0,1]^n x b} f_L(X) := g_L(X) - h_L(X).
-    Here F_set, G_set, H_set: 2^([n] x [b]) -> R are the set function reductions of the discrete functions
-    F, G, H: V^n -> R, and f_L, g_L, h_L are their Lovasz extensions.
+    Here F_set, G_set, H_set: 2^([n] x [b]) -> R are set functions, and f_L, g_L, h_L are their
+    Lovasz extensions. F_set is a reduction of a lattice function F: V^n -> R; G_set and H_set
+    need not be lattice reductions.
 
     @InProceedings{elhalabi2023dsm,
       title={Difference of Submodular Minimization via DC Programming},
@@ -271,9 +272,9 @@ def dca_dsm(
     current discrete solution, or stops if the current solution is already a local min.
 
     Args:
-        F_set: SetFnReduction instance for F. Used for logging and for the local search at convergence.
-        G_set: SetFnReduction instance for the submodular component G.
-        H_set: SetFnReduction instance for the submodular component H.
+        F_set: SetFnReduction instance for F. 
+        G_set: SetFunction instance for the submodular component G_set.
+        H_set: SetFunction instance for the submodular component H_set.
         x_init: Initial solution in V^n. Tensor of type long and shape (n,) or (1, n).
         num_outer_steps: Maximum number of DCA (outer) iterations.
         num_inner_steps: Maximum number of iterations of the inner solver.

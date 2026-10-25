@@ -15,7 +15,7 @@ from .attack import Attack, AttackResult, AttackStepResult, GenerationConfig, Si
 from ..lm_utils import prepare_conversation, TokenMergeError, generate_ragged_batched, get_flops, get_disallowed_ids, filter_suffix, with_max_batchsize
 from ..types import Conversation
 from .cache_utils import fingerprint_hash8, load_torch_cache_if_fingerprint_matches, make_fingerprint
-from .submodular_utils import EneSubmodularSetFnReduction, latticefn_dr_submodular_decomp, make_lattice_prefix_filter, SetFnReduction, pgm_lovasz_set, dca_dsm
+from .submodular_utils import EneSubmodularSetFnReduction, latticefn_dr_submodular_decomp, setfn_submodular_decomp, make_lattice_prefix_filter, SetFnReduction, pgm_lovasz_set, dca_dsm
 from .embeddings_dual_cone import _find_embeddings_dual_cone_w, _sorted_valid_projections
 
 
@@ -236,12 +236,16 @@ class DSMAttack(Attack):
         # --- Build Valid Vocab ---
         self._build_valid_vocab(tokenizer, model)
 
+        # TODO: use temporary hard coded flag to choose between lattice/set decomposition approaches
+        # decide later if we want to keep both, then add attack parameter to choose between them
+        self._lattice_decomp = False
+
         # --- Find w to use in DR-submodular decomposition ---
         hessian_upperbd_cfg = self.config.dca_config.hessian_upperbd
         # DCA reduces to its submodular minimization inner solver (H = 0) if hessian_upperbd is a non-positive value.
         # No need to find w in this case.
         positive_hessian_upperbd = (hessian_upperbd_cfg == "hessian_upperbd_at_zero" or hessian_upperbd_cfg > 0)
-        if self.config.optimizer == "dca" and positive_hessian_upperbd:
+        if self.config.optimizer == "dca" and self._lattice_decomp and positive_hessian_upperbd:
             model_name_safe = model.name_or_path.replace("/", "-")
             dca_config = self.config.dca_config
             dual_cone_config = dca_config.dual_cone_config
@@ -280,7 +284,7 @@ class DSMAttack(Attack):
                 self._sorted_embedding_projections = _sorted_valid_projections(model, self.valid_token_ids, self._embeddings_perm, self._embeddings_dual_cone_w)
         else:
             # TODO: test if PGM performs better with DCA's optimized embedding permutation.
-            # define identity embedding permutation to be used by PGM and DCA with hessian_upperbd <= 0.
+            # define identity embedding permutation for PGM, and DCA with hessian_upperbd <= 0 or set decomposition.
             self._embeddings_perm  = torch.arange(self.valid_vocab_size, device=model.device)
             self._embeddings_inv_perm = torch.arange(self.valid_vocab_size, device=model.device)
             self._sorted_embedding_projections = None
@@ -366,6 +370,7 @@ class DSMAttack(Attack):
                 # TODO: adapt filter function for other placements
                 raise ValueError(f"Filtering for {self.config.placement} placement not supported yet.")
 
+        # reduce to set function
         F_set = EneSubmodularSetFnReduction(F, self.valid_vocab_size, n_optim_tokens, device)
         filter_prefixes = make_lattice_prefix_filter(filter_fn, filter_zero) if filter_fn is not None else None
 
@@ -391,6 +396,7 @@ class DSMAttack(Attack):
             dca_config = self.config.dca_config
             time_cached_hessian_bd = 0
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
+                assert self._lattice_decomp, "hessian_upperbd_at_zero is not supported for set decomposition."
                 logging.info("DR-submodular decomposition using Hessian upper bound at zero")
                 F_singleton_vals, flops_F_singletons = F_set.eval_singletons()
                 # F_set depends on the following params in addition to model/tokenizer and conversation
@@ -438,17 +444,26 @@ class DSMAttack(Attack):
             # TODO: run DCA for more num_outer_steps if not converged and actual number of inner steps ran in total < num_steps
             num_outer_steps = self.config.num_steps // dca_config.num_inner_steps
             assert num_outer_steps >=1, "num_outer_steps = num_steps // num_inner_steps must be at least 1."
-            # decompose F into the difference of two DR-submodular functions G and H
-            G, H = latticefn_dr_submodular_decomp(
-                F_set.lattice_fn,
-                hessian_upperbd,
-                self._sorted_embedding_projections,
-            )
-            G_set = SetFnReduction(G, F_set.map)
-            H_set = SetFnReduction(H, F_set.map)
+            if self._lattice_decomp:
+                # decompose F into the difference of two DR-submodular lattice functions G and H, then reduce to set functions
+                G, H = latticefn_dr_submodular_decomp(
+                    F_set.lattice_fn,
+                    hessian_upperbd,
+                    self._sorted_embedding_projections,
+                )
+                G_set = SetFnReduction(G, F_set.map)
+                H_set = SetFnReduction(H, F_set.map)
+            else:
+                # decompose F_set into the difference two submodular functions G_set and H_set
+                alpha = -hessian_upperbd # TODO: assume hessian_upperbd is a float upper bound on -alpha_set for now
+                G_set, H_set = setfn_submodular_decomp(F_set, alpha)
 
-            # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b]) = - H((k-1) 1) where k = valid_vocab_size
-            H_max, flops_L_H= H(torch.full((1, n_optim_tokens), self.valid_vocab_size - 1, dtype=torch.long, device=device))
+            # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b])
+            ground_set = torch.unravel_index(
+                torch.arange(F_set.n * F_set.b, device=device),
+                (F_set.n, F_set.b),
+            )
+            H_max, flops_L_H = H_set.eval_single(ground_set)
             L_H = -H_max.item()
             L_G = L_F + L_H
 
