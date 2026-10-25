@@ -8,6 +8,7 @@ from llm_quick_check.attacks.submodular_utils import (
     LinearCombinationSetFn,
     ModularSetFn,
     SetFunction,
+    setfn_submodular_decomp,
 )
 from llm_quick_check.attacks.submodular_utils.setfn_reductions import BinaryRepresentationMap
 
@@ -273,6 +274,44 @@ def test_modular_set_function_distinguishes_ene_colliding_sets():
         chain_values, _, auxiliary_data = fn.eval_chain((rows, cols))
         torch.testing.assert_close(chain_values, torch.tensor([expected], dtype=torch.float64))
         assert auxiliary_data is None
+
+
+def test_setfn_submodular_decomp_values_and_slack():
+    F = TableSetFunction()
+    alpha = torch.tensor(-9.0, dtype=torch.float64)
+    G, H = setfn_submodular_decomp(F, alpha)
+    empty = torch.empty(0, dtype=torch.long)
+    S_batch = [
+        (empty, empty),
+        (torch.tensor([0]), torch.tensor([0])),
+        (torch.tensor([0, 1]), torch.tensor([0, 1])),
+    ]
+
+    Fvalues, _ = F(S_batch)
+    Gvalues, _ = G(S_batch)
+    Hvalues, _ = H(S_batch)
+    torch.testing.assert_close(Hvalues, torch.tensor([0.0, -4.5, -18.0], dtype=torch.float64))
+    torch.testing.assert_close(Gvalues - Hvalues, Fvalues)
+
+    # H contributes -alpha to every pairwise submodularity slack.
+    singleton_01 = (torch.tensor([0]), torch.tensor([1]))
+    pair = (torch.tensor([0, 0]), torch.tensor([0, 1]))
+    G_slack = Gvalues[1] + G.eval_single(singleton_01)[0] - Gvalues[0] - G.eval_single(pair)[0]
+    H_slack = Hvalues[1] + H.eval_single(singleton_01)[0] - Hvalues[0] - H.eval_single(pair)[0]
+    torch.testing.assert_close(G_slack, torch.tensor(15.0, dtype=torch.float64))
+    torch.testing.assert_close(H_slack, -alpha)
+
+
+def test_setfn_submodular_decomp_clamps_positive_alpha_to_zero():
+    F = TableSetFunction()
+    G, H = setfn_submodular_decomp(F, torch.tensor(2.0, dtype=torch.float64))
+    S = (torch.tensor([0, 1]), torch.tensor([0, 1]))
+
+    Fvalue, _ = F(S)
+    Gvalue, _ = G(S)
+    Hvalue, _ = H(S)
+    torch.testing.assert_close(Gvalue, Fvalue)
+    torch.testing.assert_close(Hvalue, torch.tensor(0.0, dtype=torch.float64))
 
 
 @pytest.mark.parametrize(

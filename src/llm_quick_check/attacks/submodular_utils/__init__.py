@@ -11,7 +11,7 @@ from .lattice_functions import (
 from .lattice_fn_instances import ModularLatticeFn, QuadraticLatticeFn, latticefn_dr_submodular_decomp
 from .linear_combination import LinearCombinationMixin
 from .set_functions import LinearCombinationSetFn, SetFunction
-from .set_fn_instances import ModularSetFn
+from .set_fn_instances import ModularSetFn, setfn_submodular_decomp
 from .setfn_reductions import (
     EneSubmodularSetFnReduction,
     EneReductionMap,
@@ -37,4 +37,5 @@ __all__ = [
     "SetFnReduction",
     "dca_dsm",
     "pgm_lovasz_set",
+    "setfn_submodular_decomp",
 ]

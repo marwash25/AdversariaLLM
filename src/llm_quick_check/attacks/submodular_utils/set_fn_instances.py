@@ -3,7 +3,7 @@
 import torch
 from torch import Tensor
 
-from .set_functions import SetFunction
+from .set_functions import LinearCombinationSetFn, SetFunction
 
 
 class ModularSetFn(SetFunction):
@@ -21,4 +21,39 @@ class ModularSetFn(SetFunction):
     def _eval_chain(self, order: tuple[Tensor, Tensor]) -> tuple[Tensor, int, None]:
         rows, cols = order
         return self.W[rows, cols].cumsum(0), 0, None
+
+class SquaredCardinalitySetFn(SetFunction):
+    """Squared cardinality function H(S) = 0.5 * alpha * |S|^2."""
+
+    def __init__(self, n: int, b: int, alpha: Tensor):
+        super().__init__(n, b, alpha.device)
+        self.alpha = alpha
+
+    def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
+        cardinalities = self.alpha.new_tensor([rows.numel() for rows, _ in S_batch])
+        return 0.5 * self.alpha * cardinalities.square(), 0
+
+    def _eval_chain(self, order: tuple[Tensor, Tensor]) -> tuple[Tensor, int, None]:
+        cardinalities = torch.arange(
+            1, order[0].numel() + 1, dtype=self.alpha.dtype, device=self.device
+        )
+        return 0.5 * self.alpha * cardinalities.square(), 0, None
+
+def setfn_submodular_decomp(
+    F: SetFunction,
+    alpha: Tensor
+) -> tuple[SetFunction, SetFunction]:
+    """Decompose a set function F: 2^([n] x [b]) -> R into the difference of two submodular set functions G and H:
         
+        F = G - H, with G = F + H and H(x) = 0.5 (alpha)_- |S|^2 
+
+    where 
+        F(S ∪ {v1}) - F(S) - F(S ∪ {v1,v2}) + F(S ∪ {v2}) >= alpha for all S, and distrinct v_1, v_2 not in S
+    """
+    assert alpha.dim() == 0, "alpha must be a scalar tensor"
+    assert alpha.device == F.device, "alpha and F must be on the same device"
+    alpha = torch.clamp(alpha, max=0)
+
+    H = SquaredCardinalitySetFn(F.n, F.b, alpha)
+    G = LinearCombinationSetFn([F, H], [1.0, 1.0])
+    return G, H
