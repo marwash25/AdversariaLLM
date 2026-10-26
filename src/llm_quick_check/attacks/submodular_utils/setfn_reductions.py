@@ -318,13 +318,12 @@ class SetFnReduction(SetFunction):
             return torch.zeros((self.n, self.n), device=self.device, dtype=torch.float32), 0, 0.0
         flops_singletons = 0
         if singleton_vals is None:
-            singleton_vals, flops_singletons = self.eval_singletons()
+            singleton_vals, flops_singletons = self.get_singleton_vals()
         pair_vals, rows, cols, flops_pairs = self.eval_all_pairs()
         i1, i2 = rows[0], rows[1]
         j1, j2 = cols[0], cols[1]
-        singleton_mat = singleton_vals.view(self.n, self.b)
         w = self.map.weights
-        cross_vals = pair_vals - singleton_mat[i1, j1] - singleton_mat[i2, j2]
+        cross_vals = pair_vals - singleton_vals[i1, j1] - singleton_vals[i2, j2]
         normalized_cross_vals = cross_vals / (w[j1] * w[j2])
 
         hessian_upperbd_flat = torch.full((self.n * self.n,), -float("inf"), device=self.device, dtype=cross_vals.dtype)

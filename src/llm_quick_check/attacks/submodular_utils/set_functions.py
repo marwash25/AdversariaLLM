@@ -259,9 +259,9 @@ class SetFunction(ABC):
         return None
 
     def get_singleton_vals(self) -> tuple[Tensor, int]:
-        """Evaluate F({v}) for all v in [n] x [b] or return cached values if available.
+        """Evaluate and cache F({v}) for all v in [n] x [b] or return cached values if available.
 
-        Values are return in row-major order; reusing cached values returns zero flops.
+        Values have shape (n, b); reusing cached values returns zero flops.
         """
         if self._singleton_vals is None:
             self._singleton_vals, flops = self._eval_singletons()
@@ -269,18 +269,18 @@ class SetFunction(ABC):
         return self._singleton_vals, 0
 
     def _eval_singletons(self) -> tuple[Tensor, int]:
-        """Evaluate F({(i, j)}) for all (i, j) in [n] x [b] in one batched call."""
+        """Evaluate F({(v)}) in one batched call and return values of shape (n, b)."""
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
         rows = flat_idx // self.b
         cols = flat_idx % self.b
         S_batch = [(r.view(1), c.view(1)) for r, c in zip(rows, cols)]
         singleton_vals, flops = self.eval_batch(S_batch)
-        return singleton_vals, flops
+        return singleton_vals.reshape(self.n, self.b), flops
 
     def get_singleton_removal_marginals(self) -> tuple[Tensor, int]:
-        r"""Evaluate F(V) - F(V \ {v}) for all v in [n] x [b] or return cached values if available.
+        r"""Evaluate and cache F(V) - F(V \ {v}) for all v in [n] x [b] or return cached values if available.
 
-        Values are in row-major order; reusing cached values returns zero flops.
+        Values have shape (n, b); reusing cached values returns zero flops.
         """
         if self._singleton_rmv_vals is None:
             self._singleton_rmv_vals, flops = self._eval_singletons_removal_marginals()
@@ -289,14 +289,14 @@ class SetFunction(ABC):
 
     # TODO: cache ground set value
     def _eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
-        r"""Evaluate F(V) - F(V \ {v}) for all v=(i, j) in [n] x [b] in one batched call."""
+        r"""Evaluate F(V) - F(V \ {v}) in one batched call and return values of shape (n, b)."""
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
         rows, cols = flat_idx // self.b, flat_idx % self.b
         S_batch = [(rows, cols)] + [
             (rows[flat_idx != v], cols[flat_idx != v]) for v in range(self.n * self.b)
         ]
         values, flops = self.eval_batch(S_batch)
-        return values[0] - values[1:], flops
+        return (values[0] - values[1:]).reshape(self.n, self.b), flops
 
     def singletons_L_bound(self) -> tuple[float, int]:  # used in pgm and DCA
         """Compute sqrt(sum_{(i, j) in [n] x [b]} F({(i, j)})^2).

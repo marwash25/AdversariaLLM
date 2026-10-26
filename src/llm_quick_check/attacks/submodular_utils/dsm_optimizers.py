@@ -43,8 +43,8 @@ def trim_ground_set(F_set: SetFunction, X_init: Tensor) -> tuple[Tensor, int]:
     """
     singleton_vals, flops_singletons = F_set.get_singleton_vals()
     singleton_rmv_vals, flops_singletons_rmv = F_set.get_singleton_removal_marginals()
-    X_init[singleton_vals.reshape(F_set.n, F_set.b) < 0] = 1
-    X_init[singleton_rmv_vals.reshape(F_set.n, F_set.b) > 0] = 0
+    X_init[singleton_vals < 0] = 1
+    X_init[singleton_rmv_vals > 0] = 0
     return X_init, flops_singletons + flops_singletons_rmv
 
 

@@ -212,9 +212,8 @@ def _run_toy_demo(out: Path, n: int, k: int, style: PlotStyle) -> None:
     pair_vals, rows, cols, _ = red.eval_all_pairs()
     i1, i2 = rows[0], rows[1]
     j1, j2 = cols[0], cols[1]
-    singleton_mat = singleton_vals.view(red.n, red.b)
     w = red.map.weights
-    cross_vals = pair_vals - singleton_mat[i1, j1] - singleton_mat[i2, j2]
+    cross_vals = pair_vals - singleton_vals[i1, j1] - singleton_vals[i2, j2]
     denom = (w[j1] * w[j2]).to(dtype=cross_vals.dtype, device=cross_vals.device)
     cross_n = cross_vals / denom
 
