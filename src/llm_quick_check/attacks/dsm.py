@@ -398,7 +398,7 @@ class DSMAttack(Attack):
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 assert self._lattice_decomp, "hessian_upperbd_at_zero is not supported for set decomposition."
                 logging.info("DR-submodular decomposition using Hessian upper bound at zero")
-                F_singleton_vals, flops_F_singletons = F_set.eval_singletons()
+                F_singleton_vals, flops_F_singletons = F_set.get_singleton_vals()
                 # F_set depends on the following params in addition to model/tokenizer and conversation
                 fingerprint = make_fingerprint(
                     # I'm assuming that attack_mask, target_mask and non-attack tokens will not change for a given conversation,
@@ -432,7 +432,7 @@ class DSMAttack(Attack):
                     )
                     logging.info(f"Time taken to compute Hessian upper bound at zero: {time_hessian_bd}")
 
-                L_F, flops_L_F = F_set.singletons_L_bound(F_singleton_vals) # flops_L_F=0 when singleton_vals are provided
+                L_F, flops_L_F = F_set.singletons_L_bound() # flops_L_F=0 since singleton values are cached
                 flops_L_F += flops_F_singletons
             else:
                 hessian_upperbd = torch.tensor(dca_config.hessian_upperbd, device=device, dtype=torch.float32)

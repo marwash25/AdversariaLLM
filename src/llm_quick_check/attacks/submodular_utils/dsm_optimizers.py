@@ -41,8 +41,8 @@ def trim_ground_set(F_set: SetFunction, X_init: Tensor) -> tuple[Tensor, int]:
     Submodularity guarantees these coordinates remain fixed under PGM updates.
     Return modified X_init and the total evaluation flop count.
     """
-    singleton_vals, flops_singletons = F_set.eval_singletons()
-    singleton_rmv_vals, flops_singletons_rmv = F_set.eval_singletons_removal_marginals()
+    singleton_vals, flops_singletons = F_set.get_singleton_vals()
+    singleton_rmv_vals, flops_singletons_rmv = F_set.get_singleton_removal_marginals()
     X_init[singleton_vals.reshape(F_set.n, F_set.b) < 0] = 1
     X_init[singleton_rmv_vals.reshape(F_set.n, F_set.b) > 0] = 0
     return X_init, flops_singletons + flops_singletons_rmv

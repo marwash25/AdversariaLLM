@@ -208,7 +208,7 @@ def _run_toy_demo(out: Path, n: int, k: int, style: PlotStyle) -> None:
     F = CallableLatticeFunction(k, n, objective)
     red = BinarySubmodularSetFnReduction(F, k, n, device)
 
-    singleton_vals, _ = red.eval_singletons()
+    singleton_vals, _ = red.get_singleton_vals()
     pair_vals, rows, cols, _ = red.eval_all_pairs()
     i1, i2 = rows[0], rows[1]
     j1, j2 = cols[0], cols[1]

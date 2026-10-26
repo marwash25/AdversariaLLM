@@ -42,6 +42,8 @@ class SetFunction(ABC):
         self.n = n
         self.b = b
         self.device = torch.device(device)
+        self._singleton_vals: Tensor | None = None
+        self._singleton_rmv_vals: Tensor | None = None
 
     def eval_single(self, S: tuple[Tensor, Tensor]) -> tuple[Tensor, int]:
         """Evaluate F(S) for S = {(rows[j], cols[j]) for j in range(len(rows))}.
@@ -256,7 +258,17 @@ class SetFunction(ABC):
         """Select auxiliary output for rounding; zero min_idx means empty set, -1 means no eligible prefix."""
         return None
 
-    def eval_singletons(self) -> tuple[Tensor, int]:
+    def get_singleton_vals(self) -> tuple[Tensor, int]:
+        """Evaluate F({v}) for all v in [n] x [b] or return cached values if available.
+
+        Values are return in row-major order; reusing cached values returns zero flops.
+        """
+        if self._singleton_vals is None:
+            self._singleton_vals, flops = self._eval_singletons()
+            return self._singleton_vals, flops
+        return self._singleton_vals, 0
+
+    def _eval_singletons(self) -> tuple[Tensor, int]:
         """Evaluate F({(i, j)}) for all (i, j) in [n] x [b] in one batched call."""
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
         rows = flat_idx // self.b
@@ -265,9 +277,19 @@ class SetFunction(ABC):
         singleton_vals, flops = self.eval_batch(S_batch)
         return singleton_vals, flops
 
-    # TODO: cache ground set value and override for more efficient implementation in subclasses
-    def eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
-        """Evaluate F(V) - F(V \ {v}) for all v=(i, j) in [n] x [b] in one batched call."""
+    def get_singleton_removal_marginals(self) -> tuple[Tensor, int]:
+        r"""Evaluate F(V) - F(V \ {v}) for all v in [n] x [b] or return cached values if available.
+
+        Values are in row-major order; reusing cached values returns zero flops.
+        """
+        if self._singleton_rmv_vals is None:
+            self._singleton_rmv_vals, flops = self._eval_singletons_removal_marginals()
+            return self._singleton_rmv_vals, flops
+        return self._singleton_rmv_vals, 0
+
+    # TODO: cache ground set value
+    def _eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
+        r"""Evaluate F(V) - F(V \ {v}) for all v=(i, j) in [n] x [b] in one batched call."""
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
         rows, cols = flat_idx // self.b, flat_idx % self.b
         S_batch = [(rows, cols)] + [
@@ -276,15 +298,17 @@ class SetFunction(ABC):
         values, flops = self.eval_batch(S_batch)
         return values[0] - values[1:], flops
 
-    def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> tuple[float, int]:  # used in pgm and DCA
+    def singletons_L_bound(self) -> tuple[float, int]:  # used in pgm and DCA
         """Compute sqrt(sum_{(i, j) in [n] x [b]} F({(i, j)})^2).
+
+           Reuse cached singleton values or evaluate and cache them via get_singleton_vals.
+           Reusing cached values costs zero flops.
 
            If F is submodular, this is a valid bound on the Lipschitz constant
            of its Lovasz extension f_L.
+           #TODO: correct this
         """
-        flops_L = 0
-        if singleton_vals is None:
-            singleton_vals, flops_L = self.eval_singletons()
+        singleton_vals, flops_L = self.get_singleton_vals()
         L = torch.linalg.vector_norm(singleton_vals, ord=2).item()
         return L, flops_L
 
@@ -350,6 +374,14 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
 
     def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
         return self._eval_linear_comb(lambda F: F._eval_batch(S_batch))
+
+    def _eval_singletons(self) -> tuple[Tensor, int]:
+        """Reuse components cached singleton_vals if available or evaluate and cache them."""
+        return self._eval_linear_comb(lambda F: F.get_singleton_vals())
+
+    def _eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
+        """Reuse components cached singleton_rmv_vals if available or evaluate and cache them."""
+        return self._eval_linear_comb(lambda F: F.get_singleton_removal_marginals())
 
     def _eval_chain(self, order: tuple[Tensor, Tensor]) -> tuple[Tensor, int, Tensor | None]:
         """Evaluate components independently and retain the first available x_chain, 

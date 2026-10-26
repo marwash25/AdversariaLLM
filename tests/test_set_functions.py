@@ -1,5 +1,7 @@
 """Tests for set evaluation and ordered chain prefixes, without a lattice representation."""
 
+from unittest.mock import patch
+
 import pytest
 import torch
 
@@ -30,18 +32,67 @@ class TableSetFunction(SetFunction):
         return self.table[indices], 7 * len(indices)
 
 
-def test_singleton_complement_marginals_order_and_flops():
+def test_singleton_removal_marginals_order_flops_and_cache():
     fn = TableSetFunction()
-    values, flops = fn.eval_singleton_complement_marginals()
+    values, flops = fn.get_singleton_removal_marginals()
     torch.testing.assert_close(values, torch.tensor([13., 8., 11., 6.], dtype=torch.float64))
     assert flops == 7 * 5
     assert fn.batch_calls == 1
+    cached, flops = fn.get_singleton_removal_marginals()
+    assert cached is values and flops == 0
+    assert fn.batch_calls == 1
+
+
+def test_singletons_cache_is_reused_by_bound():
+    fn = TableSetFunction()
+    values, flops = fn.get_singleton_vals()
+    torch.testing.assert_close(values, torch.tensor([2., 5., 7., 6.], dtype=torch.float64))
+    assert flops == 28 and fn.batch_calls == 1
+    cached, flops = fn.get_singleton_vals()
+    assert cached is values and flops == 0
+    bound, flops = fn.singletons_L_bound()
+    assert bound == pytest.approx(values.norm().item()) and flops == 0
+    assert fn.batch_calls == 1
+    # The two caches are populated independently.
+    assert fn.get_singleton_removal_marginals()[1] == 35
+    assert fn.batch_calls == 2
+
+
+def test_modular_singleton_arrays_need_no_set_evaluations():
+    W = torch.tensor([[2., -3.], [0., 4.]], dtype=torch.float64).T
+    fn = ModularSetFn(W)
+    with patch.object(fn, "_eval_batch", side_effect=AssertionError("unexpected set evaluation")):
+        for method in (fn.get_singleton_vals, fn.get_singleton_removal_marginals):
+            values, flops = method()
+            torch.testing.assert_close(values, W.flatten())
+            assert flops == 0
+
+
+def test_new_dca_surrogates_reuse_component_caches_with_current_weights():
+    F = TableSetFunction()
+    _, H = setfn_submodular_decomp(F, torch.tensor(-2., dtype=torch.float64))
+    # Repeated components should also reuse the same cache within a combination.
+    G = LinearCombinationSetFn([F, F, H], [2., -1., 1.])
+    G_singletons = torch.tensor([1., 4., 6., 5.], dtype=torch.float64)
+    G_removals = torch.tensor([6., 1., 4., -1.], dtype=torch.float64)
+    for iteration, W in enumerate((torch.ones(2, 2, dtype=torch.float64),
+                                   torch.tensor([[2., -1.], [0., 3.]], dtype=torch.float64))):
+        surrogate = LinearCombinationSetFn([G, ModularSetFn(W)], [1., -1.])
+        singletons, singleton_flops = surrogate.get_singleton_vals()
+        removals, removal_flops = surrogate.get_singleton_removal_marginals()
+        torch.testing.assert_close(singletons, G_singletons - W.flatten())
+        torch.testing.assert_close(removals, G_removals - W.flatten())
+        assert singleton_flops == (28 if iteration == 0 else 0)
+        assert removal_flops == (35 if iteration == 0 else 0)
+        assert F.batch_calls == 2
+        assert surrogate.get_singleton_vals()[1] == 0
+        assert surrogate.get_singleton_removal_marginals()[1] == 0
 
 
 @pytest.mark.parametrize("weight", [-2., 0., 3.])
 def test_single_element_complement_is_empty(weight):
     fn = ModularSetFn(torch.tensor([[weight]], dtype=torch.float64))
-    values, flops = fn.eval_singleton_complement_marginals()
+    values, flops = fn.get_singleton_removal_marginals()
     torch.testing.assert_close(values, torch.tensor([weight], dtype=torch.float64))
     assert flops == 0
 

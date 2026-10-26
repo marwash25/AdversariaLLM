@@ -17,17 +17,18 @@ from llm_quick_check.attacks.submodular_utils import (
 )
 
 
-def test_trimming_preserves_zero_marginals_and_input():
+def test_trimming_preserves_zero_marginals_and_updates_input():
     fn = ModularSetFn(torch.tensor([[-2., 0.], [3., -1.]], dtype=torch.float64))
     X_init = torch.full((2, 2), 0.4, dtype=torch.float64)
     X, flops = trim_ground_set(fn, X_init)
     torch.testing.assert_close(X, torch.tensor([[1., 0.4], [0., 1.]], dtype=torch.float64))
-    torch.testing.assert_close(X_init, torch.full((2, 2), 0.4, dtype=torch.float64))
+    assert X is X_init
     assert flops == 0
 
 
 @pytest.mark.parametrize("is_submodular", [False, True])
-def test_pgm_trimming_initialization_updates_and_flops(is_submodular):
+@pytest.mark.parametrize("L", [10., "singletons"])
+def test_pgm_trimming_initialization_updates_and_flops(is_submodular, L):
     # Submodular negative pair interaction: element 0 must be included,
     # element 1 excluded, and element 2 has singleton +1 but final marginal -1.
     def objective(x):
@@ -44,17 +45,22 @@ def test_pgm_trimming_initialization_updates_and_flops(is_submodular):
         return original_subgradient(X, tie_breaker)
 
     with patch.object(fn, "subgradient_lovasz_extension", side_effect=record_iterate), \
-         patch.object(fn, "eval_singleton_complement_marginals", wraps=fn.eval_singleton_complement_marginals) as complements:
-        result = pgm_lovasz_set(fn, X_init, num_steps=3, L=10., is_submodular=is_submodular)
+         patch.object(fn, "get_singleton_removal_marginals", wraps=fn.get_singleton_removal_marginals) as complements:
+        result = pgm_lovasz_set(fn, X_init, num_steps=3, L=L, is_submodular=is_submodular)
 
     assert complements.call_count == int(is_submodular)
     torch.testing.assert_close(X_init, torch.tensor([[0.2], [0.8], [0.4]], dtype=torch.float64))
-    assert result[8] == [21 + (49 if is_submodular else 0), 21, 21, 21]
+    setup_flops = 49 if is_submodular else (21 if L == "singletons" else 0)
+    assert result[8] == [21 + setup_flops, 21, 21, 21]
     if is_submodular:
         torch.testing.assert_close(iterates[0], torch.tensor([[1.], [0.], [0.4]], dtype=torch.float64))
         assert all(X[0, 0] == 1 and X[1, 0] == 0 for X in iterates)
     else:
         torch.testing.assert_close(iterates[0], X_init)
+    repeated = pgm_lovasz_set(fn, X_init, num_steps=3, L=L, is_submodular=is_submodular)
+    assert repeated[8] == [21, 21, 21, 21]
+    assert repeated[2] == result[2]
+    assert repeated[4] == pytest.approx(result[4])
 
 
 @pytest.mark.parametrize("reject_all", [False, True])
