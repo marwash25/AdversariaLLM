@@ -22,6 +22,12 @@ class ModularSetFn(SetFunction):
         rows, cols = order
         return self.W[rows, cols].cumsum(0), 0, None
 
+    def _eval_singletons(self) -> tuple[Tensor, int]:
+        return self.W, 0
+
+    def _eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
+        return self.W, 0
+
 class SquaredCardinalitySetFn(SetFunction):
     """Squared cardinality function H(S) = 0.5 * alpha * |S|^2."""
 
@@ -38,6 +44,12 @@ class SquaredCardinalitySetFn(SetFunction):
             1, order[0].numel() + 1, dtype=self.alpha.dtype, device=self.device
         )
         return 0.5 * self.alpha * cardinalities.square(), 0, None
+
+    def _eval_singletons(self) -> tuple[Tensor, int]:
+        return (0.5 * self.alpha).expand(self.n, self.b), 0
+
+    def _eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
+        return (self.alpha * (self.n * self.b - 0.5)).expand(self.n, self.b), 0
 
 def setfn_submodular_decomp(
     F: SetFunction,

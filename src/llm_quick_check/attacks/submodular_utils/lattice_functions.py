@@ -16,10 +16,10 @@ from .set_functions import assert_valid_set
 class LatticeFunction(ABC):
     """Base class for lattice function F: V^n -> R, where V = {0, 1,..., k - 1}.
     
-    Supports single and batched evaluation, evaluation along chains, and evaluation of neighbors.
 
     Public eval_* methods are wrappers for the private _eval_* methods, with inputs and outputs validated. 
-    Subclasses should implement _eval_batch and can override _eval_chain and _eval_neighbors to provide a more efficient implementation.
+    Subclasses should implement _eval_batch and can override _eval_chain, _eval_neighbors,
+    and _eval_singletons_removal_marginals to provide a more efficient implementation.
     """
 
     def __init__(self, k: int, n: int):
@@ -69,6 +69,27 @@ class LatticeFunction(ABC):
         if x.dim() == 1:
             return self.eval_single(x)
         return self.eval_batch(x)
+
+    def _eval_singletons_removal_marginals(self, weights: Tensor) -> tuple[Tensor, int]:
+        """Evaluate F(x_max) - F(x_max - weights[j] * e_i) for all (i, j) in [n] x [b], 
+        where x_max = (k-1) 1_n.
+
+        Default implementation evaluates F(x_max) and all removals via _eval_batch.
+
+        Args:
+            weights: long tensor of shape (b,), with entries in {1, ..., k-1},
+                on the function's device. Inputs are assumed valid, not checked here.
+                Repeated weights and their original order are preserved.
+        Returns:
+            marginals: Tensor of shape (n, b).
+            flops: Total evaluation flop count, int.
+        """
+        b = weights.numel()
+        x_batch = torch.full((self.n * b + 1, self.n), self.k - 1, dtype=torch.long, device=weights.device)
+        flat_idx = torch.arange(self.n * b, device=weights.device)
+        x_batch[flat_idx + 1, flat_idx // b] -= weights[flat_idx % b]
+        values, flops = self._eval_batch(x_batch)
+        return (values[0] - values[1:]).reshape(self.n, b), flops
 
     def eval_chain(
         self, order: tuple[Tensor, Tensor], weights: Tensor, x_chain: Tensor | None = None
@@ -223,7 +244,8 @@ class LatticeFunction(ABC):
 class SequentialLatticeFunction(LatticeFunction):
     """Base class for lattice functions F: V^n -> R with incremental add / remove along one coordinate from current state.
 
-    Overrides _eval_chain to use add and remove methods. Default add and remove methods are provided.
+    Overrides _eval_chain, _eval_neighbors, and _eval_singletons_removal_marginals to use add and remove methods.
+    Default add and remove methods are provided.
     Override these methods and _set_state for more efficient updates.
     """
     #TODO: refactor this class to have a state object that contains current_x and current_val which gets updated
@@ -283,8 +305,7 @@ class SequentialLatticeFunction(LatticeFunction):
         return new_val, new_x, flops
 
     def add_update(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
-        """Evaluate F(current_x + weight * e_i) and update state
-        """
+        """Evaluate F(current_x + weight * e_i) and update state"""
         new_val, new_x, flops = self.add(i, weight)
         self._set_state(new_x, new_val)
         return new_val, new_x, flops
@@ -294,6 +315,18 @@ class SequentialLatticeFunction(LatticeFunction):
 
     def remove_update(self, i: int, weight: Tensor) -> tuple[Tensor, Tensor, int]:
         return self.add_update(i, -weight)
+
+    def _eval_singletons_removal_marginals(self, weights: Tensor) -> tuple[Tensor, int]:
+        """Evaluate removals incrementally, keeping state anchored at x_max."""
+        x_max = torch.full((self.n,), self.k - 1, dtype=torch.long, device=weights.device)
+        F_full, flops = self.eval_update(x_max)
+        marginals = F_full.new_empty((self.n, weights.numel()))
+        for i in range(self.n):
+            for j, weight in enumerate(weights):
+                F_removed, _, flops_remove = self.remove(i, weight)
+                marginals[i, j] = F_full - F_removed
+                flops += flops_remove
+        return marginals, flops
 
     def _eval_chain(
         self, order: tuple[Tensor, Tensor], weights: Tensor, x_chain: Tensor | None = None
@@ -405,6 +438,9 @@ class LinearCombinationLatticeFn(LinearCombinationMixin[LatticeFunction], Lattic
 
     def _eval_batch(self, x: Tensor) -> tuple[Tensor, int]:
         return self._eval_linear_comb(lambda F: F._eval_batch(x))
+
+    def _eval_singletons_removal_marginals(self, weights: Tensor) -> tuple[Tensor, int]:
+        return self._eval_linear_comb(lambda F: F._eval_singletons_removal_marginals(weights))
 
     def _eval_chain(
         self, order: tuple[Tensor, Tensor], weights: Tensor, x_chain: Tensor | None = None

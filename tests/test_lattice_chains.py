@@ -10,7 +10,7 @@ from llm_quick_check.attacks.submodular_utils.lattice_functions import (
     LinearCombinationLatticeFn,
     SequentialLatticeFunction,
 )
-from llm_quick_check.attacks.submodular_utils.lattice_fn_instances import QuadraticLatticeFn
+from llm_quick_check.attacks.submodular_utils.lattice_fn_instances import QuadraticLatticeFn, EmbeddingQuadraticLatticeFn
 from llm_quick_check.attacks.submodular_utils.setfn_reductions import EneReductionMap, SetFnReduction
 
 
@@ -49,6 +49,65 @@ def chain():
         torch.tensor([1, 2]),
         torch.tensor([[0, 2], [1, 2], [1, 3], [3, 3]]),
     )
+
+
+@pytest.mark.parametrize("factory", [BatchQuadratic, IncrementalQuadratic])
+def test_removal_marginals_preserve_weight_order_and_full_point_state(factory):
+    F = factory()
+    weights = torch.tensor([2, 1, 2, 3])
+    original_weights = weights.clone()
+    values, flops = F._eval_singletons_removal_marginals(weights)
+    expected = torch.tensor([[8., 5., 8., 9.], [8., 5., 8., 9.]], dtype=torch.float64)
+    torch.testing.assert_close(values, expected)
+    torch.testing.assert_close(weights, original_weights)
+    if isinstance(F, IncrementalQuadratic):
+        assert len(F.batch_inputs) == 1 and F.add_calls == values.numel()
+        torch.testing.assert_close(F.batch_inputs[0], torch.tensor([[3, 3]]))
+        torch.testing.assert_close(F.current_x, torch.tensor([3, 3]))
+        assert F.current_val.item() == 18.
+        assert flops == 11 + 3 * values.numel()
+    else:
+        assert F.batch_calls == 1
+        assert flops == 11 * (values.numel() + 1)
+
+
+@pytest.mark.parametrize("kind", ["scalar", "matrix", "embedding"])
+def test_real_quadratic_removal_marginals_match_batch(kind):
+    Q = torch.tensor([[2., 1.], [1., -3.]], dtype=torch.float64)
+    if kind == "scalar":
+        F = QuadraticLatticeFn(torch.tensor(-0.5, dtype=torch.float64), k=4, n=2)
+    elif kind == "matrix":
+        F = QuadraticLatticeFn(Q, k=4)
+    else:
+        F = EmbeddingQuadraticLatticeFn(Q, torch.tensor([0.2, 0.8, 1.9, 3.2], dtype=torch.float64), k=4)
+    weights = torch.tensor([2, 1, 2, 3])
+    x_max = torch.full((2,), 3, dtype=torch.long)
+    directions = torch.eye(2, dtype=torch.long)
+    points = torch.stack([x_max] + [x_max - w * directions[i] for i in range(2) for w in weights])
+    batch_values, _ = F.eval_batch(points)
+    with patch.object(F, "_eval_batch", wraps=F._eval_batch) as evaluate:
+        values, flops = F._eval_singletons_removal_marginals(weights)
+    torch.testing.assert_close(values, (batch_values[0] - batch_values[1:]).reshape(2, -1))
+    assert evaluate.call_count == 1 and flops == 0
+    torch.testing.assert_close(F.current_x, x_max)
+    torch.testing.assert_close(F.current_val, batch_values[0])
+
+
+def test_nested_combination_removals_dispatch_and_reduction_cache():
+    batch, sequential = BatchQuadratic(), IncrementalQuadratic()
+    nested = LinearCombinationLatticeFn([sequential, sequential], [0.25, 0.75])
+    F = LinearCombinationLatticeFn([batch, nested], [2., -1.])
+    reduction = SetFnReduction(F, EneReductionMap(k=4, n=2, device=torch.device("cpu")))
+    values, flops = reduction.get_singleton_removal_marginals()
+    weights = reduction.map.weights.to(torch.float64)
+    torch.testing.assert_close(values, (6 * weights - weights.square()).expand(2, -1))
+    assert batch.batch_calls == 1 and len(sequential.batch_inputs) == 2
+    assert sequential.add_calls == 2 * values.numel()
+    assert flops == 11 * (values.numel() + 1) + 2 * (11 + 3 * values.numel())
+    cached, cached_flops = reduction.get_singleton_removal_marginals()
+    assert cached is values and cached_flops == 0
+    assert batch.batch_calls == 1 and len(sequential.batch_inputs) == 2
+    torch.testing.assert_close(sequential.current_x, torch.tensor([3, 3]))
 
 
 @pytest.mark.parametrize("factory", [BatchQuadratic, IncrementalQuadratic])

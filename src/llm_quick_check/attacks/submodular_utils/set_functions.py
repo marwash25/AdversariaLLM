@@ -271,10 +271,9 @@ class SetFunction(ABC):
     def _eval_singletons(self) -> tuple[Tensor, int]:
         """Evaluate F({(v)}) in one batched call and return values of shape (n, b)."""
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
-        rows = flat_idx // self.b
-        cols = flat_idx % self.b
+        rows, cols = flat_idx // self.b, flat_idx % self.b
         S_batch = [(r.view(1), c.view(1)) for r, c in zip(rows, cols)]
-        singleton_vals, flops = self.eval_batch(S_batch)
+        singleton_vals, flops = self._eval_batch(S_batch)
         return singleton_vals.reshape(self.n, self.b), flops
 
     def get_singleton_removal_marginals(self) -> tuple[Tensor, int]:
@@ -295,7 +294,7 @@ class SetFunction(ABC):
         S_batch = [(rows, cols)] + [
             (rows[flat_idx != v], cols[flat_idx != v]) for v in range(self.n * self.b)
         ]
-        values, flops = self.eval_batch(S_batch)
+        values, flops = self._eval_batch(S_batch)
         return (values[0] - values[1:]).reshape(self.n, self.b), flops
 
     def singletons_L_bound(self) -> tuple[float, int]:  # used in pgm and DCA

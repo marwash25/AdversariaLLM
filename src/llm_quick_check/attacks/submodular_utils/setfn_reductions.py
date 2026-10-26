@@ -217,6 +217,7 @@ class SetFnReduction(SetFunction):
         )
         assert self.lattice_fn.n == self.n, "lattice_fn.n must match reduction_map.n"
         assert self.lattice_fn.k == self.k, "lattice_fn.k must match reduction_map.k"
+    
     def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
         """Evaluate F_set on a non-empty batch of sets validated by eval_batch."""
         #TODO: set2ints also validates the sets, so this repeats validation. We can split map.set2ints
@@ -232,6 +233,15 @@ class SetFnReduction(SetFunction):
             x_chain = torch.empty((0, self.n), dtype=torch.long, device=self.device)
             return torch.empty(0, device=self.device), 0, x_chain
         return self.lattice_fn._eval_chain(order, self.map.weights)
+
+    # TODO: deduplicate repeated map weights in _eval_singletons and
+    # _eval_singletons_removal_marginals?
+    # TODO: use cached ground set when implemented
+    def _eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
+        """Evaluate directly at M(V) - w_j e_i via self.lattice_fn._eval_singletons_removal_marginals."""
+        # this is again more efficient than default implementation which evaluates
+        # each M(V \ {v}) separately. M(V) = (k-1) 1_n for any SetToLatticeMap
+        return self.lattice_fn._eval_singletons_removal_marginals(self.map.weights)
 
     def _round_auxiliary_output(self, min_idx: int, auxiliary_input: Tensor) -> Tensor:
         """Return the cached lattice point corresponding to the selected prefix:

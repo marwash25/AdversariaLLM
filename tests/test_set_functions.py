@@ -9,10 +9,12 @@ from llm_quick_check.attacks.submodular_utils import (
     EneReductionMap,
     LinearCombinationSetFn,
     ModularSetFn,
+    SetFnReduction,
     SetFunction,
     setfn_submodular_decomp,
 )
 from llm_quick_check.attacks.submodular_utils.setfn_reductions import BinaryRepresentationMap
+from llm_quick_check.attacks.submodular_utils.set_fn_instances import SquaredCardinalitySetFn
 
 
 class TableSetFunction(SetFunction):
@@ -66,6 +68,44 @@ def test_modular_singleton_arrays_need_no_set_evaluations():
             values, flops = method()
             torch.testing.assert_close(values, W)
             assert flops == 0
+
+
+@pytest.mark.parametrize("shape", [(1, 1), (2, 3)])
+@pytest.mark.parametrize("alpha", [-2., 0., 3.])
+def test_squared_cardinality_singleton_formulas_match_set_evaluation(shape, alpha):
+    fn = SquaredCardinalitySetFn(*shape, torch.tensor(alpha, dtype=torch.float64))
+    expected_singletons, _ = SetFunction._eval_singletons(fn)
+    expected_removals, _ = SetFunction._eval_singletons_removal_marginals(fn)
+    with patch.object(fn, "_eval_batch", side_effect=AssertionError("unexpected set evaluation")):
+        singletons, singleton_flops = fn.get_singleton_vals()
+        removals, removal_flops = fn.get_singleton_removal_marginals()
+    torch.testing.assert_close(singletons, expected_singletons)
+    torch.testing.assert_close(removals, expected_removals)
+    assert singleton_flops == removal_flops == 0
+
+
+@pytest.mark.parametrize("map_type", [EneReductionMap, BinaryRepresentationMap])
+@pytest.mark.parametrize("n,k", [(1, 2), (2, 8)])
+def test_reduction_removal_marginals_avoid_mapping_complements(map_type, n, k):
+    calls = []
+
+    def objective(x):
+        calls.append(x.clone())
+        x = x.to(torch.float64)
+        return x.square().sum(dim=1) + x.sum(dim=1).square(), 7 * len(x)
+
+    reduction_map = map_type(k=k, n=n, device=torch.device("cpu"))
+    fn = SetFnReduction(objective, reduction_map)
+    expected, expected_flops = SetFunction._eval_singletons_removal_marginals(fn)
+    expected_points = calls.pop()
+    with patch.object(reduction_map, "set2ints", side_effect=AssertionError("unexpected map evaluation")):
+        values, flops = fn.get_singleton_removal_marginals()
+        cached, cached_flops = fn.get_singleton_removal_marginals()
+    torch.testing.assert_close(values, expected)
+    assert len(calls) == 1
+    torch.testing.assert_close(calls[0], expected_points)
+    assert flops == expected_flops == 7 * (fn.n * fn.b + 1)
+    assert cached is values and cached_flops == 0
 
 
 def test_new_dca_surrogates_reuse_component_caches_with_current_weights():
