@@ -30,6 +30,22 @@ class TableSetFunction(SetFunction):
         return self.table[indices], 7 * len(indices)
 
 
+def test_singleton_complement_marginals_order_and_flops():
+    fn = TableSetFunction()
+    values, flops = fn.eval_singleton_complement_marginals()
+    torch.testing.assert_close(values, torch.tensor([13., 8., 11., 6.], dtype=torch.float64))
+    assert flops == 7 * 5
+    assert fn.batch_calls == 1
+
+
+@pytest.mark.parametrize("weight", [-2., 0., 3.])
+def test_single_element_complement_is_empty(weight):
+    fn = ModularSetFn(torch.tensor([[weight]], dtype=torch.float64))
+    values, flops = fn.eval_singleton_complement_marginals()
+    torch.testing.assert_close(values, torch.tensor([weight], dtype=torch.float64))
+    assert flops == 0
+
+
 def test_batch_and_single_evaluation_preserve_set_identity():
     fn = TableSetFunction()
     empty = torch.empty(0, dtype=torch.long)

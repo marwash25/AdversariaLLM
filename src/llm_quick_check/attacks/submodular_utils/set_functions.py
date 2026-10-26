@@ -265,6 +265,17 @@ class SetFunction(ABC):
         singleton_vals, flops = self.eval_batch(S_batch)
         return singleton_vals, flops
 
+    # TODO: cache ground set value and override for more efficient implementation in subclasses
+    def eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
+        """Evaluate F(V) - F(V \ {v}) for all v=(i, j) in [n] x [b] in one batched call."""
+        flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
+        rows, cols = flat_idx // self.b, flat_idx % self.b
+        S_batch = [(rows, cols)] + [
+            (rows[flat_idx != v], cols[flat_idx != v]) for v in range(self.n * self.b)
+        ]
+        values, flops = self.eval_batch(S_batch)
+        return values[0] - values[1:], flops
+
     def singletons_L_bound(self, singleton_vals: Tensor | None = None) -> tuple[float, int]:  # used in pgm and DCA
         """Compute sqrt(sum_{(i, j) in [n] x [b]} F({(i, j)})^2).
 

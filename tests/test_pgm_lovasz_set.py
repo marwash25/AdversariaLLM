@@ -13,7 +13,48 @@ from llm_quick_check.attacks.submodular_utils import (
     make_lattice_prefix_filter,
     dca_dsm,
     pgm_lovasz_set,
+    trim_ground_set,
 )
+
+
+def test_trimming_preserves_zero_marginals_and_input():
+    fn = ModularSetFn(torch.tensor([[-2., 0.], [3., -1.]], dtype=torch.float64))
+    X_init = torch.full((2, 2), 0.4, dtype=torch.float64)
+    X, flops = trim_ground_set(fn, X_init)
+    torch.testing.assert_close(X, torch.tensor([[1., 0.4], [0., 1.]], dtype=torch.float64))
+    torch.testing.assert_close(X_init, torch.full((2, 2), 0.4, dtype=torch.float64))
+    assert flops == 0
+
+
+@pytest.mark.parametrize("is_submodular", [False, True])
+def test_pgm_trimming_initialization_updates_and_flops(is_submodular):
+    # Submodular negative pair interaction: element 0 must be included,
+    # element 1 excluded, and element 2 has singleton +1 but final marginal -1.
+    def objective(x):
+        x = x.to(torch.float64)
+        return -x[:, 0] + 4 * x[:, 1] + x[:, 2] - 2 * x[:, 0] * x[:, 2], 7 * len(x)
+
+    fn = SetFnReduction(objective, EneReductionMap(k=2, n=3, device=torch.device("cpu")))
+    X_init = torch.tensor([[0.2], [0.8], [0.4]], dtype=torch.float64)
+    iterates = []
+    original_subgradient = fn.subgradient_lovasz_extension
+
+    def record_iterate(X, tie_breaker):
+        iterates.append(X.clone())
+        return original_subgradient(X, tie_breaker)
+
+    with patch.object(fn, "subgradient_lovasz_extension", side_effect=record_iterate), \
+         patch.object(fn, "eval_singleton_complement_marginals", wraps=fn.eval_singleton_complement_marginals) as complements:
+        result = pgm_lovasz_set(fn, X_init, num_steps=3, L=10., is_submodular=is_submodular)
+
+    assert complements.call_count == int(is_submodular)
+    torch.testing.assert_close(X_init, torch.tensor([[0.2], [0.8], [0.4]], dtype=torch.float64))
+    assert result[8] == [21 + (49 if is_submodular else 0), 21, 21, 21]
+    if is_submodular:
+        torch.testing.assert_close(iterates[0], torch.tensor([[1.], [0.], [0.4]], dtype=torch.float64))
+        assert all(X[0, 0] == 1 and X[1, 0] == 0 for X in iterates)
+    else:
+        torch.testing.assert_close(iterates[0], X_init)
 
 
 @pytest.mark.parametrize("reject_all", [False, True])

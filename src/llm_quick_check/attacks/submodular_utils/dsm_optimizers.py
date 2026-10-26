@@ -33,13 +33,27 @@ def make_lattice_prefix_filter(
     return filter_prefixes
 
 
+def trim_ground_set(F_set: SetFunction, X_init: Tensor) -> tuple[Tensor, int]:
+    """Trim ground set for a normalized submodular set function by setting 
+    entries in X_init to 1 or 0.
+
+    Set X_init[v] = 1 if F(v) < 0 and X_init[v] = 0 if F(v | V \ {v}) > 0 for v = (i, j)
+    Submodularity guarantees these coordinates remain fixed under PGM updates.
+    Return modified X_init and the total evaluation flop count.
+    """
+    singleton_vals, flops_singletons = F_set.eval_singletons()
+    singleton_rmv_vals, flops_singletons_rmv = F_set.eval_singletons_removal_marginals()
+    X_init[singleton_vals.reshape(F_set.n, F_set.b) < 0] = 1
+    X_init[singleton_rmv_vals.reshape(F_set.n, F_set.b) > 0] = 0
+    return X_init, flops_singletons + flops_singletons_rmv
+
+
 # TODO: Both PGM and DCA essentially ignore filtering for the opt itself for now, except for storing filtered solutions at each iteration.
 # This would change if we modify GCG loss to return larger values for unreachable solutions.
 
 # TODO: might be good to actually define a PGM class with step method to have standardized interface for different optimization methods
 # for now let's implement it as a standalone function similar to Matlab code
 # Note that this is will be mostly used for non-submodular functions. In DCA, we will use MNP as inner solver.
-# TODO: add ground set trimming for submodular F (add flag to enable/disable)
 def pgm_lovasz_set(
     F_set: SetFunction,
     X_init: Tensor,
@@ -48,6 +62,7 @@ def pgm_lovasz_set(
     tie_break: Literal["random"] | Tensor | None = None,
     gap_tol: float | None = None,
     filter_prefixes: Callable[[tuple[Tensor, Tensor], object | None], list[int]] | None = None,
+    is_submodular: bool = False,
 ):
     """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a normalized set function F_set: 2^([n] x [b]) -> R.
@@ -62,7 +77,7 @@ def pgm_lovasz_set(
         num_steps: Maximum number of optimization steps.
         L: Positive float or one of "singletons", "normalize", "polyak". Determines the step size eta.
         If a float, it is used as the Lipschitz constant of f_L, with eta = D / (L sqrt(t+1)) and D = sqrt(n b).
-        If F_set is monotone, set to F_set(V), which holds even if F_set is not submodular.
+        If F_set is monotone, set to |F_set(V)|, which holds even if F_set is not submodular.
         If F_set is submodular set to 3 max_S |F_set(S)| if known, or to 'singletons' to use sqrt(sum_i F_set(i)^2) bound,
         or to 'polyak' to use the Polyak step size eta = (f_L(X^t) - best dual value) / ||s||^2.
         If F_set is neither, set to 'normalize' to normalize the subgradient (L = ||s||) or 'singletons'/'polyak' as heuristics
@@ -73,6 +88,8 @@ def pgm_lovasz_set(
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
         filter_prefixes: Optional callback taking (order, auxiliary_input) and returning
         eligible prefix indices for filtered rounding.
+        is_submodular: Set True only when F_set is known to be submodular. Enables
+        ground set trimming.
 
     Returns:
         best_discrete_sol: Tuple (rows, cols) of long tensors, the unfiltered set with the lowest
@@ -110,6 +127,9 @@ def pgm_lovasz_set(
     assert X_init.device == F_set.device, "X_init and F_set must use the same device"
     assert ((X_init >= 0) & (X_init <= 1)).all(), "X_init must have entries in [0, 1]"
     X = X_init
+    flops_trimming = 0
+    if is_submodular:
+        X, flops_trimming = trim_ground_set(F_set, X_init.clone())
 
     n, b = X.shape
     D = sqrt(n*b) # domain diameter
@@ -196,7 +216,7 @@ def pgm_lovasz_set(
          # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill
         flops[iter] = flops_subgrad # only subgradient involves function evaluations
         if iter == 0:
-            flops[iter] += flops_L
+            flops[iter] += flops_L + flops_trimming
 
         pbar.set_postfix({"Discrete obj value": discrete_obj_values[iter], "Discrete obj value filtered": discrete_obj_values_filtered[iter], "Continuous obj value": continuous_obj_values[iter], "Duality gap": duality_gaps[iter]})
         if gap_tol is not None and duality_gaps[iter] <= gap_tol:

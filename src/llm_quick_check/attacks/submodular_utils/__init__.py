@@ -17,7 +17,7 @@ from .setfn_reductions import (
     EneReductionMap,
     SetFnReduction,
 )
-from .dsm_optimizers import pgm_lovasz_set, dca_dsm, make_lattice_prefix_filter
+from .dsm_optimizers import pgm_lovasz_set, dca_dsm, make_lattice_prefix_filter, trim_ground_set
 
 __all__ = [
     "CallableLatticeFunction",
@@ -37,5 +37,6 @@ __all__ = [
     "SetFnReduction",
     "dca_dsm",
     "pgm_lovasz_set",
+    "trim_ground_set",
     "setfn_submodular_decomp",
 ]
