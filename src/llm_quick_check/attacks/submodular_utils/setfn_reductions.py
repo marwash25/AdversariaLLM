@@ -290,7 +290,7 @@ class SetFnReduction(SetFunction):
 
         return F_best_neighbor, best_neighbor, F_best_neighbor_filtered, best_neighbor_filtered, flops
 
-    def hessian_upperbd_at_zero(self, normalized: bool = True, singleton_vals: Tensor | None = None, save_file: str | Path | None = None, fingerprint: Mapping[str, Any] | None = None) -> tuple[Tensor, int, float]:
+    def hessian_upperbd_at_zero(self, normalized: bool = True, save_file: str | Path | None = None, fingerprint: Mapping[str, Any] | None = None) -> tuple[Tensor, int, float]:
         """Compute an approximate upper bound on the "Hessian" of F at 0:
 
         We want to compute:
@@ -306,6 +306,8 @@ class SetFnReduction(SetFunction):
         since F is normalized. This costs O(n^2 b^2) evaluations of F_set / F.
 
         If normalized is False, don't normalize by a_j1 a_j2.
+        Reuse cached singleton values or evaluate and cache them via get_singleton_vals.
+        Cached singleton values contribute zero flops.
 
         Returns:
             hessian_upperbd: symmetric (n, n) tensor Q
@@ -316,9 +318,7 @@ class SetFnReduction(SetFunction):
         nb = self.n * self.b
         if nb < 2: # possible if n = 1 and k = 2 (so b = 1), no distinct pairs v1, v2 in this case, so Q = 0
             return torch.zeros((self.n, self.n), device=self.device, dtype=torch.float32), 0, 0.0
-        flops_singletons = 0
-        if singleton_vals is None:
-            singleton_vals, flops_singletons = self.get_singleton_vals()
+        singleton_vals, flops_singletons = self.get_singleton_vals()
         pair_vals, rows, cols, flops_pairs = self.eval_all_pairs()
         i1, i2 = rows[0], rows[1]
         j1, j2 = cols[0], cols[1]

@@ -394,11 +394,13 @@ class DSMAttack(Attack):
 
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
+            # evaluate singleton values and count its flops here, so the Hessian upper bound
+            # computation reuses cached values and counts only pair-evaluation flops.
+            L_F, flops_L_F = F_set.singletons_L_bound()
             time_cached_hessian_bd = 0
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 assert self._lattice_decomp, "hessian_upperbd_at_zero is not supported for set decomposition."
                 logging.info("DR-submodular decomposition using Hessian upper bound at zero")
-                F_singleton_vals, flops_F_singletons = F_set.get_singleton_vals()
                 # F_set depends on the following params in addition to model/tokenizer and conversation
                 fingerprint = make_fingerprint(
                     # I'm assuming that attack_mask, target_mask and non-attack tokens will not change for a given conversation,
@@ -426,18 +428,14 @@ class DSMAttack(Attack):
                 else:
                     logging.info(f"Computing Hessian upper bound at zero and saving to {save_path}")
                     hessian_upperbd, flops_hessian_bd, time_hessian_bd = F_set.hessian_upperbd_at_zero(
-                        singleton_vals=F_singleton_vals,
                         save_file=save_path,
                         fingerprint=fingerprint,
                     )
                     logging.info(f"Time taken to compute Hessian upper bound at zero: {time_hessian_bd}")
 
-                L_F, flops_L_F = F_set.singletons_L_bound() # flops_L_F=0 since singleton values are cached
-                flops_L_F += flops_F_singletons
             else:
                 hessian_upperbd = torch.tensor(dca_config.hessian_upperbd, device=device, dtype=torch.float32)
                 flops_hessian_bd = 0
-                L_F, flops_L_F = F_set.singletons_L_bound()
                 logging.info(f"DR-submodular decomposition using scalar Hessian upper bound {hessian_upperbd}")
 
 
