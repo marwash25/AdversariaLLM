@@ -42,10 +42,19 @@ def trim_ground_set(F_set: SetFunction, X_init: Tensor) -> tuple[Tensor, int]:
     Submodularity guarantees these coordinates remain fixed under PGM updates.
     Return modified X_init and the total evaluation flop count.
     """
+    # TODO: we can use tighter Lipschitz and domain diameter bounds after trimming
+    # in PGM; see "trimming_bounds.md" in notes.
     singleton_vals, flops_singletons = F_set.get_singleton_vals()
     singleton_rmv_vals, flops_singletons_rmv = F_set.get_singleton_removal_marginals()
-    X_init[singleton_vals < 0] = 1
-    X_init[singleton_rmv_vals > 0] = 0
+    include_mask = singleton_vals < 0
+    exclude_mask = singleton_rmv_vals > 0
+    X_init[include_mask] = 1
+    X_init[exclude_mask] = 0
+    num_trimmed = (include_mask | exclude_mask).sum().item()
+    logging.info(
+        "Trimmed %d of %d ground-set elements (%.2f%%).",
+        num_trimmed, X_init.numel(), 100 * num_trimmed / X_init.numel(),
+    )
     return X_init, flops_singletons + flops_singletons_rmv
 
 
