@@ -197,7 +197,7 @@ class SetToLatticeMap(ABC):
 
 class SetFnReduction(SetFunction):
     """Reduction from a lattice function F: V^n -> R where V = {0, 1,..., k - 1},
-    to a set function F_set: 2^([n] x [b]) -> R, using a SetToLatticeMap for M.
+    to a set function F_set: 2^U -> R, U:= [n] x [b], using a SetToLatticeMap for M.
 
     F is expected to be normalized,, i.e., F(0) = 0.
     """
@@ -238,9 +238,9 @@ class SetFnReduction(SetFunction):
     # _eval_singletons_removal_marginals?
     # TODO: use cached ground set when implemented
     def _eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
-        """Evaluate directly at M(V) - w_j e_i via self.lattice_fn._eval_singletons_removal_marginals."""
+        """Evaluate directly at M(U) - w_j e_i via self.lattice_fn._eval_singletons_removal_marginals."""
         # this is again more efficient than default implementation which evaluates
-        # each M(V \ {v}) separately. M(V) = (k-1) 1_n for any SetToLatticeMap
+        # each M(U \ {u}) separately. M(U) = (k-1) 1_n for any SetToLatticeMap
         return self.lattice_fn._eval_singletons_removal_marginals(self.map.weights)
 
     def _round_auxiliary_output(self, min_idx: int, auxiliary_input: Tensor) -> Tensor:
@@ -312,7 +312,7 @@ class SetFnReduction(SetFunction):
 
         We instead consider the maximum over only weights of the map a_j1 = weights[j1], a_j2 = weights[j2], i.e.,
         Q_{i1, i2} = max_{j1, j2 in [b]} ((F(a_j1 e_i1 + a_j2 e_i2) - F(a_j2 e_i2)) - (F(a_j1 e_i1) - F(0))) / (a_j1 a_j2)
-                   = max_{j1, j2 in [b]} (F_set({v1, v2}) - F_set(v1) - F_set(v2)) / (a_j1 a_j2) where v1 = (i1, j1), v2 = (i2, j2),
+                   = max_{j1, j2 in [b]} (F_set({u1, u2}) - F_set(u1) - F_set(u2)) / (a_j1 a_j2) where u1 = (i1, j1), u2 = (i2, j2),
         since F is normalized. This costs O(n^2 b^2) evaluations of F_set / F.
 
         If normalized is False, don't normalize by a_j1 a_j2.
@@ -326,7 +326,7 @@ class SetFnReduction(SetFunction):
         """
         t_start = time.time()
         nb = self.n * self.b
-        if nb < 2: # possible if n = 1 and k = 2 (so b = 1), no distinct pairs v1, v2 in this case, so Q = 0
+        if nb < 2: # possible if n = 1 and k = 2 (so b = 1), no distinct pairs u1, u2 in this case, so Q = 0
             return torch.zeros((self.n, self.n), device=self.device, dtype=torch.float32), 0, 0.0
         singleton_vals, flops_singletons = self.get_singleton_vals()
         pair_vals, rows, cols, flops_pairs = self.eval_all_pairs()

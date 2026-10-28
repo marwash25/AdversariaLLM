@@ -28,7 +28,7 @@ def assert_valid_set(S: tuple[Tensor, Tensor], *, n: int, b: int, device: torch.
 
 
 class SetFunction(ABC):
-    """Base class for set function F: 2^([n] x [b]) -> R, with input sets represented by paired row and column indices.
+    """Base class for set function F: 2^U -> R, U:= [n] x [b], with input sets represented by paired row and column indices.
 
     Public eval_* methods are wrappers for the private _eval_* methods, with inputs and outputs validated. 
     Subclasses should implement _eval_batch and can override _eval_chain to provide a more efficient implementation.
@@ -38,7 +38,7 @@ class SetFunction(ABC):
     Property flags (is_submodular, is_non_decreasing, is_non_increasing) record known properties; 
     False means the property is not assumed. Configure them and the optional max_abs_value 
     during construction and keep them fixed. They are used in lovasz_L_bound and pgm_lovasz_set.
-    For monotone functions, lovasz_L_bound sets max_abs_value to |F(V)| if not provided.
+    For monotone functions, lovasz_L_bound sets max_abs_value to |F(U)| if not provided.
     """
     # TODO: not sure we actually need these methods in this class
 
@@ -276,7 +276,7 @@ class SetFunction(ABC):
         return None
 
     def get_singleton_vals(self) -> tuple[Tensor, int]:
-        """Evaluate and cache F({v}) for all v in [n] x [b] or return cached values if available.
+        """Evaluate and cache F({u}) for all u in U or return cached values if available.
 
         Values have shape (n, b); reusing cached values returns zero flops.
         """
@@ -286,7 +286,7 @@ class SetFunction(ABC):
         return self._singleton_vals, 0
 
     def _eval_singletons(self) -> tuple[Tensor, int]:
-        """Evaluate F({(v)}) in one batched call and return values of shape (n, b)."""
+        """Evaluate F({(u)}) in one batched call and return values of shape (n, b)."""
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
         rows, cols = flat_idx // self.b, flat_idx % self.b
         S_batch = [(r.view(1), c.view(1)) for r, c in zip(rows, cols)]
@@ -294,7 +294,7 @@ class SetFunction(ABC):
         return singleton_vals.reshape(self.n, self.b), flops
 
     def get_singleton_removal_marginals(self) -> tuple[Tensor, int]:
-        r"""Evaluate and cache F(V) - F(V \ {v}) for all v in [n] x [b] or return cached values if available.
+        r"""Evaluate and cache F(U) - F(U \ {u}) for all u in U or return cached values if available.
 
         Values have shape (n, b); reusing cached values returns zero flops.
         """
@@ -305,11 +305,11 @@ class SetFunction(ABC):
 
     # TODO: cache ground set value
     def _eval_singletons_removal_marginals(self) -> tuple[Tensor, int]:
-        r"""Evaluate F(V) - F(V \ {v}) in one batched call and return values of shape (n, b)."""
+        r"""Evaluate F(U) - F(U \ {u}) in one batched call and return values of shape (n, b)."""
         flat_idx = torch.arange(self.n * self.b, device=self.device, dtype=torch.long)
         rows, cols = flat_idx // self.b, flat_idx % self.b
         S_batch = [(rows, cols)] + [
-            (rows[flat_idx != v], cols[flat_idx != v]) for v in range(self.n * self.b)
+            (rows[flat_idx != u], cols[flat_idx != u]) for u in range(self.n * self.b)
         ]
         values, flops = self._eval_batch(S_batch)
         return (values[0] - values[1:]).reshape(self.n, self.b), flops
@@ -317,14 +317,14 @@ class SetFunction(ABC):
     def lovasz_L_bound(self) -> tuple[float, int]:  # used in pgm and DCA
         r"""Compute and cache a Euclidean Lipschitz bound for the Lovasz extension of normalized F.
 
-        If F is monotone (non-decreasing or non-increasing), L <= |F(V)|.
-        If F is submodular, L <= min{3 max_S |F(S)|, sqrt(sum_{v} max{|F({v})|, |F(v | V \ v)|}^2)}.
-        If F is non-decreasing submodular, L <= min{ F(V), sqrt(sum_{v} F({v})^2)}
-        If F is non-increasing submodular, L <= min{-F(V), sqrt(sum_{v} F(v | V \ v)^2)}
+        If F is monotone (non-decreasing or non-increasing), L <= |F(U)|.
+        If F is submodular, L <= min{3 max_S |F(S)|, sqrt(sum_{u} max{|F({u})|, |F(u | U \ u)|}^2)}.
+        If F is non-decreasing submodular, L <= min{ F(U), sqrt(sum_{u} F({u})^2)}
+        If F is non-increasing submodular, L <= min{-F(U), sqrt(sum_{u} F(u | U \ u)^2)}
         If F is neither monotone nor submodular, return submodular bound as heuristic.
 
         self.max_abs_value is an optional upper bound on max_S |F(S)| configured at construction.
-        For monotone F, reuse it when provided; otherwise evaluate and store |F(V)|.
+        For monotone F, reuse it when provided; otherwise evaluate and store |F(U)|.
         The bound 3 * self.max_abs_value is only applied if it's provided and F is non-monotone.
 
         Reuse cached singleton marginal values or evaluate and cache them via get_singleton_vals
@@ -365,18 +365,18 @@ class SetFunction(ABC):
         return L, flops_L
 
     def eval_all_pairs(self) -> tuple[Tensor, Tensor, Tensor, int]:
-        """Evaluate F({v1, v2}) for all v1 = (i1, j1), v2 = (i2, j2) in [n] x [b]
-        with v_1 != v_2, in one batched call.
+        """Evaluate F({u1, u2}) for all u1 = (i1, j1), u2 = (i2, j2) in [n] x [b]
+        with u_1 != u_2, in one batched call.
 
         Returns:
             pair_vals: Tensor of shape (num_pairs,) with num_pairs = n * b * (n * b - 1) / 2 and
-                pair_vals[p] = F({v1, v2}) for the p-th (v1, v2) pair.
+                pair_vals[p] = F({u1, u2}) for the p-th (u1, u2) pair.
             rows: Tensor of shape (2, num_pairs) with rows[0, p] = i1, rows[1, p] = i2.
             cols: Tensor of shape (2, num_pairs) with cols[0, p] = j1, cols[1, p] = j2.
             flops: flop count, int.
         """
         nb = self.n * self.b
-        # enumerate all pairs of flattened indices v1, v2 in [n * b] with v1 < v2
+        # enumerate all pairs of flattened indices u1, u2 in [n * b] with u1 < u2
         flat_pair_idx = torch.triu_indices(nb, nb, offset=1, device=self.device)  # (2, num_pairs)
         idx_v1, idx_v2 = flat_pair_idx[0], flat_pair_idx[1]
 

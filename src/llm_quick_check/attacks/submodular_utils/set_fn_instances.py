@@ -85,7 +85,7 @@ def setfn_submodular_decomp(
         F = G - H, with G = F + H and H(x) = 0.5 (alpha)_- |S|^2 
 
     where 
-        F(S ∪ {v1}) - F(S) - F(S ∪ {v1,v2}) + F(S ∪ {v2}) >= alpha for all S, and distrinct v_1, v_2 not in S
+        F(S ∪ {u1}) - F(S) - F(S ∪ {u1,u2}) + F(S ∪ {u2}) >= alpha for all S, and distrinct u_1, u_2 not in S
     """
     assert alpha.dim() == 0, "alpha must be a scalar tensor"
     assert alpha.device == F.device, "alpha and F must be on the same device"
