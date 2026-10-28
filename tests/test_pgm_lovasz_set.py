@@ -26,9 +26,11 @@ def test_trimming_preserves_zero_marginals_and_updates_input():
     assert flops == 0
 
 
+@pytest.mark.parametrize("enable_trimming", [False, True])
 @pytest.mark.parametrize("is_submodular", [False, True])
 @pytest.mark.parametrize("L", [10., "L_bound"])
-def test_pgm_trimming_initialization_updates_and_flops(is_submodular, L):
+def test_pgm_trimming_initialization_updates_and_flops(is_submodular, L, enable_trimming):
+    should_trim = is_submodular and enable_trimming
     # Submodular negative pair interaction: element 0 must be included,
     # element 1 excluded, and element 2 has singleton +1 but final marginal -1.
     def objective(x):
@@ -47,18 +49,22 @@ def test_pgm_trimming_initialization_updates_and_flops(is_submodular, L):
 
     with patch.object(fn, "subgradient_lovasz_extension", side_effect=record_iterate), \
          patch.object(fn, "get_singleton_removal_marginals", wraps=fn.get_singleton_removal_marginals) as complements:
-        result = pgm_lovasz_set(fn, X_init, num_steps=3, L=L)
+        result = pgm_lovasz_set(
+            fn, X_init, num_steps=3, L=L, enable_trimming=enable_trimming
+        )
 
-    assert complements.call_count == int(is_submodular) + int(L == "L_bound")
+    assert complements.call_count == int(should_trim) + int(L == "L_bound")
     torch.testing.assert_close(X_init, torch.tensor([[0.2], [0.8], [0.4]], dtype=torch.float64))
-    setup_flops = 49 if is_submodular or L == "L_bound" else 0
+    setup_flops = 49 if should_trim or L == "L_bound" else 0
     assert result[8] == [21 + setup_flops, 21, 21, 21]
-    if is_submodular:
+    if should_trim:
         torch.testing.assert_close(iterates[0], torch.tensor([[1.], [0.], [0.4]], dtype=torch.float64))
         assert all(X[0, 0] == 1 and X[1, 0] == 0 for X in iterates)
     else:
         torch.testing.assert_close(iterates[0], X_init)
-    repeated = pgm_lovasz_set(fn, X_init, num_steps=3, L=L)
+    repeated = pgm_lovasz_set(
+        fn, X_init, num_steps=3, L=L, enable_trimming=enable_trimming
+    )
     assert repeated[8] == [21, 21, 21, 21]
     assert repeated[2] == result[2]
     assert repeated[4] == pytest.approx(result[4])

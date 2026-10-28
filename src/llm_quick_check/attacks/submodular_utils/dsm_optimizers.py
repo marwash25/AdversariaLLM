@@ -72,6 +72,7 @@ def pgm_lovasz_set(
     tie_break: Literal["random"] | Tensor | None = None,
     gap_tol: float | None = None,
     filter_prefixes: Callable[[tuple[Tensor, Tensor], object | None], list[int]] | None = None,
+    enable_trimming: bool = True,
 ):
     """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a normalized set function F_set: 2^([n] x [b]) -> R.
@@ -81,7 +82,7 @@ def pgm_lovasz_set(
     satisfying F_set(S) <= f_L(X).
 
     Args:
-        F_set: SetFunction instance. F_set.is_submodular enables ground set trimming.
+        F_set: SetFunction instance.
         X_init: Initial solution in [0,1]^(n x b), Tensor of shape (n, b).
         num_steps: Maximum number of optimization steps.
         L: Positive float or one of "L_bound", "normalize", "polyak". Determines the step size eta.
@@ -96,6 +97,8 @@ def pgm_lovasz_set(
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
         filter_prefixes: Optional callback taking (order, auxiliary_input) and returning
         eligible prefix indices for filtered rounding.
+        enable_trimming: Trim the ground set before optimization when F_set.is_submodular
+        is True. Defaults to True; ignored for functions not known to be submodular.
 
     Returns:
         best_discrete_sol: Tuple (rows, cols) of long tensors, the unfiltered set with the lowest
@@ -134,7 +137,7 @@ def pgm_lovasz_set(
     assert ((X_init >= 0) & (X_init <= 1)).all(), "X_init must have entries in [0, 1]"
     X = X_init
     flops_trimming = 0
-    if F_set.is_submodular:
+    if enable_trimming and F_set.is_submodular:
         X, flops_trimming = trim_ground_set(F_set, X_init.clone())
 
     n, b = X.shape
@@ -402,7 +405,7 @@ def dca_dsm(
         subgradient_F, order, Fvalues, flops_subgrad_F, x_chain = F_set.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
         (F_round, _, x_round), (F_round_filtered, _, x_round_filtered) = F_set.round_lovasz_extension(
             order=order, Fvalues=Fvalues, auxiliary_input=x_chain,
-            filter_prefixes=filter_prefixes,
+            filter_prefixes=filter_prefixes, enable_trimming=False,
         )
         continuous_obj_values[result_idx] = F_set.lovasz_extension(X, subgradient_F, Fvalues)
 
