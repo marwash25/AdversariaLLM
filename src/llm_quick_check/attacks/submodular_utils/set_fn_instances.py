@@ -1,5 +1,7 @@
 """Set function instances."""
 
+from math import sqrt
+
 import torch
 from torch import Tensor
 
@@ -18,6 +20,12 @@ class ModularSetFn(SetFunction):
         )
         self.W = W
 
+    def lovasz_L_bound(self) -> tuple[float, int]:
+        """Return the cached exact Lipschitz constant of f_L = ||W||_2 (l2 vector norm)."""
+        if self._lovasz_L_bound is None:
+            self._lovasz_L_bound = torch.linalg.vector_norm(self.W).item()
+        return self._lovasz_L_bound, 0
+
     def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
         Fvalues = torch.stack([self.W[rows, cols].sum() for rows, cols in S_batch])
         return Fvalues, 0
@@ -33,7 +41,7 @@ class ModularSetFn(SetFunction):
         return self.W, 0
 
 class SquaredCardinalitySetFn(SetFunction):
-    """Squared cardinality function H(S) = 0.5 * alpha * |S|^2."""
+    """Squared cardinality function F(S) = 0.5 * alpha * |S|^2."""
 
     def __init__(self, n: int, b: int, alpha: Tensor):
         super().__init__(
@@ -41,6 +49,16 @@ class SquaredCardinalitySetFn(SetFunction):
             is_non_decreasing=bool(alpha >= 0), is_non_increasing=bool(alpha <= 0),
         )
         self.alpha = alpha
+
+    def lovasz_L_bound(self) -> tuple[float, int]:
+        """Return the cached exact bound |alpha| sqrt(m(4m^2 - 1)/12), where m = n*b.
+
+        Gradients of f_L are permutations of g such that g_j = alpha * (j - 1/2) for j in [m]
+        """
+        if self._lovasz_L_bound is None:
+            m = self.n * self.b
+            self._lovasz_L_bound = abs(self.alpha.item()) * sqrt(m * (4 * m * m - 1) / 12)
+        return self._lovasz_L_bound, 0
 
     def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
         cardinalities = self.alpha.new_tensor([rows.numel() for rows, _ in S_batch])
