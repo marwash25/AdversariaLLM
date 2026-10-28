@@ -11,7 +11,11 @@ class ModularSetFn(SetFunction):
 
     def __init__(self, W: Tensor):
         assert W.dim() == 2, "W must have shape (n, b)"
-        super().__init__(W.shape[0], W.shape[1], W.device)
+        super().__init__(
+            W.shape[0], W.shape[1], W.device, is_submodular=True,
+            is_non_decreasing=bool((W >= 0).all()),
+            is_non_increasing=bool((W <= 0).all()),
+        )
         self.W = W
 
     def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
@@ -32,7 +36,10 @@ class SquaredCardinalitySetFn(SetFunction):
     """Squared cardinality function H(S) = 0.5 * alpha * |S|^2."""
 
     def __init__(self, n: int, b: int, alpha: Tensor):
-        super().__init__(n, b, alpha.device)
+        super().__init__(
+            n, b, alpha.device, is_submodular=bool(alpha <= 0),
+            is_non_decreasing=bool(alpha >= 0), is_non_increasing=bool(alpha <= 0),
+        )
         self.alpha = alpha
 
     def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
@@ -67,5 +74,5 @@ def setfn_submodular_decomp(
     alpha = torch.clamp(alpha, max=0)
 
     H = SquaredCardinalitySetFn(F.n, F.b, alpha)
-    G = LinearCombinationSetFn([F, H], [1.0, 1.0])
+    G = LinearCombinationSetFn([F, H], [1.0, 1.0], is_submodular=True)
     return G, H

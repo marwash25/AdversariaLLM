@@ -68,7 +68,7 @@ class DCAConfig:
 @dataclass
 class PGMConfig:
     """Config for the PGM optimizer."""
-    L: float | Literal["singletons", "normalize", "polyak"] = "normalize"
+    L: float | Literal["L_bound", "normalize", "polyak"] = "normalize"
     tie_break: Literal["random"] | None = None
 
 
@@ -394,9 +394,9 @@ class DSMAttack(Attack):
 
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
-            # evaluate singleton values and count its flops here, so the Hessian upper bound
-            # computation reuses cached values and counts only pair-evaluation flops.
-            L_F, flops_L_F = F_set.singletons_L_bound()
+            # Evaluate the Lovasz bound and count its flops here, so the Hessian upper bound
+            # computation reuses cached singleton values and counts only pair-evaluation flops.
+            L_F, flops_L_F = F_set.lovasz_L_bound()
             time_cached_hessian_bd = 0
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 assert self._lattice_decomp, "hessian_upperbd_at_zero is not supported for set decomposition."

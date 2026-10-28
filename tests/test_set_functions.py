@@ -52,12 +52,94 @@ def test_singletons_cache_is_reused_by_bound():
     assert flops == 28 and fn.batch_calls == 1
     cached, flops = fn.get_singleton_vals()
     assert cached is values and flops == 0
-    bound, flops = fn.singletons_L_bound()
-    assert bound == pytest.approx(values.norm().item()) and flops == 0
-    assert fn.batch_calls == 1
-    # The two caches are populated independently.
-    assert fn.get_singleton_removal_marginals()[1] == 35
+    bound, flops = fn.lovasz_L_bound()
+    expected = torch.tensor([[13., 8.], [11., 6.]], dtype=torch.float64).norm().item()
+    assert bound == pytest.approx(expected) and flops == 35
+    assert fn.lovasz_L_bound() == (bound, 0)
+    assert fn.get_singleton_removal_marginals()[1] == 0
     assert fn.batch_calls == 2
+
+
+@pytest.mark.parametrize(
+    "values,properties,expected,calls,flops",
+    [
+        ([0., 1., 1., 2.], (True, True, False), 2 ** 0.5, 2, 21),
+        ([0., 1., 1., 1.], (True, True, False), 1., 2, 21),
+        ([0., -1., -1., -2.], (True, False, True), 2 ** 0.5, 2, 28),
+        ([0., -0.5, -0.5, -2.], (True, False, True), 2., 2, 28),
+        ([0., 1., 1., -10.], (True, False, False), 11 * 2 ** 0.5, 2, 35),
+        ([0., 1., 1., -10.], (False, False, False), 11 * 2 ** 0.5, 2, 35),
+        ([0., 0.5, 0.5, 2.], (False, True, False), 2., 1, 7),
+        ([0., -1., -1., -1.], (False, False, True), 1., 1, 7),
+    ],
+)
+def test_lovasz_bound_properties(values, properties, expected, calls, flops):
+    fn = TableSetFunction()
+    fn.n, fn.b = 1, 2
+    fn.table = torch.tensor(values, dtype=torch.float64)
+    fn.is_submodular, fn.is_non_decreasing, fn.is_non_increasing = properties
+    bound, cost = fn.lovasz_L_bound()
+    assert bound == pytest.approx(expected) and cost == flops
+    assert fn.batch_calls == calls
+    assert fn.max_abs_value == (abs(values[-1]) if any(properties[1:]) else None)
+    assert fn.lovasz_L_bound() == (bound, 0)
+    assert fn.batch_calls == calls
+    if fn.is_submodular:
+        for first in (1, 2):
+            gradient = torch.tensor([values[first], values[3] - values[first]])
+            assert gradient.norm().item() <= bound + 1e-6
+
+
+@pytest.mark.parametrize("max_abs_value,expected", [(None, 4.), (1., 3.), (2., 4.)])
+def test_lovasz_bound_constructor_global_bound_and_cache(max_abs_value, expected):
+    class SaturatingFunction(SetFunction):
+        def _eval_batch(self, S_batch):
+            return torch.tensor([float(rows.numel() > 0) for rows, _ in S_batch]), 7 * len(S_batch)
+
+    # Declare only submodularity to exercise the general endpoint/global bounds.
+    fn = SaturatingFunction(
+        1, 16, torch.device("cpu"), is_submodular=True, max_abs_value=max_abs_value,
+    )
+    assert fn.max_abs_value == max_abs_value
+    assert fn.lovasz_L_bound() == (expected, 7 * 33)
+    with patch.object(fn, "_eval_batch", side_effect=AssertionError("unexpected set evaluation")):
+        assert fn.lovasz_L_bound() == (expected, 0)
+
+
+@pytest.mark.parametrize("sign", [-1., 1.])
+@pytest.mark.parametrize("submodular", [False, True])
+def test_monotone_lovasz_bound_reuses_supplied_maximum(sign, submodular):
+    fn = ModularSetFn(sign * torch.ones(1, 2))
+    fn.is_submodular = submodular
+    fn.max_abs_value = 3.  # Valid but looser than |F(V)| = 2.
+    with patch.object(fn, "_eval_batch", side_effect=AssertionError("unexpected ground-set evaluation")):
+        bound, flops = SetFunction.lovasz_L_bound(fn)
+        assert bound == pytest.approx(2 ** 0.5 if submodular else 3.)
+        assert flops == 0
+        assert SetFunction.lovasz_L_bound(fn) == (bound, 0)
+    assert fn.max_abs_value == 3.
+
+
+def test_known_instance_properties():
+    fn = ModularSetFn(torch.tensor([[1., -2.]]))
+    assert fn.is_submodular and not fn.is_non_decreasing and not fn.is_non_increasing
+    assert fn.lovasz_L_bound()[0] == pytest.approx(5 ** 0.5)
+    fn = SquaredCardinalitySetFn(1, 2, torch.tensor(-1.))
+    assert fn.is_submodular and fn.is_non_increasing and not fn.is_non_decreasing
+    bound, flops = fn.lovasz_L_bound()
+    assert bound == pytest.approx(2.5 ** 0.5) and flops == 0
+
+
+@pytest.mark.parametrize("weights", [[[1., 2.]], [[-1., -2.]], [[2., -3.], [0., 4.]], [[0., 0.]]])
+def test_modular_lovasz_bound_is_exact_and_cached(weights):
+    W = torch.tensor(weights, dtype=torch.float64).T
+    fn = ModularSetFn(W)
+    expected = W.square().sum().sqrt().item()
+    with patch.object(fn, "_eval_batch", side_effect=AssertionError("unexpected set evaluation")):
+        bound, flops = fn.lovasz_L_bound()
+    assert bound == pytest.approx(expected) and flops == 0
+    with patch("torch.linalg.vector_norm", side_effect=AssertionError("unexpected norm computation")):
+        assert fn.lovasz_L_bound() == (bound, 0)
 
 
 def test_modular_singleton_arrays_need_no_set_evaluations():
@@ -68,6 +150,19 @@ def test_modular_singleton_arrays_need_no_set_evaluations():
             values, flops = method()
             torch.testing.assert_close(values, W)
             assert flops == 0
+
+
+@pytest.mark.parametrize("shape", [(1, 1), (1, 2), (2, 3)])
+@pytest.mark.parametrize("alpha", [-2., 0., 3.])
+def test_squared_cardinality_lovasz_bound_matches_chain_gradient(shape, alpha):
+    fn = SquaredCardinalitySetFn(*shape, torch.tensor(alpha, dtype=torch.float64))
+    X = torch.arange(fn.n * fn.b, dtype=torch.float64).reshape(shape)
+    gradient, *_ = fn.subgradient_lovasz_extension(X)
+    with patch.object(fn, "_eval_batch", side_effect=AssertionError("unexpected set evaluation")):
+        bound, flops = fn.lovasz_L_bound()
+    assert bound == pytest.approx(gradient.norm().item()) and flops == 0
+    with patch("llm_quick_check.attacks.submodular_utils.set_fn_instances.sqrt", side_effect=AssertionError("unexpected recomputation")):
+        assert fn.lovasz_L_bound() == (bound, 0)
 
 
 @pytest.mark.parametrize("shape", [(1, 1), (2, 3)])
@@ -259,6 +354,97 @@ def test_specialized_chain_evaluation_bypasses_batch_evaluation():
     torch.testing.assert_close(values, torch.tensor([2., 1.], dtype=torch.float64))
     assert auxiliary_data is None
     assert flops == 11 and fn.batch_calls == 0
+
+
+@pytest.mark.parametrize(
+    "alphas,expected",
+    [
+        ([1., 2., 0.], (True, False, False)),
+        ([1., 0., 0.], (True, True, False)),
+        ([0., 2., 0.], (True, False, True)),
+        ([1., -2., 0.], (False, True, False)),
+        ([-1., 2., 0.], (False, False, True)),
+        ([1., 2., 1.], (False, False, False)),
+        ([0., 0., 0.], (True, True, True)),
+    ],
+)
+def test_linear_combination_infers_properties(alphas, expected):
+    increasing = ModularSetFn(torch.ones(2, 2))
+    decreasing = SquaredCardinalitySetFn(2, 2, torch.tensor(-1.))
+    unknown = TableSetFunction()
+    fn = LinearCombinationSetFn([increasing, decreasing, unknown], alphas)
+    assert (fn.is_submodular, fn.is_non_decreasing, fn.is_non_increasing) == expected
+    nested = LinearCombinationSetFn([fn, unknown], [2., 0.])
+    assert (nested.is_submodular, nested.is_non_decreasing, nested.is_non_increasing) == expected
+
+
+@pytest.mark.parametrize("property_name", ["is_submodular", "is_non_decreasing", "is_non_increasing"])
+def test_linear_combination_preserves_explicit_properties(property_name):
+    component = TableSetFunction()
+    # Cancellation gives the zero function, which component-wise inference cannot establish.
+    fn = LinearCombinationSetFn([component, component], [1., -1.], **{property_name: True})
+    for name in ("is_submodular", "is_non_decreasing", "is_non_increasing"):
+        assert getattr(fn, name) == (name == property_name)
+
+
+def test_linear_combination_false_properties_still_allow_inference():
+    component = ModularSetFn(torch.ones(2, 2))
+    fn = LinearCombinationSetFn(
+        [component], [1.], is_submodular=False, is_non_decreasing=False, is_non_increasing=False,
+    )
+    assert fn.is_submodular and fn.is_non_decreasing and not fn.is_non_increasing
+
+
+@pytest.mark.parametrize(
+    "component_bounds,alphas,explicit,expected",
+    [
+        ([10., 10.], [2., -3.], None, 50.),
+        ([10., 10.], [2., -3.], 60., 60.),
+        ([10., None], [2., -3.], None, None),
+        ([10., None], [2., 0.], None, 20.),
+        ([None, None], [0., 0.], None, 0.),
+        ([None, None], [0., 0.], 0., 0.),
+    ],
+)
+def test_linear_combination_max_abs_value(component_bounds, alphas, explicit, expected):
+    components = [TableSetFunction(), TableSetFunction()]
+    for component, bound in zip(components, component_bounds):
+        component.max_abs_value = bound
+    fn = LinearCombinationSetFn(components, alphas, max_abs_value=explicit)
+    assert fn.max_abs_value == expected
+    nested = LinearCombinationSetFn([fn], [-2.])
+    assert nested.max_abs_value == (None if expected is None else 2 * expected)
+    assert all(component.batch_calls == 0 for component in components)
+
+
+def test_linear_combination_lovasz_bound_uses_component_sum_and_counts_flops():
+    class SaturatingFunction(SetFunction):
+        def _eval_batch(self, S_batch):
+            return torch.tensor([float(rows.numel() > 0) for rows, _ in S_batch]), 7 * len(S_batch)
+
+    rank = SaturatingFunction(1, 16, torch.device("cpu"), is_submodular=True, is_non_decreasing=True)
+    modular = ModularSetFn(torch.ones(1, 16))
+    fn = LinearCombinationSetFn([rank, modular], [1., -0.1], is_submodular=True)
+    # Parent endpoint bound is 0.9 * sqrt(16) = 3.6; component sum is 1 + 0.1 * 4 = 1.4.
+    bound, flops = fn.lovasz_L_bound()
+    assert bound == pytest.approx(1.4)
+    # Rank: 16 singletons, 17 full/complement sets, then one full-set evaluation for its bound.
+    assert flops == 7 * 34
+    with patch.object(rank, "lovasz_L_bound", side_effect=AssertionError("unexpected bound evaluation")):
+        assert fn.lovasz_L_bound() == (bound, 0)
+        nested = LinearCombinationSetFn([fn], [-2.])
+        assert nested.lovasz_L_bound() == (2 * bound, 0)
+
+
+def test_linear_combination_lovasz_bound_keeps_smaller_parent_and_skips_zero_weights():
+    modular = ModularSetFn(torch.tensor([[2., -3.]]))
+    unused = ModularSetFn(torch.ones(1, 2))
+    fn = LinearCombinationSetFn([modular, modular, unused], [2., -1., 0.])
+    with patch.object(unused, "lovasz_L_bound", side_effect=AssertionError("zero-weight bound evaluated")):
+        bound, flops = fn.lovasz_L_bound()
+    # Cancellation makes the parent bound sqrt(13), versus 3 * sqrt(13) from components.
+    assert bound == pytest.approx(13 ** 0.5) and flops == 0
+    assert fn.lovasz_L_bound() == (bound, 0)
 
 
 def test_linear_combination_batch_and_single_evaluation():

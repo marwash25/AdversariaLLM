@@ -34,14 +34,31 @@ class SetFunction(ABC):
     Subclasses should implement _eval_batch and can override _eval_chain to provide a more efficient implementation.
 
     F is expected to be normalized, i.e., F(empty set) = 0, for use by the Lovasz utilities.
+
+    Property flags (is_submodular, is_non_decreasing, is_non_increasing) record known properties; 
+    False means the property is not assumed. Configure them and the optional max_abs_value 
+    during construction and keep them fixed. They are used in lovasz_L_bound and pgm_lovasz_set.
+    For monotone functions, lovasz_L_bound sets max_abs_value to |F(V)| if not provided.
     """
     # TODO: not sure we actually need these methods in this class
 
-    def __init__(self, n: int, b: int, device: torch.device):
+    def __init__(
+        self, n: int, b: int, device: torch.device, *,
+        is_submodular: bool = False,
+        is_non_decreasing: bool = False,
+        is_non_increasing: bool = False,
+        max_abs_value: float | None = None,
+    ):
         assert n > 0 and b > 0, "n and b must be positive"
+        assert max_abs_value is None or max_abs_value >= 0, "max_abs_value must be nonnegative"
         self.n = n
         self.b = b
         self.device = torch.device(device)
+        self.is_submodular = is_submodular
+        self.is_non_decreasing = is_non_decreasing
+        self.is_non_increasing = is_non_increasing
+        self.max_abs_value = max_abs_value
+        self._lovasz_L_bound: float | None = None
         self._singleton_vals: Tensor | None = None
         self._singleton_rmv_vals: Tensor | None = None
 
@@ -297,18 +314,54 @@ class SetFunction(ABC):
         values, flops = self._eval_batch(S_batch)
         return (values[0] - values[1:]).reshape(self.n, self.b), flops
 
-    def singletons_L_bound(self) -> tuple[float, int]:  # used in pgm and DCA
-        """Compute sqrt(sum_{(i, j) in [n] x [b]} F({(i, j)})^2).
+    def lovasz_L_bound(self) -> tuple[float, int]:  # used in pgm and DCA
+        r"""Compute and cache a Euclidean Lipschitz bound for the Lovasz extension of normalized F.
 
-           Reuse cached singleton values or evaluate and cache them via get_singleton_vals.
-           Reusing cached values costs zero flops.
+        If F is monotone (non-decreasing or non-increasing), L <= |F(V)|.
+        If F is submodular, L <= min{3 max_S |F(S)|, sqrt(sum_{v} max{|F({v})|, |F(v | V \ v)|}^2)}.
+        If F is non-decreasing submodular, L <= min{ F(V), sqrt(sum_{v} F({v})^2)}
+        If F is non-increasing submodular, L <= min{-F(V), sqrt(sum_{v} F(v | V \ v)^2)}
+        If F is neither monotone nor submodular, return submodular bound as heuristic.
 
-           If F is submodular, this is a valid bound on the Lipschitz constant
-           of its Lovasz extension f_L.
-           #TODO: correct this
+        self.max_abs_value is an optional upper bound on max_S |F(S)| configured at construction.
+        For monotone F, reuse it when provided; otherwise evaluate and store |F(V)|.
+        The bound 3 * self.max_abs_value is only applied if it's provided and F is non-monotone.
+
+        Reuse cached singleton marginal values or evaluate and cache them via get_singleton_vals
+        and get_singleton_removal_marginals. Compute and cache the bound on the first call.
+        Subsequent calls return the cached bound with zero evaluation flops.
         """
-        singleton_vals, flops_L = self.get_singleton_vals()
-        L = torch.linalg.vector_norm(singleton_vals, ord=2).item()
+        monotone = self.is_non_decreasing or self.is_non_increasing
+        flops_L = 0
+        L = self._lovasz_L_bound
+
+        if L is None:
+            L = inf
+            if monotone:
+                if self.max_abs_value is None:
+                    ground_set = torch.unravel_index(
+                        torch.arange(self.n * self.b, device=self.device), (self.n, self.b)
+                    )
+                    ground_value, flops_L = self.eval_single(ground_set)
+                    self.max_abs_value = abs(ground_value.item())
+                L = self.max_abs_value
+            elif self.max_abs_value is not None:
+                L = 3 * self.max_abs_value
+
+            if self.is_submodular or not monotone:
+                if self.is_submodular and self.is_non_decreasing:
+                    marginal_bounds, flops = self.get_singleton_vals()
+                elif self.is_submodular and self.is_non_increasing:
+                    marginal_bounds, flops = self.get_singleton_removal_marginals()
+                else:
+                    singleton_vals, flops_singletons = self.get_singleton_vals()
+                    singleton_rmv_vals, flops_singletons_rmv = self.get_singleton_removal_marginals()
+                    marginal_bounds = torch.maximum(singleton_vals.abs(), singleton_rmv_vals.abs())
+                    flops = flops_singletons + flops_singletons_rmv
+                flops_L += flops
+                L = min(L, torch.linalg.vector_norm(marginal_bounds, ord=2).item())
+
+            self._lovasz_L_bound = L
         return L, flops_L
 
     def eval_all_pairs(self) -> tuple[Tensor, Tensor, Tensor, int]:
@@ -347,11 +400,19 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
     SetFnReduction components must use the same reduction map (same map class and k)
     self.map holds the first such map, or None if no component has one.
 
-    Args:
-        set_fn_list: list of SetFunction instances
-        alphas: list of floats
+    Property flags (is_submodular, is_non_decreasing, is_non_increasing) record known properties; 
+    False means the property is not assumed. In this case, infer properties from component properties 
+    and coefficient signs when possible.
+    max_abs_value (float or None): Explicit bound, or infer sum_i |alpha_i| * F_i.max_abs_value
+    when all nonzero-weight components have known bounds.
     """
-    def __init__(self, set_fn_list: list[SetFunction], alphas: list[float]):
+    def __init__(
+        self, set_fn_list: list[SetFunction], alphas: list[float], *,
+        is_submodular: bool = False,
+        is_non_decreasing: bool = False,
+        is_non_increasing: bool = False,
+        max_abs_value: float | None = None,
+    ):
         self._init_linear_comb(set_fn_list, alphas)
         n = set_fn_list[0].n
         b = set_fn_list[0].b
@@ -359,7 +420,26 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
         assert all(F.n == n for F in set_fn_list), "all set functions must have the same n"
         assert all(F.b == b for F in set_fn_list), "all set functions must have the same b"
         assert all(F.device == device for F in set_fn_list), "all set functions must be on the same device"
-        super().__init__(n, b, device)
+        active = [(F, alpha) for F, alpha in zip(set_fn_list, alphas) if alpha != 0]
+        if max_abs_value is None and all(F.max_abs_value is not None for F, _ in active):
+            max_abs_value = sum(abs(alpha) * F.max_abs_value for F, alpha in active)
+        # TODO: add is_supermodular flag & update this
+        is_submodular = is_submodular or all(alpha > 0 and F.is_submodular for F, alpha in active)
+        is_non_decreasing = is_non_decreasing or all(
+            F.is_non_decreasing if alpha > 0 else F.is_non_increasing
+            for F, alpha in active
+        )
+        is_non_increasing = is_non_increasing or all(
+            F.is_non_increasing if alpha > 0 else F.is_non_decreasing
+            for F, alpha in active
+        )
+        super().__init__(
+            n, b, device,
+            max_abs_value=max_abs_value,
+            is_submodular=is_submodular,
+            is_non_decreasing=is_non_decreasing,
+            is_non_increasing=is_non_increasing,
+        )
 
         mapped = [F for F in self.functions if getattr(F, "map", None) is not None]
         self._mapped_fn = mapped[0] if mapped else None
@@ -373,6 +453,24 @@ class LinearCombinationSetFn(LinearCombinationMixin[SetFunction], SetFunction):
 
     def _eval_batch(self, S_batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, int]:
         return self._eval_linear_comb(lambda F: F._eval_batch(S_batch))
+
+    def lovasz_L_bound(self) -> tuple[float, int]:
+        """Cache min(parent bound, sum_i |alpha_i| L_i), counting all evaluation flops.
+
+        Zero-weight components are skipped in the sum. Component heuristics remain heuristic.
+        """
+        if self._lovasz_L_bound is not None:
+            return self._lovasz_L_bound, 0
+
+        L, flops_L = super().lovasz_L_bound()
+        component_bound = 0.0
+        for F, alpha in zip(self.functions, self.alphas):
+            if alpha != 0:
+                L_component, flops_component = F.lovasz_L_bound()
+                component_bound += abs(alpha) * L_component
+                flops_L += flops_component
+        self._lovasz_L_bound = min(L, component_bound)
+        return self._lovasz_L_bound, flops_L
 
     def _eval_singletons(self) -> tuple[Tensor, int]:
         """Reuse components cached singleton_vals if available or evaluate and cache them."""

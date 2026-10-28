@@ -398,7 +398,7 @@ dsm:
   lm_reg_weight: 0.0
   optimizer: "dca" # "pgm" or "dca"
   pgm_config:
-    L: "normalize" # "singletons" or "normalize" or "polyak" or float
+    L: "normalize" # "L_bound" or "normalize" or "polyak" or float
     tie_break: null # "random" or null
   dca_config:
     dual_cone_config:
@@ -431,4 +431,3 @@ dsm:
   allow_non_ascii: False
   allow_special: False
   filter_ids: True
-

@@ -58,11 +58,10 @@ def pgm_lovasz_set(
     F_set: SetFunction,
     X_init: Tensor,
     num_steps: int,
-    L: float | Literal["singletons", "normalize", "polyak"],
+    L: float | Literal["L_bound", "normalize", "polyak"],
     tie_break: Literal["random"] | Tensor | None = None,
     gap_tol: float | None = None,
     filter_prefixes: Callable[[tuple[Tensor, Tensor], object | None], list[int]] | None = None,
-    is_submodular: bool = False,
 ):
     """Apply projected subgradient method (PGM) to the problem min_{X in [0,1]^n x b} f_L(X)
     where f_L is the Lovasz extension of a normalized set function F_set: 2^([n] x [b]) -> R.
@@ -72,15 +71,14 @@ def pgm_lovasz_set(
     satisfying F_set(S) <= f_L(X).
 
     Args:
-        F_set: SetFunction instance.
+        F_set: SetFunction instance. F_set.is_submodular enables ground set trimming.
         X_init: Initial solution in [0,1]^(n x b), Tensor of shape (n, b).
         num_steps: Maximum number of optimization steps.
-        L: Positive float or one of "singletons", "normalize", "polyak". Determines the step size eta.
+        L: Positive float or one of "L_bound", "normalize", "polyak". Determines the step size eta.
         If a float, it is used as the Lipschitz constant of f_L, with eta = D / (L sqrt(t+1)) and D = sqrt(n b).
-        If F_set is monotone, set to |F_set(V)|, which holds even if F_set is not submodular.
-        If F_set is submodular set to 3 max_S |F_set(S)| if known, or to 'singletons' to use sqrt(sum_i F_set(i)^2) bound,
-        or to 'polyak' to use the Polyak step size eta = (f_L(X^t) - best dual value) / ||s||^2.
-        If F_set is neither, set to 'normalize' to normalize the subgradient (L = ||s||) or 'singletons'/'polyak' as heuristics
+        If 'L_bound', compute L with F_set.lovasz_L_bound().
+        If 'normalize', normalize the subgradient (L = ||s||).
+        If 'polyak', use the Polyak step size eta = (f_L(X^t) - best dual value) / ||s||^2.
         tie_break: Determines how ties in the sorting used by Edmonds' greedy algorithm are broken.
         If "random", a new random permutation is drawn at each iteration. If a Tensor of shape (n, b),
         it is used as a fixed tie-breaking order at every iteration. If None, ties are broken by the original order.
@@ -88,8 +86,6 @@ def pgm_lovasz_set(
         Use only if F_set is submodular, otherwise duality gap is not guaranteed to converge.
         filter_prefixes: Optional callback taking (order, auxiliary_input) and returning
         eligible prefix indices for filtered rounding.
-        is_submodular: Set True only when F_set is known to be submodular. Enables
-        ground set trimming.
 
     Returns:
         best_discrete_sol: Tuple (rows, cols) of long tensors, the unfiltered set with the lowest
@@ -128,7 +124,7 @@ def pgm_lovasz_set(
     assert ((X_init >= 0) & (X_init <= 1)).all(), "X_init must have entries in [0, 1]"
     X = X_init
     flops_trimming = 0
-    if is_submodular:
+    if F_set.is_submodular:
         X, flops_trimming = trim_ground_set(F_set, X_init.clone())
 
     n, b = X.shape
@@ -140,9 +136,8 @@ def pgm_lovasz_set(
     normalize = False
     polyak = False
     if isinstance(L, str):
-        if L == "singletons":
-            # Set L to sqrt(sum_i F_set({i})^2)
-            L, flops_L = F_set.singletons_L_bound()
+        if L == "L_bound":
+            L, flops_L = F_set.lovasz_L_bound()
             L = max(L, 1e-12) # L < 1e-12 shouldn't happen unless F = 0 but just in case
         elif L == "normalize":
             normalize = True
@@ -150,7 +145,7 @@ def pgm_lovasz_set(
             polyak = True
             max_dual_value = -inf
         else:
-            raise ValueError("If L is a string, it must be 'singletons' or 'normalize' or 'polyak'.")
+            raise ValueError("If L is a string, it must be 'L_bound' or 'normalize' or 'polyak'.")
     else:
         assert L > 0, "Lipschitz constant L must be positive"
 
@@ -303,8 +298,8 @@ def dca_dsm(
         inner_gap_tol: Duality gap tolerance passed to the inner solver.
         tie_break: If "random", ties in the sorting used by Edmonds' greedy algorithm are broken by a random
         permutation drawn at each outer iteration. Otherwise ties are broken by the original order.
-        L_G: Positive float or 'singletons'. Lipschitz constant of g_L, used to derive the Lipschitz constant
-        L_G + ||s|| of the upper bound passed to PGM. 'singletons' uses the sqrt(sum_{i} G_set({i})^2) bound.
+        L_G: Positive float or 'L_bound'. Lipschitz constant of g_L, used to derive the Lipschitz constant
+        L_G + ||s|| of the upper bound passed to PGM. 'L_bound' uses G_set.lovasz_L_bound().
         filter_fn: Optional callback returning retained lattice-point indices.
         filter_zero: Whether to exclude the empty set from filtered rounding.
 
@@ -345,8 +340,8 @@ def dca_dsm(
 
     flops_L_G = 0
     if isinstance(L_G, str):
-        if L_G == "singletons":
-            L_G, flops_L_G = G_set.singletons_L_bound()
+        if L_G == "L_bound":
+            L_G, flops_L_G = G_set.lovasz_L_bound()
         else:
             raise ValueError("If L_G is a string, it must be 'singletons'.")
 

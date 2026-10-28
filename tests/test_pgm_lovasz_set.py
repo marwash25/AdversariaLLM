@@ -27,7 +27,7 @@ def test_trimming_preserves_zero_marginals_and_updates_input():
 
 
 @pytest.mark.parametrize("is_submodular", [False, True])
-@pytest.mark.parametrize("L", [10., "singletons"])
+@pytest.mark.parametrize("L", [10., "L_bound"])
 def test_pgm_trimming_initialization_updates_and_flops(is_submodular, L):
     # Submodular negative pair interaction: element 0 must be included,
     # element 1 excluded, and element 2 has singleton +1 but final marginal -1.
@@ -36,6 +36,7 @@ def test_pgm_trimming_initialization_updates_and_flops(is_submodular, L):
         return -x[:, 0] + 4 * x[:, 1] + x[:, 2] - 2 * x[:, 0] * x[:, 2], 7 * len(x)
 
     fn = SetFnReduction(objective, EneReductionMap(k=2, n=3, device=torch.device("cpu")))
+    fn.is_submodular = is_submodular
     X_init = torch.tensor([[0.2], [0.8], [0.4]], dtype=torch.float64)
     iterates = []
     original_subgradient = fn.subgradient_lovasz_extension
@@ -46,26 +47,29 @@ def test_pgm_trimming_initialization_updates_and_flops(is_submodular, L):
 
     with patch.object(fn, "subgradient_lovasz_extension", side_effect=record_iterate), \
          patch.object(fn, "get_singleton_removal_marginals", wraps=fn.get_singleton_removal_marginals) as complements:
-        result = pgm_lovasz_set(fn, X_init, num_steps=3, L=L, is_submodular=is_submodular)
+        result = pgm_lovasz_set(fn, X_init, num_steps=3, L=L)
 
-    assert complements.call_count == int(is_submodular)
+    assert complements.call_count == int(is_submodular) + int(L == "L_bound")
     torch.testing.assert_close(X_init, torch.tensor([[0.2], [0.8], [0.4]], dtype=torch.float64))
-    setup_flops = 49 if is_submodular else (21 if L == "singletons" else 0)
+    setup_flops = 49 if is_submodular or L == "L_bound" else 0
     assert result[8] == [21 + setup_flops, 21, 21, 21]
     if is_submodular:
         torch.testing.assert_close(iterates[0], torch.tensor([[1.], [0.], [0.4]], dtype=torch.float64))
         assert all(X[0, 0] == 1 and X[1, 0] == 0 for X in iterates)
     else:
         torch.testing.assert_close(iterates[0], X_init)
-    repeated = pgm_lovasz_set(fn, X_init, num_steps=3, L=L, is_submodular=is_submodular)
+    repeated = pgm_lovasz_set(fn, X_init, num_steps=3, L=L)
     assert repeated[8] == [21, 21, 21, 21]
     assert repeated[2] == result[2]
     assert repeated[4] == pytest.approx(result[4])
 
 
 @pytest.mark.parametrize("reject_all", [False, True])
-def test_general_pgm_projection_gap_and_filtered_history(reject_all):
+@pytest.mark.parametrize("is_submodular", [False, True])
+def test_general_pgm_projection_gap_and_filtered_history(reject_all, is_submodular):
     fn = ModularSetFn(torch.tensor([[2., -1.]], dtype=torch.float64))
+    if not is_submodular:
+        fn.is_submodular = False
     X = torch.tensor([[0.9, 0.1]], dtype=torch.float64)
     result = pgm_lovasz_set(
         fn, X, num_steps=5, L=1., gap_tol=0.,
@@ -74,22 +78,24 @@ def test_general_pgm_projection_gap_and_filtered_history(reject_all):
     best, continuous, values, filtered, continuous_values, gaps, sets, times, flops, auxiliary, auxiliary_history = result
     torch.testing.assert_close(best, (torch.tensor([0]), torch.tensor([1])))
     torch.testing.assert_close(continuous, torch.tensor([[0., 1.]], dtype=torch.float64))
-    assert values == [0., -1.]
-    assert continuous_values == pytest.approx([1.7, -1.])
-    assert gaps == [1., 0.]
-    assert filtered == ([float("inf")] * 2 if reject_all else values)
-    assert len(times) == 2 and flops == [0, 0]
-    assert auxiliary is None and auxiliary_history == [None, None]
+    assert values == ([-1.] if is_submodular else [0., -1.])
+    assert continuous_values == pytest.approx([-1.] if is_submodular else [1.7, -1.])
+    assert gaps == ([0.] if is_submodular else [1., 0.])
+    steps = len(values)
+    assert filtered == ([float("inf")] * steps if reject_all else values)
+    assert len(times) == steps and flops == [0] * steps
+    assert auxiliary is None and auxiliary_history == [None] * steps
     if reject_all:
-        assert sets == [None, None]
+        assert sets == [None] * steps
     else:
-        assert sets[0][0].numel() == sets[0][1].numel() == 0
-        torch.testing.assert_close(sets[1], best)
-        assert sets[1][1].data_ptr() != best[1].data_ptr()
+        if not is_submodular:
+            assert sets[0][0].numel() == sets[0][1].numel() == 0
+        torch.testing.assert_close(sets[-1], best)
+        assert sets[-1][1].data_ptr() != best[1].data_ptr()
     torch.testing.assert_close(X, torch.tensor([[0.9, 0.1]], dtype=torch.float64))
 
 
-@pytest.mark.parametrize("L", [3., "singletons", "normalize", "polyak"])
+@pytest.mark.parametrize("L", [3., "L_bound", "normalize", "polyak"])
 @pytest.mark.parametrize("gap_tol", [None, 1e-6])
 def test_reduction_set_histories_align_with_stacked_lattice_points(L, gap_tol):
     reduction_map = EneReductionMap(k=4, n=2, device=torch.device("cpu"))
@@ -104,7 +110,9 @@ def test_reduction_set_histories_align_with_stacked_lattice_points(L, gap_tol):
     best, _, values, filtered_values, _, _, sets, times, flops, best_point, points = result
     assert points.shape == (len(values), fn.n) and points.dtype == torch.long
     assert len(times) == len(values)
-    assert flops == [7 * fn.n * fn.b * (1 + (L == "singletons"))] + [7 * fn.n * fn.b] * (len(values) - 1)
+    chain_flops = 7 * fn.n * fn.b
+    bound_flops = 7 * (2 * fn.n * fn.b + 1) if L == "L_bound" else 0
+    assert flops == [chain_flops + bound_flops] + [chain_flops] * (len(values) - 1)
     assert fn.eval_single(best)[0].item() == min(values)
     torch.testing.assert_close(reduction_map.set2ints([best])[0], best_point)
     for selected, point, value in zip(sets, points, filtered_values):
