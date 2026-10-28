@@ -37,7 +37,8 @@ def trim_ground_set(F_set: SetFunction, X_init: Tensor) -> tuple[Tensor, int]:
     """Trim ground set for a normalized submodular set function by setting 
     entries in X_init to 1 or 0.
 
-    Set X_init[v] = 1 if F(v) < 0 and X_init[v] = 0 if F(v | V \ {v}) > 0 for v = (i, j)
+    Set X_init[v] = 1 if F(v) < 0 (v included in solution) and X_init[v] = 0 
+    if F(v | V \ {v}) > 0 for v = (i, j) (v excluded from solution)
     Submodularity guarantees these coordinates remain fixed under PGM updates.
     Return modified X_init and the total evaluation flop count.
     """
