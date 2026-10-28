@@ -427,6 +427,7 @@ dsm:
     inner_gap_tol: 1e-4
     num_inner_steps: 500 # num_outer_steps will be set to num_steps / num_inner_steps 
     inner_solver: "pgm"
+    L: "L_bound" # "L_bound" or "normalize" or "polyak"
     tie_break: null # "random" or null
   allow_non_ascii: False
   allow_special: False

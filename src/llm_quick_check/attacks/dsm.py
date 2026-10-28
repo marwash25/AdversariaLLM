@@ -61,6 +61,7 @@ class DCAConfig:
     inner_gap_tol: float = 1e-4
     num_inner_steps: int = 500
     inner_solver: Literal["pgm"] = "pgm"
+    L: Literal["L_bound", "normalize", "polyak"] = "L_bound"
     tie_break: Literal["random"] | None = None
     # TODO: might want to also try using random tie breaking in PGM when used as inner solver, can potentially speed it up?
 
@@ -394,12 +395,13 @@ class DSMAttack(Attack):
 
         elif self.config.optimizer == "dca":
             dca_config = self.config.dca_config
-            # Evaluate the Lovasz bound and count its flops here, so the Hessian upper bound
-            # computation reuses cached singleton values and counts only pair-evaluation flops.
-            L_F, flops_L_F = F_set.lovasz_L_bound()
+            flops_F_singletons = 0
             time_cached_hessian_bd = 0
             if dca_config.hessian_upperbd == "hessian_upperbd_at_zero":
                 assert self._lattice_decomp, "hessian_upperbd_at_zero is not supported for set decomposition."
+                # Evaluate singletons values here, so the Hessian upper bound computation reuses cached values,
+                # to avoid double counting time and flops for this evaluation when using a cached Hessian upper bound
+                _, flops_F_singletons = F_set.get_singleton_vals()
                 logging.info("DR-submodular decomposition using Hessian upper bound at zero")
                 # F_set depends on the following params in addition to model/tokenizer and conversation
                 fingerprint = make_fingerprint(
@@ -456,17 +458,8 @@ class DSMAttack(Attack):
                 alpha = -hessian_upperbd # TODO: assume hessian_upperbd is a float upper bound on -alpha_set for now
                 G_set, H_set = setfn_submodular_decomp(F_set, alpha)
 
-            # H_set is a monotone non-increasing function so L_H = - H_set([n] x [b])
-            ground_set = torch.unravel_index(
-                torch.arange(F_set.n * F_set.b, device=device),
-                (F_set.n, F_set.b),
-            )
-            H_max, flops_L_H = H_set.eval_single(ground_set)
-            L_H = -H_max.item()
-            L_G = L_F + L_H
-
             setup_time = time.time() - t_start + time_cached_hessian_bd
-            setup_flops = loss_0_flops + flops_L_F + flops_L_H + flops_hessian_bd
+            setup_flops = loss_0_flops + flops_F_singletons + flops_hessian_bd
             # run DCA with initial optim_ids as initial solution
             discrete_obj_values, discrete_obj_values_filtered, continuous_obj_values, discrete_sols_filtered, times, flops, \
             inner_discrete_values, inner_discrete_values_filtered, inner_continuous_values, inner_duality_gaps, inner_times, inner_flops = \
@@ -481,7 +474,7 @@ class DSMAttack(Attack):
                 outer_tol=dca_config.outer_tol,
                 inner_gap_tol=dca_config.inner_gap_tol,
                 tie_break=dca_config.tie_break,
-                L_G=L_G,
+                L=dca_config.L,
                 filter_fn=filter_fn,
                 filter_zero=filter_zero,
             )

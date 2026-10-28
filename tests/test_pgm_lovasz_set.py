@@ -206,14 +206,15 @@ def test_reduction_accepts_one_element_continuous_warm_start():
 
 @pytest.mark.parametrize("batched", [False, True])
 @pytest.mark.parametrize("reject_all", [False, True])
-def test_dca_uses_auxiliary_points_for_filtered_lattice_history(batched, reject_all):
+@pytest.mark.parametrize("L", ["L_bound", "normalize", "polyak"])
+def test_dca_uses_auxiliary_points_for_filtered_lattice_history(batched, reject_all, L):
     reduction_map = EneReductionMap(k=3, n=1, device=torch.device("cpu"))
     G = SetFnReduction(lambda x: (-3. * x[:, 0].square(), 0), reduction_map)
     H = SetFnReduction(lambda x: (-x[:, 0].float().square(), 0), reduction_map)
     F = SetFnReduction(lambda x: (-2. * x[:, 0].square(), 0), reduction_map)
     result = dca_dsm(
         F, G, H, torch.tensor([[1]]) if batched else torch.tensor([1]),
-        num_outer_steps=2, num_inner_steps=2, inner_solver="pgm", L_G=5.,
+        num_outer_steps=2, num_inner_steps=2, inner_solver="pgm", L=L,
         filter_fn=(lambda chain: []) if reject_all else lambda chain: (chain[:, 0] == 1).nonzero().flatten().tolist(),
         filter_zero=True,
     )

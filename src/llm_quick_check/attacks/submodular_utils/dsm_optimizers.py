@@ -262,7 +262,7 @@ def dca_dsm(
     outer_tol: float = 1e-5,
     inner_gap_tol: float | None = 1e-5,
     tie_break: Literal["random"] | None = None,
-    L_G: float | Literal["singletons"] = "singletons",
+    L: Literal["L_bound", "normalize", "polyak"] = "L_bound",
     filter_fn: Callable[[Tensor], list[int]] | None = None,
     filter_zero: bool = False,
 ):
@@ -298,8 +298,8 @@ def dca_dsm(
         inner_gap_tol: Duality gap tolerance passed to the inner solver.
         tie_break: If "random", ties in the sorting used by Edmonds' greedy algorithm are broken by a random
         permutation drawn at each outer iteration. Otherwise ties are broken by the original order.
-        L_G: Positive float or 'L_bound'. Lipschitz constant of g_L, used to derive the Lipschitz constant
-        L_G + ||s|| of the upper bound passed to PGM. 'L_bound' uses G_set.lovasz_L_bound().
+        L: Inner PGM step-size strategy: 'L_bound' uses F_set_upperbd.lovasz_L_bound(),
+        'normalize' normalizes subgradients, and 'polyak' uses the Polyak step size.
         filter_fn: Optional callback returning retained lattice-point indices.
         filter_zero: Whether to exclude the empty set from filtered rounding.
 
@@ -338,17 +338,6 @@ def dca_dsm(
     n, b = X.shape
     filter_prefixes = make_lattice_prefix_filter(filter_fn, filter_zero) if filter_fn is not None else None
 
-    flops_L_G = 0
-    if isinstance(L_G, str):
-        if L_G == "L_bound":
-            L_G, flops_L_G = G_set.lovasz_L_bound()
-        else:
-            raise ValueError("If L_G is a string, it must be 'singletons'.")
-
-    L_G = max(L_G, 1e-12) # L_G < 1e-12 shouldn't happen unless G = 0 but just in case
-    assert L_G > 0, "Lipschitz constant L_G must be positive"
-
-
     discrete_obj_values = [0.0 for _ in range(num_outer_steps + 1)]
     inner_discrete_values: list[list[float]] = [[] for _ in range(num_outer_steps + 1)]
     discrete_obj_values_filtered = [0.0 for _ in range(num_outer_steps + 1)]
@@ -372,15 +361,14 @@ def dca_dsm(
 
         if inner_solver == "pgm":
             # minimize upper bound on F_set: F_set_upperbd(S) = G_set(S) - <subgrad_H, 1_S>
-            F_set_upperbd = LinearCombinationSetFn([G_set, ModularSetFn(subgrad_H)],[1.0, -1.0])
-            L_upperbd = L_G + torch.linalg.vector_norm(subgrad_H.float(), ord=2).item()
+            F_set_upperbd = LinearCombinationSetFn([G_set, ModularSetFn(subgrad_H)],[1.0, -1.0], is_submodular=True) # if we add supermodular attribute, submodularity would be inferred here
 
             # warm start pgm with current X as initial solution
             inner_best_set, inner_best_continuous_sol, inner_discrete_values[result_idx], inner_discrete_values_filtered[result_idx], \
             inner_continuous_values[result_idx], inner_duality_gaps[result_idx], inner_sets_filtered, inner_times[result_idx], inner_flops[result_idx], \
             _, inner_discrete_sols_filtered = \
                 pgm_lovasz_set(
-                    F_set_upperbd, X, num_inner_steps, L_upperbd, tie_break=tie_breaker,
+                    F_set_upperbd, X, num_inner_steps, L, tie_break=tie_breaker,
                     gap_tol=inner_gap_tol, filter_prefixes=filter_prefixes,
                 )
 
@@ -424,7 +412,7 @@ def dca_dsm(
             # include time/flops to evaluate objective in initialization time/flops
             # TODO: add flops for prefill to initial step flops as done in GCG if we do prefill later
             times[0] = initialization_time + inner_times[result_idx][0]
-            flops[0] = flops_L_G + inner_flops[result_idx][0]
+            flops[0] = inner_flops[result_idx][0]
 
         # TODO: check if complement set is better, use that as current sol instead. See Prop G.8 in DSMin paper.
         discrete_obj_values[result_idx] = F_round
