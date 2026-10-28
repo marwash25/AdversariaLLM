@@ -151,6 +151,7 @@ def pgm_lovasz_set(
     if isinstance(L, str):
         if L == "L_bound":
             L, flops_L = F_set.lovasz_L_bound()
+            logging.info("Lipschitz constant computed by lovasz_L_bound: %s", L)
             L = max(L, 1e-12) # L < 1e-12 shouldn't happen unless F = 0 but just in case
         elif L == "normalize":
             normalize = True
@@ -382,7 +383,7 @@ def dca_dsm(
             _, inner_discrete_sols_filtered = \
                 pgm_lovasz_set(
                     F_set_upperbd, X, num_inner_steps, L, tie_break=tie_breaker,
-                    gap_tol=inner_gap_tol, filter_prefixes=filter_prefixes,
+                    gap_tol=inner_gap_tol, filter_prefixes=filter_prefixes, enable_trimming=False,
                 )
 
             prev_cont_value = inner_continuous_values[result_idx][0] # f_L_upperbd(X) = g_L(X) - <subgrad_H, X> = g_L(X) - h_L(X) = f_L(X)
@@ -405,7 +406,7 @@ def dca_dsm(
         subgradient_F, order, Fvalues, flops_subgrad_F, x_chain = F_set.subgradient_lovasz_extension(X, tie_breaker) # use same tie breaker?
         (F_round, _, x_round), (F_round_filtered, _, x_round_filtered) = F_set.round_lovasz_extension(
             order=order, Fvalues=Fvalues, auxiliary_input=x_chain,
-            filter_prefixes=filter_prefixes, enable_trimming=False,
+            filter_prefixes=filter_prefixes, 
         )
         continuous_obj_values[result_idx] = F_set.lovasz_extension(X, subgradient_F, Fvalues)
 
